@@ -1,6 +1,20 @@
 import { md5 } from '@/shared/lib/hash';
+import {
+  legacyFeatureDisabledResponse,
+  legacyFeaturesEnabled,
+} from '@/shared/lib/legacy-features';
 import { respData, respErr } from '@/shared/lib/resp';
+import { getUserInfo } from '@/shared/models/user';
 import { getStorageService } from '@/shared/services/storage';
+
+const MAX_FILES = 4;
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const ALLOWED_IMAGE_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/avif',
+]);
 
 const extFromMime = (mimeType: string) => {
   const map: Record<string, string> = {
@@ -8,31 +22,30 @@ const extFromMime = (mimeType: string) => {
     'image/jpg': 'jpg',
     'image/png': 'png',
     'image/webp': 'webp',
-    'image/gif': 'gif',
-    'image/svg+xml': 'svg',
     'image/avif': 'avif',
-    'image/heic': 'heic',
-    'image/heif': 'heif',
   };
   return map[mimeType] || '';
 };
 
 export async function POST(req: Request) {
+  if (!legacyFeaturesEnabled()) {
+    return legacyFeatureDisabledResponse();
+  }
+
   try {
+    const user = await getUserInfo();
+    if (!user) {
+      return Response.json({ error: 'unauthorized' }, { status: 401 });
+    }
+
     const formData = await req.formData();
     const files = formData.getAll('files') as File[];
 
-    console.log('[API] Received files:', files.length);
-    files.forEach((file, i) => {
-      console.log(`[API] File ${i}:`, {
-        name: file.name,
-        type: file.type,
-        size: file.size,
-      });
-    });
-
     if (!files || files.length === 0) {
       return respErr('No files provided');
+    }
+    if (files.length > MAX_FILES) {
+      return Response.json({ error: 'too_many_files' }, { status: 413 });
     }
 
     const storageService = await getStorageService();
@@ -40,8 +53,17 @@ export async function POST(req: Request) {
 
     for (const file of files) {
       // Validate file type
-      if (!file.type.startsWith('image/')) {
-        return respErr(`File ${file.name} is not an image`);
+      if (!ALLOWED_IMAGE_TYPES.has(file.type)) {
+        return Response.json(
+          { error: 'unsupported_file_type', filename: file.name },
+          { status: 415 }
+        );
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        return Response.json(
+          { error: 'file_too_large', filename: file.name },
+          { status: 413 }
+        );
       }
 
       // Convert file to buffer
@@ -81,8 +103,6 @@ export async function POST(req: Request) {
         return respErr(result.error || 'Upload failed');
       }
 
-      console.log('[API] Upload success:', result.url);
-
       uploadResults.push({
         url: result.url,
         key: result.key,
@@ -90,11 +110,6 @@ export async function POST(req: Request) {
         deduped: false,
       });
     }
-
-    console.log(
-      '[API] All uploads complete. Returning URLs:',
-      uploadResults.map((r) => r.url)
-    );
 
     return respData({
       urls: uploadResults.map((r) => r.url),

@@ -2,149 +2,104 @@
   "page": {
     "show_sections": [
       "hero",
-      "logos",
       "introduce",
       "benefits",
-      "usage",
       "features",
-      "stats",
-      "testimonials",
       "faq",
       "cta"
     ],
     "sections": {
       "hero": {
         "id": "hero",
-        "title": "一小时快速上线你的 AI 创业项目",
-        "highlight_text": "一小时",
-        "description": "ShipAny 是用于构建 AI SaaS 创业项目的 NextJS 项目模板。<br/>集成常用功能，快速上线你的产品。",
+        "title": "AI 算法教练：从思路到掌握，每道题都有下一步",
+        "highlight_text": "每道题都有下一步",
+        "description": "从空白编辑器走到可运行解法。通过结构化练习、真实代码执行和可解释反馈，知道当前问题在哪里、下一步该尝试什么。",
         "announcement": {
-          "badge": "全新",
-          "title": "🎉 ShipAny 模板二已发布",
-          "url": "/pricing"
+          "badge": "访客演示",
+          "title": "无需登录，直接开始一道引导式练习。",
+          "url": "/learn"
         },
-        "tip": "🎁 前 1000 名用户特价优惠",
+        "tip": "支持 JavaScript 与 Python，代码直接在浏览器中运行。",
         "buttons": [
           {
-            "title": "立即开始",
-            "icon": "Zap",
-            "url": "/pricing",
+            "title": "开始学习",
+            "icon": "ArrowRight",
+            "url": "/learn",
             "target": "_self",
             "variant": "default"
           },
           {
-            "title": "阅读文档",
-            "icon": "BookOpenText",
-            "url": "/docs",
-            "target": "_blank",
+            "title": "浏览题库",
+            "icon": "Library",
+            "url": "/problems",
+            "target": "_self",
             "variant": "outline"
           }
         ],
-        "show_avatars": true,
-        "avatars_tip": "999+ 用户在使用 ShipAny 上站",
+        "show_avatars": false,
         "show_award": false,
         "image": {
-          "src": "/imgs/features/admin.png",
-          "alt": "hero",
+          "src": "https://picsum.photos/seed/algocoach-zh-hero-main/1200/800.webp",
+          "alt": "AI 算法教练引导式练习工作台",
           "width": 1200,
           "height": 800
         },
         "image_invert": {
-          "src": "/imgs/features/admin-dark.png",
-          "alt": "hero",
+          "src": "https://picsum.photos/seed/algocoach-zh-hero-dark/1200/800.webp",
+          "alt": "深色模式下的 AI 算法教练练习工作台",
           "width": 1200,
           "height": 800
         },
         "background_image": {
-          "src": "/imgs/bg/tree.jpg",
-          "alt": "hero"
+          "src": "https://picsum.photos/seed/algocoach-zh-hero-background/1600/900.webp",
+          "alt": "AI 算法教练学习工作台背景"
         }
-      },
-      "logos": {
-        "title": "ShipAny 使用以下技术栈构建",
-        "items": [
-          {
-            "title": "Next.js",
-            "image": {
-              "src": "/imgs/logos/nextjs.svg",
-              "alt": "Next.js"
-            }
-          },
-          {
-            "title": "React",
-            "image": {
-              "src": "/imgs/logos/react.svg",
-              "alt": "React"
-            }
-          },
-          {
-            "title": "TailwindCSS",
-            "image": {
-              "src": "/imgs/logos/tailwindcss.svg",
-              "alt": "TailwindCSS"
-            }
-          },
-          {
-            "title": "Shadcn/UI",
-            "image": {
-              "src": "/imgs/logos/shadcn.svg",
-              "alt": "Shadcn/UI"
-            }
-          },
-          {
-            "title": "Vercel",
-            "image": {
-              "src": "/imgs/logos/vercel.svg",
-              "alt": "Vercel"
-            }
-          }
-        ]
       },
       "introduce": {
         "block": "features-list",
         "id": "introduce",
-        "title": "ShipAny 是什么？",
-        "label": "产品简介",
-        "description": "ShipAny 是专为 AI SaaS 创业项目打造的 NextJS 脚手架，包括丰富模板、组件及文档。",
+        "title": "不只给答案，而是完成一次学习闭环",
+        "label": "教 · 练 · 测 · 评",
+        "description": "AI 算法教练把知识讲解、代码练习、即时反馈、独立测评和复习计划连接起来，让每次尝试都沉淀为明确的下一步。",
         "image": {
-          "src": "/imgs/features/landing-page.png",
-          "alt": "introduce"
+          "src": "https://picsum.photos/seed/algocoach-zh-loop/1200/800.webp",
+          "alt": "AI 算法教练学习闭环"
         },
         "items": [
           {
-            "title": "开箱即用的模板",
-            "description": "从数十款生产级 AI SaaS 模板中选择，快速开启你的项目。",
-            "icon": "RiNextjsFill",
+            "title": "先理解思路",
+            "description": "在查看完整答案前，先理解题型模式、约束条件和方案取舍。",
+            "icon": "BookOpen",
             "image": {
-              "src": "/imgs/features/1.png",
-              "alt": "introduce"
+              "src": "https://picsum.photos/seed/algocoach-zh-teach/960/640.webp",
+              "alt": "算法思路引导"
             }
           },
           {
-            "title": "基础设施搭建",
-            "description": "内置最佳实践，即刻拥有可扩展的基础设施。",
-            "icon": "RiDatabase2Line",
+            "title": "在真实反馈中练习",
+            "description": "编写并运行 JavaScript 或 Python，查看测试结果，定位具体失败用例。",
+            "icon": "Code2",
             "image": {
-              "src": "/imgs/features/2.png",
-              "alt": "introduce"
+              "src": "https://picsum.photos/seed/algocoach-zh-practice/960/640.webp",
+              "alt": "浏览器代码练习"
             }
           },
           {
-            "title": "极速部署",
-            "description": "AI SaaS 产品快速上线，助力小时级交付。",
-            "icon": "RiCloudyFill",
+            "title": "脱离提示独立测评",
+            "description": "通过限时、无提示的题目，验证知识是否真正迁移到独立解题。",
+            "icon": "ListChecks",
             "image": {
-              "src": "/imgs/features/3.png",
-              "alt": "introduce"
+              "src": "https://picsum.photos/seed/algocoach-zh-assess/960/640.webp",
+              "alt": "算法专项测评"
             }
           },
           {
-            "title": "AI 集成",
-            "description": "通过内置的 AI SDK，轻松为你的项目集成 AI 能力。",
-            "icon": "RiRobot2Line",
+            "title": "复习真正的薄弱点",
+            "description": "将错因和提示使用情况转成复习卡片，明确下一次练习重点。",
+            "icon": "NotebookTabs",
             "image": {
-              "src": "/imgs/features/4.png",
-              "alt": "introduce"
+              "src": "https://picsum.photos/seed/algocoach-zh-review/960/640.webp",
+              "alt": "个性化复习卡片"
             }
           }
         ],
@@ -153,269 +108,126 @@
       "benefits": {
         "block": "features-accordion",
         "id": "benefits",
-        "title": "为何选择 ShipAny",
-        "label": "产品优势",
-        "description": "你获得一切 AI 创业所需——从开箱即用的模板到专业技术支持。",
+        "title": "围绕算法学习最容易卡住的环节设计",
+        "label": "为什么有效",
+        "description": "从不知道如何开始，到看不懂失败原因，再到做完就忘，教练在关键节点提供恰到好处的支持。",
         "items": [
           {
-            "title": "全栈解决方案",
-            "description": "基于 Next.js，集成认证、支付、AI，一站式开箱即用。",
-            "icon": "RiNextjsFill",
+            "title": "用结构降低启动门槛",
+            "description": "题目难度、约束、函数签名和初始代码模板减少准备成本，但保留核心思考过程。",
+            "icon": "Route",
             "image": {
-              "src": "/imgs/features/user-billing.png",
-              "alt": "benefits"
+              "src": "https://picsum.photos/seed/algocoach-zh-structure/960/640.webp",
+              "alt": "结构化题目解析"
             }
           },
           {
-            "title": "丰富模板库",
-            "description": "多样的 AI SaaS 模板，点击即用，涵盖聊天、图像生成等多场景。",
-            "icon": "RiClapperboardAiLine",
+            "title": "更快走出错误循环",
+            "description": "诊断会引用编译错误或失败测试，解释具体原因，并给出下一项检查建议。",
+            "icon": "Bug",
             "image": {
-              "src": "/imgs/features/admin-settings.png",
-              "alt": "benefits"
+              "src": "https://picsum.photos/seed/algocoach-zh-diagnosis/960/640.webp",
+              "alt": "代码错误诊断"
             }
           },
           {
-            "title": "专属技术指导",
-            "description": "享受专属技术支持与开发者社区，为你的成功保驾护航。",
-            "icon": "RiCodeFill",
+            "title": "形成更稳定的长期记忆",
+            "description": "通过反例、测评和复习卡片暴露薄弱点，并把它们重新带回学习计划。",
+            "icon": "BrainCircuit",
             "image": {
-              "src": "/imgs/features/landing-page.png",
-              "alt": "benefits"
+              "src": "https://picsum.photos/seed/algocoach-zh-recall/960/640.webp",
+              "alt": "知识点专项复习"
             }
           }
         ]
-      },
-      "usage": {
-        "block": "features-step",
-        "id": "usage",
-        "title": "三步使用 ShipAny 极速上线",
-        "description": "只需三步，快速开启你的 AI SaaS 创业之路：",
-        "image": {
-          "src": "/imgs/features/1.png",
-          "alt": "usage"
-        },
-        "image_position": "left",
-        "text_align": "center",
-        "items": [
-          {
-            "title": "获取 ShipAny",
-            "description": "一次性购买 ShipAny，查收邮件获取代码与文档。",
-            "image": {
-              "src": "/imgs/features/5.png",
-              "alt": "usage"
-            }
-          },
-          {
-            "title": "启动你的项目",
-            "description": "阅读说明文档，克隆 ShipAny 代码，开始开发你的 AI SaaS 项目。",
-            "image": {
-              "src": "/imgs/features/6.png",
-              "alt": "usage"
-            }
-          },
-          {
-            "title": "个性化定制",
-            "description": "根据需求修改模板内容和数据，配置专属 AI 能力。",
-            "image": {
-              "src": "/imgs/features/7.png",
-              "alt": "usage"
-            }
-          },
-          {
-            "title": "部署上线",
-            "description": "简单几步将你的项目推向生产环境，立刻为客户提供服务。",
-            "image": {
-              "src": "/imgs/features/8.png",
-              "alt": "usage"
-            }
-          }
-        ],
-        "className": "bg-muted"
       },
       "features": {
         "id": "features",
-        "title": "ShipAny 核心功能",
-        "description": "一切你需要的工具，助力 AI SaaS 项目高效上线。",
+        "title": "保留思考过程的 AI 辅导工具",
+        "description": "每项功能都帮助你分析、验证和改进，而不是悄悄替你完成解题。",
         "items": [
           {
-            "title": "Next.js 项目模板",
-            "description": "生产就绪、支持 SEO 与多语言的 Next.js 脚手架。",
-            "icon": "RiNextjsFill"
+            "title": "智能题目解析",
+            "description": "解析题面、判断大致难度与约束，并生成对应语言的初始代码模板。",
+            "icon": "ScanSearch"
           },
           {
-            "title": "身份认证与支付",
-            "description": "集成谷歌 OAuth、一键登录，以及 Stripe 支付。",
-            "icon": "RiKey2Fill"
+            "title": "沉浸式代码演练",
+            "description": "在同一工作台完成编辑、运行、提交、控制台查看和样例或完整测试对比。",
+            "icon": "Code2"
           },
           {
-            "title": "数据基础设施",
-            "description": "内置 Supabase，稳定可靠的数据存储。",
-            "icon": "RiDatabase2Line"
+            "title": "三级 Hint Ladder",
+            "description": "依次揭示概念、解法方向和伪代码，不直接暴露完整实现。",
+            "icon": "Lightbulb"
           },
           {
-            "title": "一键部署",
-            "description": "自动化部署到 Vercel 或 Cloudflare，极速上线。",
-            "icon": "RiCloudy2Fill"
+            "title": "基于证据的错因诊断",
+            "description": "反馈引用真实语法错误、运行异常或测试结果，避免脱离上下文猜测。",
+            "icon": "Stethoscope"
           },
           {
-            "title": "商业分析",
-            "description": "集成 Google Analytics、Search Console，助力业务增长。",
-            "icon": "RiBarChart2Line"
+            "title": "反例生成",
+            "description": "用尽可能小的输入挑战当前假设，直观看到逻辑在哪个边界失效。",
+            "icon": "FlaskConical"
           },
           {
-            "title": "AI 原生基础设施",
-            "description": "预置 AI 集成、积分系统和 API 售卖能力。",
-            "icon": "RiRobot2Line"
-          }
-        ]
-      },
-      "stats": {
-        "id": "stats",
-        "title": "用户喜爱 ShipAny",
-        "description": "因其易用且上线飞快。",
-        "items": [
-          {
-            "title": "999+",
-            "description": "位用户"
-          },
-          {
-            "title": "200+",
-            "description": "组件块"
-          },
-          {
-            "title": "50+",
-            "description": "专业模板"
-          }
-        ],
-        "className": "bg-muted"
-      },
-      "testimonials": {
-        "id": "testimonials",
-        "title": "用户对 ShipAny 的评价",
-        "description": "听听开发者与创始人用 ShipAny 快速上线 AI 创业项目的故事。",
-        "items": [
-          {
-            "name": "David Chen",
-            "role": "AIWallpaper.shop 创始人",
-            "quote": "ShipAny 为我们节省了数月开发时间。2 天上线 AI 壁纸业务，一周内就收到了第一笔付费订单！",
-            "image": {
-              "src": "/imgs/avatars/1.png",
-              "alt": "david"
-            }
-          },
-          {
-            "name": "Rachel Kim",
-            "role": "HeyBeauty.ai CTO",
-            "quote": "内置 AI 基础设施颠覆了开发体验，无需担心架构，只需专注核心功能，极快落地。",
-            "image": {
-              "src": "/imgs/avatars/2.png",
-              "alt": "rachel"
-            }
-          },
-          {
-            "name": "Marcus Thompson",
-            "role": "独立开发者",
-            "quote": "作为独立开发者，ShipAny 满足了全部需求——认证、支付、AI 集成、美观界面，一个周末上线 SaaS！",
-            "image": {
-              "src": "/imgs/avatars/3.png",
-              "alt": "marcus"
-            }
-          },
-          {
-            "name": "Sofia Garcia",
-            "role": "Melodisco CEO",
-            "quote": "模板高度可定制且生产级。我们几小时内搭建出了 AI 音乐平台，上市周期大大缩短！",
-            "image": {
-              "src": "/imgs/avatars/4.png",
-              "alt": "sofia"
-            }
-          },
-          {
-            "name": "James Wilson",
-            "role": "GPTs.works 技术负责人",
-            "quote": "ShipAny 基础设施极其稳定。我们从 0 到 1 万用户，无需关心后端维护，是最棒的 AI 创业投资。",
-            "image": {
-              "src": "/imgs/avatars/5.png",
-              "alt": "james"
-            }
-          },
-          {
-            "name": "Anna Zhang",
-            "role": "创业者",
-            "quote": "从想法到上线，仅用 3 天！ShipAny 模板和部署工具让我们极快验证 AI 商业创意。",
-            "image": {
-              "src": "/imgs/avatars/6.png",
-              "alt": "anna"
-            }
+            "title": "进度与复习",
+            "description": "持续记录练习完成、提示使用、纠错、测评和知识点掌握变化。",
+            "icon": "ChartNoAxesCombined"
           }
         ]
       },
       "faq": {
         "id": "faq",
-        "title": "关于 ShipAny 的常见问题",
-        "description": "还有其他问题？欢迎加入 Discord 或发邮件联系我们。",
+        "title": "常见问题",
+        "description": "了解访客优先的 MVP 会提供什么。",
         "items": [
           {
-            "question": "ShipAny 是什么？怎么帮到我？",
-            "answer": "ShipAny 是专为 AI SaaS 创业设计的 NextJS 全套脚手架，内含开箱即用的模板、基础设施搭建和部署工具，让你数小时内上线 AI 产品。"
+            "question": "需要注册账户吗？",
+            "answer": "不需要。演示版无需登录即可完成学习闭环，学习状态保存在当前浏览器中。"
           },
           {
-            "question": "使用 ShipAny 需要很高的技术水平吗？",
-            "answer": "有基础编程知识即可上手。ShipAny 面向开发者友好，详细文档和模板让初学者也能轻松起步，不需深厚 AI 或云计算背景。"
+            "question": "可以练习哪些编程语言？",
+            "answer": "MVP 支持 JavaScript 和 Python，代码在隔离的浏览器 Worker 中运行。"
           },
           {
-            "question": "ShipAny 支持哪些类型的 AI SaaS 项目？",
-            "answer": "ShipAny 支持内容生成、数据分析、AI 聊天机器人、图片/内容生成器等多种主流 AI 应用场景。"
+            "question": "提示会直接泄露答案吗？",
+            "answer": "不会。提示按概念、解法方向、伪代码逐级展开，并刻意停在完整实现之前。"
           },
           {
-            "question": "用 ShipAny 一般多久能上线？",
-            "answer": "借助 ShipAny，可在数小时内拿到产品原型并上线生产环境，预配置的一键部署大幅缩短开发周期。"
+            "question": "没有配置 AI Key 还能体验吗？",
+            "answer": "可以。精选题会使用确定性的演示反馈，错因诊断、提示、反例和复习卡片都能稳定展示。"
           },
           {
-            "question": "ShipAny 的基础设施包括哪些内容？",
-            "answer": "包含认证、数据库、API 集成、支付、云端部署等全栈解决方案，全部遵循业界最佳实践预配置。"
+            "question": "可以导入自己的题目吗？",
+            "answer": "可以。系统会生成可确认的难度、约束、函数签名和代码模板草稿；演示模式不会为导入题目虚构隐藏测试。"
           },
           {
-            "question": "模板是否支持定制自己的品牌？",
-            "answer": "当然支持！所有模板均可自定义设计、功能和品牌，既保持基础架构稳定，又能满足个性扩展需求。"
+            "question": "学习数据保存在哪里？",
+            "answer": "访客目标、代码、练习记录、提示、测评和复习卡片保存在本地浏览器中，并支持重置。"
           }
         ]
       },
       "cta": {
         "id": "cta",
-        "title": "发布你的第一个 AI SaaS 项目",
-        "description": "从这里出发，用 ShipAny 极速交付。",
+        "title": "把下一道题，变成一次真正的学习",
+        "description": "选择目标，打开今日任务，从最小但有用的一步提示开始。",
         "buttons": [
           {
-            "title": "获取 ShipAny",
-            "url": "https://shipany.ai",
-            "target": "_blank",
-            "icon": "Zap"
+            "title": "开始学习",
+            "url": "/learn",
+            "target": "_self",
+            "icon": "ArrowRight"
           },
           {
-            "title": "阅读文档",
-            "url": "/docs",
-            "target": "_blank",
+            "title": "了解产品",
+            "url": "/about",
+            "target": "_self",
             "variant": "outline",
-            "icon": "BookOpenText"
+            "icon": "Info"
           }
         ],
-        "className": "bg-muted"
-      },
-      "subscribe": {
-        "id": "subscribe",
-        "title": "订阅我们的邮件通知",
-        "description": "获取 ShipAny 最新资讯与产品动态。",
-        "submit": {
-          "input": {
-            "placeholder": "输入邮箱"
-          },
-          "button": {
-            "title": "订阅"
-          },
-          "action": "/api/subscribe"
-        },
         "className": "bg-muted"
       }
     }

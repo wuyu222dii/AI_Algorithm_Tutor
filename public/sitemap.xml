@@ -1,15 +1,40 @@
-<?xml version='1.0' encoding='utf-8' standalone='yes'?>
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TODO: replace http://localhost:3000 with the production domain before deployment. -->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://your-domain.com/</loc>
-    <lastmod>2025-11-15T10:00:00+00:00</lastmod>
+    <loc>http://localhost:3000/</loc>
+    <lastmod>2026-07-12</lastmod>
   </url>
   <url>
-    <loc>https://your-domain.com/blog</loc>
-    <lastmod>2025-11-15T10:00:00+00:00</lastmod>
+    <loc>http://localhost:3000/learn</loc>
+    <lastmod>2026-07-12</lastmod>
   </url>
   <url>
-    <loc>https://your-domain.com/showcases</loc>
-    <lastmod>2025-11-15T10:00:00+00:00</lastmod>
+    <loc>http://localhost:3000/problems</loc>
+    <lastmod>2026-07-12</lastmod>
+  </url>
+  <url>
+    <loc>http://localhost:3000/assessment</loc>
+    <lastmod>2026-07-12</lastmod>
+  </url>
+  <url>
+    <loc>http://localhost:3000/review</loc>
+    <lastmod>2026-07-12</lastmod>
+  </url>
+  <url>
+    <loc>http://localhost:3000/progress</loc>
+    <lastmod>2026-07-12</lastmod>
+  </url>
+  <url>
+    <loc>http://localhost:3000/about</loc>
+    <lastmod>2026-07-12</lastmod>
+  </url>
+  <url>
+    <loc>http://localhost:3000/privacy-policy</loc>
+    <lastmod>2026-07-12</lastmod>
+  </url>
+  <url>
+    <loc>http://localhost:3000/terms-of-service</loc>
+    <lastmod>2026-07-12</lastmod>
   </url>
 </urlset>

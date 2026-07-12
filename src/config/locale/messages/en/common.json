@@ -1,8 +1,8 @@
 {
   "metadata": {
-    "title": "ShipAny Template Two",
-    "description": "ShipAny is a NextJS boilerplate for building AI SaaS startups. Ship Fast with a variety of templates and components.",
-    "keywords": "shipany, shipany-boilerplate, shipany-template-two-demo"
+    "title": "AlgoCoach — Your Next Step for Every Algorithm Problem",
+    "description": "Practice algorithms with guided hints, real code execution, immediate AI feedback, focused assessments, and personalized review.",
+    "keywords": "AlgoCoach, AI algorithm coach, coding practice, data structures, interview preparation, guided hints, code feedback"
   },
   "sign": {
     "sign_in_title": "Sign In",

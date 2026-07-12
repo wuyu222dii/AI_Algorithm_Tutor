@@ -1,0 +1,205 @@
+{
+  "metadata": {
+    "title": "关于 AlgoCoach AI 算法教练",
+    "description": "AI 算法教练将知识讲解、代码练习、独立测评、即时反馈和个性化复习连接成完整学习闭环。"
+  },
+  "page": {
+    "title": "关于 AlgoCoach AI 算法教练",
+    "show_sections": [
+      "hero",
+      "introduce",
+      "benefits",
+      "features",
+      "faq",
+      "cta"
+    ],
+    "sections": {
+      "hero": {
+        "id": "hero",
+        "title": "AlgoCoach AI 算法教练",
+        "highlight_text": "AI 算法教练",
+        "description": "面向编程学习者和求职者的智能学习工具。不只提供答案，而是给出一条从形成思路到独立掌握的清晰路径。",
+        "buttons": [
+          {
+            "title": "开始学习",
+            "url": "/learn",
+            "icon": "ArrowRight"
+          },
+          {
+            "title": "浏览题库",
+            "url": "/problems",
+            "icon": "Library",
+            "variant": "outline"
+          }
+        ],
+        "image": {
+          "src": "https://picsum.photos/seed/algocoach-about-zh-hero/1200/800.webp",
+          "alt": "AI 算法教练学习工作台",
+          "width": 1200,
+          "height": 800
+        },
+        "background_image": {
+          "src": "https://picsum.photos/seed/algocoach-about-zh-background/1600/900.webp",
+          "alt": "AI 算法教练产品背景"
+        }
+      },
+      "introduce": {
+        "block": "features-list",
+        "id": "introduce",
+        "title": "为练习真正失效的时刻而设计",
+        "description": "很多学习者已经掌握语法，却仍然难以形成解题思路、读懂失败原因，也难以把一道做过的题连接成长期学习路径。",
+        "image": {
+          "src": "https://picsum.photos/seed/algocoach-about-zh-purpose/1200/800.webp",
+          "alt": "聚焦的算法学习路径"
+        },
+        "items": [
+          {
+            "title": "面对空白编辑器无从下手",
+            "description": "逐级提示只给当前最小且有用的一步，同时让学习者继续对最终解法负责。",
+            "icon": "Lightbulb",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-zh-hints/800/600.webp",
+              "alt": "逐级算法提示"
+            }
+          },
+          {
+            "title": "反馈来得太慢",
+            "description": "真实运行结果和基于证据的诊断，在思路仍然清晰时解释失败原因。",
+            "icon": "MessagesSquare",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-zh-feedback/800/600.webp",
+              "alt": "即时代码反馈"
+            }
+          },
+          {
+            "title": "学习路径彼此割裂",
+            "description": "目标、练习、测评和复习共享同一份学习记录，不再散落在多个工具中。",
+            "icon": "Route",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-zh-path/800/600.webp",
+              "alt": "连续的学习旅程"
+            }
+          },
+          {
+            "title": "做对不等于学会",
+            "description": "反例和复习卡片持续检验假设，并在合适的时机重新带回薄弱模式。",
+            "icon": "BrainCircuit",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-zh-mastery/800/600.webp",
+              "alt": "知识掌握与复习"
+            }
+          }
+        ],
+        "className": "bg-muted"
+      },
+      "benefits": {
+        "block": "features-accordion",
+        "id": "benefits",
+        "title": "边界清晰、可以追溯的 AI 辅导",
+        "description": "产品不会要求学习者盲目信任一个黑盒答案，而是让反馈有依据、可检查，也可以被用户纠正。",
+        "items": [
+          {
+            "title": "以真实结果为依据",
+            "description": "诊断引用编译信息、运行错误或失败测试；当缺少证据时，教练会明确说明无法验证的部分。",
+            "icon": "ScanSearch",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-zh-grounded/800/600.webp",
+              "alt": "可追溯的诊断证据"
+            }
+          },
+          {
+            "title": "逐步引导，而非替代思考",
+            "description": "提示从概念到方向再到伪代码逐级展开，为独立推理保留空间。",
+            "icon": "Layers3",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-zh-progressive/800/600.webp",
+              "alt": "三级渐进式提示"
+            }
+          },
+          {
+            "title": "默认把控制权交给学习者",
+            "description": "用户可以检查反馈、纠正教练、重置本地数据，也可以不注册账户直接练习。",
+            "icon": "SlidersHorizontal",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-zh-control/800/600.webp",
+              "alt": "由学习者控制的练习设置"
+            }
+          }
+        ]
+      },
+      "features": {
+        "id": "features",
+        "title": "贯穿完整学习旅程的同一个工作台",
+        "description": "AI 算法教练把重复刷题转化为可观察、可复盘的能力成长。",
+        "items": [
+          {
+            "title": "目标化学习设置",
+            "description": "设置学习目标、首选语言和每周练习量。",
+            "icon": "Target"
+          },
+          {
+            "title": "精选算法题库",
+            "description": "覆盖数组、栈、搜索、链表、动态规划、BFS 和 DFS 等核心模式。",
+            "icon": "Library"
+          },
+          {
+            "title": "浏览器真实执行",
+            "description": "在一次性 Worker 中运行 JavaScript 和 Python，并查看测试输出和超时结果。",
+            "icon": "Play"
+          },
+          {
+            "title": "AI 伴学",
+            "description": "按需获取错因诊断、反例、逐级提示或围绕当前题目的追问。",
+            "icon": "Bot"
+          },
+          {
+            "title": "独立测评",
+            "description": "在无 AI 提示的限时双题测评中检验正确率和薄弱知识点。",
+            "icon": "ClipboardCheck"
+          },
+          {
+            "title": "个性化复习",
+            "description": "集中回顾真实练习中产生的错题、知识点缺口和复习卡片。",
+            "icon": "NotebookTabs"
+          }
+        ]
+      },
+      "faq": {
+        "id": "faq",
+        "title": "产品原则",
+        "description": "当前 MVP 背后的关键取舍。",
+        "items": [
+          {
+            "question": "AI 算法教练适合谁？",
+            "answer": "适合具备基础编程能力，希望更系统地学习算法解题的学生和求职者。"
+          },
+          {
+            "question": "产品会把 AI 当作权威答案吗？",
+            "answer": "不会。AI 反馈可能出错，界面会把诊断落到可观察结果上，标明演示或实时模式，并提供用户纠错入口。"
+          },
+          {
+            "question": "MVP 需要后台账户吗？",
+            "answer": "不需要。访客体验以本地数据为主，云同步和生产级远程判题不在首版范围内。"
+          },
+          {
+            "question": "导入题目如何处理？",
+            "answer": "学习者需要确认解析草稿，并确保自己有权使用来源内容；演示模式不会声称提供隐藏测试。"
+          }
+        ]
+      },
+      "cta": {
+        "id": "cta",
+        "title": "练习推理过程，而不只是提交答案",
+        "description": "打开一道题，让教练只揭示你当前真正需要的下一步。",
+        "buttons": [
+          {
+            "title": "开始学习",
+            "url": "/learn",
+            "icon": "ArrowRight"
+          }
+        ],
+        "className": "bg-muted"
+      }
+    }
+  }
+}

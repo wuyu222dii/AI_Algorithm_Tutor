@@ -1,0 +1,205 @@
+{
+  "metadata": {
+    "title": "About AlgoCoach",
+    "description": "AlgoCoach is an AI-guided learning workspace that connects algorithm explanation, practice, assessment, feedback, and review."
+  },
+  "page": {
+    "title": "About AlgoCoach",
+    "show_sections": [
+      "hero",
+      "introduce",
+      "benefits",
+      "features",
+      "faq",
+      "cta"
+    ],
+    "sections": {
+      "hero": {
+        "id": "hero",
+        "title": "AlgoCoach",
+        "highlight_text": "AlgoCoach",
+        "description": "An AI algorithm coach for students and job seekers who need more than a solution: a clear path from first idea to independent mastery.",
+        "buttons": [
+          {
+            "title": "Start learning",
+            "url": "/learn",
+            "icon": "ArrowRight"
+          },
+          {
+            "title": "Browse problems",
+            "url": "/problems",
+            "icon": "Library",
+            "variant": "outline"
+          }
+        ],
+        "image": {
+          "src": "https://picsum.photos/seed/algocoach-about-en-hero/1200/800.webp",
+          "alt": "AlgoCoach learning workspace",
+          "width": 1200,
+          "height": 800
+        },
+        "background_image": {
+          "src": "https://picsum.photos/seed/algocoach-about-en-background/1600/900.webp",
+          "alt": "AlgoCoach product background"
+        }
+      },
+      "introduce": {
+        "block": "features-list",
+        "id": "introduce",
+        "title": "Built for the moments when practice breaks down",
+        "description": "Algorithm learners often know the syntax but still struggle to form an approach, interpret failures, and connect one solved problem to a durable learning path.",
+        "image": {
+          "src": "https://picsum.photos/seed/algocoach-about-en-purpose/1200/800.webp",
+          "alt": "A focused algorithm learning path"
+        },
+        "items": [
+          {
+            "title": "The blank-page problem",
+            "description": "A progressive hint ladder gives the smallest useful nudge while keeping the learner responsible for the solution.",
+            "icon": "Lightbulb",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-en-hints/800/600.webp",
+              "alt": "Progressive algorithm hints"
+            }
+          },
+          {
+            "title": "Feedback that arrives too late",
+            "description": "Real execution results and evidence-based diagnosis explain failures while the reasoning is still fresh.",
+            "icon": "MessagesSquare",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-en-feedback/800/600.webp",
+              "alt": "Immediate code feedback"
+            }
+          },
+          {
+            "title": "Fragmented learning paths",
+            "description": "Goals, practice, assessment, and review share one learning record instead of living in disconnected tools.",
+            "icon": "Route",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-en-path/800/600.webp",
+              "alt": "Connected learning journey"
+            }
+          },
+          {
+            "title": "Solved is not the same as learned",
+            "description": "Counterexamples and review cards test assumptions and bring weak patterns back at the right moment.",
+            "icon": "BrainCircuit",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-en-mastery/800/600.webp",
+              "alt": "Knowledge mastery and review"
+            }
+          }
+        ],
+        "className": "bg-muted"
+      },
+      "benefits": {
+        "block": "features-accordion",
+        "id": "benefits",
+        "title": "AI assistance with visible boundaries",
+        "description": "The product is designed to make feedback useful, traceable, and easy to challenge rather than asking learners to trust an opaque answer.",
+        "items": [
+          {
+            "title": "Grounded in actual results",
+            "description": "Diagnostics cite compiler messages, runtime errors, or failed tests. When evidence is missing, the coach says what it cannot verify.",
+            "icon": "ScanSearch",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-en-grounded/800/600.webp",
+              "alt": "Traceable diagnostic evidence"
+            }
+          },
+          {
+            "title": "Progressive, not prescriptive",
+            "description": "Hints escalate from concept to direction to pseudocode, preserving space for independent reasoning.",
+            "icon": "Layers3",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-en-progressive/800/600.webp",
+              "alt": "Three progressive hint levels"
+            }
+          },
+          {
+            "title": "Learner control by default",
+            "description": "Users can inspect feedback, correct the coach, reset local data, and practice without creating an account.",
+            "icon": "SlidersHorizontal",
+            "image": {
+              "src": "https://picsum.photos/seed/algocoach-about-en-control/800/600.webp",
+              "alt": "Learner-controlled practice settings"
+            }
+          }
+        ]
+      },
+      "features": {
+        "id": "features",
+        "title": "One workspace across the learning journey",
+        "description": "AlgoCoach connects the activities that turn repeated problem solving into measurable skill growth.",
+        "items": [
+          {
+            "title": "Goal-based onboarding",
+            "description": "Set a learning goal, preferred language, and weekly practice target.",
+            "icon": "Target"
+          },
+          {
+            "title": "Curated problem library",
+            "description": "Practice core patterns across arrays, stacks, search, linked lists, dynamic programming, BFS, and DFS.",
+            "icon": "Library"
+          },
+          {
+            "title": "Real browser execution",
+            "description": "Run JavaScript and Python in disposable workers with test output and a strict time limit.",
+            "icon": "Play"
+          },
+          {
+            "title": "AI coaching",
+            "description": "Request diagnosis, a counterexample, progressive hints, or a focused follow-up conversation.",
+            "icon": "Bot"
+          },
+          {
+            "title": "Independent assessment",
+            "description": "Complete a timed two-problem check without AI hints, then review accuracy and weak topics.",
+            "icon": "ClipboardCheck"
+          },
+          {
+            "title": "Personalized review",
+            "description": "Revisit mistakes, topic gaps, and review cards generated from real practice interactions.",
+            "icon": "NotebookTabs"
+          }
+        ]
+      },
+      "faq": {
+        "id": "faq",
+        "title": "Product principles",
+        "description": "The choices behind the current MVP.",
+        "items": [
+          {
+            "question": "Who is AlgoCoach for?",
+            "answer": "It is designed for programming students and job seekers who know basic coding and want a more structured way to learn algorithmic problem solving."
+          },
+          {
+            "question": "Is the AI treated as an authority?",
+            "answer": "No. AI feedback can be wrong. The interface grounds diagnosis in observable results, identifies demo or live mode, and gives users a correction path."
+          },
+          {
+            "question": "Does the MVP require a backend account?",
+            "answer": "No. The visitor experience is local-first. Cloud sync and production-scale judging are intentionally outside the first version."
+          },
+          {
+            "question": "How are imported problems handled?",
+            "answer": "The learner confirms the parsed draft and remains responsible for having the right to use the source material. Demo mode does not claim to provide hidden tests."
+          }
+        ]
+      },
+      "cta": {
+        "id": "cta",
+        "title": "Practice the reasoning, not just the submission",
+        "description": "Open a problem and let the coach reveal only the next step you need.",
+        "buttons": [
+          {
+            "title": "Start learning",
+            "url": "/learn",
+            "icon": "ArrowRight"
+          }
+        ],
+        "className": "bg-muted"
+      }
+    }
+  }
+}

@@ -1,6 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import {
+  legacyFeatureDisabledResponse,
+  legacyFeaturesEnabled,
+} from '@/shared/lib/legacy-features';
+
+function allowedHosts(): Set<string> {
+  return new Set(
+    (process.env.FILE_PROXY_ALLOWED_HOSTS || '')
+      .split(',')
+      .map((host) => host.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
 export async function GET(req: NextRequest) {
+  if (!legacyFeaturesEnabled()) {
+    return legacyFeatureDisabledResponse();
+  }
+
   const url = req.nextUrl.searchParams.get('url');
 
   if (!url) {
@@ -8,7 +26,15 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const response = await fetch(url);
+    const target = new URL(url);
+    if (
+      target.protocol !== 'https:' ||
+      !allowedHosts().has(target.hostname.toLowerCase())
+    ) {
+      return new NextResponse('Proxy target is not allowed', { status: 403 });
+    }
+
+    const response = await fetch(target, { redirect: 'error' });
 
     if (!response.ok) {
       return new NextResponse(`Failed to fetch file: ${response.statusText}`, {

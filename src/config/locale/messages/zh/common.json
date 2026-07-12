@@ -1,8 +1,8 @@
 {
   "metadata": {
-    "title": "ShipAny 模板二",
-    "description": "ShipAny 是用于构建 AI SaaS 创业项目的 NextJS 脚手架。提供丰富模板和组件，助您快速上线产品。",
-    "keywords": "shipany, shipany-boilerplate, shipany-template-two-demo"
+    "title": "AlgoCoach AI 算法教练 — 从思路到掌握，每道题都有下一步",
+    "description": "通过逐级提示、真实代码运行、即时 AI 反馈、专项测评和个性化复习，建立完整的算法学习闭环。",
+    "keywords": "AlgoCoach, AI 算法教练, 算法学习, 数据结构, 编程练习, 求职面试, 逐级提示, 代码反馈"
   },
   "sign": {
     "sign_in_title": "登录",

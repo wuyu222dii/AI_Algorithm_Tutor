@@ -1,58 +1,61 @@
 ---
 title: Privacy Policy
-description: Privacy policy for YourAppName
-created_at: 2025-10-24
+description: Privacy policy for AlgoCoach
+created_at: 2026-07-12
 ---
+
+{/* TODO: replace support@algocoach.example and publish the production domain before launch. */}
 
 ## Introduction
 
-Welcome to YourAppName, the **NextJS Boilerplate** designed to help you build AI SaaS startups quickly and efficiently. At YourAppName, your privacy is of utmost importance to us, and this privacy policy outlines how we collect, use, and protect your personal information when you use our services.
+AlgoCoach is an algorithm learning tool that combines guided practice, browser-based code execution, AI-assisted feedback, assessment, and review. This policy explains what information the current visitor-first version handles and the choices available to you.
 
-## Information Collection and Use
+## Information We Handle
 
-We collect the following types of data to provide you with a better experience while using YourAppName:
+### Learning data stored in your browser
 
-1. **Account Information**
-   - **What We Collect**: This includes your name, email address, and any other information you provide when creating an account.
-   - **Purpose**: To manage your account and provide customer support.
+The visitor experience can store your learning goal, preferred programming language, weekly practice target, code drafts, run and submission results, hint usage, assessment results, and review cards in your browser's local storage. This allows you to continue where you left off without creating an account.
 
-2. **Usage Details**
-   - **What We Collect**: Information about how you use YourAppName, including your interactions, features accessed, and usage frequency.
-   - **Purpose**: To analyze user engagement and improve our services.
+### Code execution data
 
-3. **Device Information**
-   - **What We Collect**: Data regarding the devices you use to access YourAppName, such as device type, operating system, and browser type.
-   - **Purpose**: To optimize our services for different devices and ensure compatibility.
+JavaScript and Python practice code is designed to run in a disposable browser worker. The demo does not require your code to run in the AlgoCoach server process.
 
-4. **Cookies**
-   - **What We Collect**: Small data files placed on your device that help us track user preferences and improve user experience.
-   - **Purpose**: To enhance the functionality of our services and personalize your experience.
+### AI requests
 
-5. **Payment and Billing Information**
-   - **What We Collect**: Information regarding your payment methods, such as credit card number, billing address, and any details required for transaction processing.
-   - **Purpose**: To facilitate billing and payment processing for our services.
+When live AI mode is configured and you request parsing, diagnosis, hints, counterexamples, review cards, or chat, the relevant problem text, code, test results, and conversation context may be sent to the configured AI service provider. The interface identifies whether a response came from live AI or deterministic demo content.
 
-## Data Storage and Security
+### Product and technical events
 
-We take the security of your personal information seriously. The data we collect is stored securely on our servers, and we implement a variety of security measures including encryption and access controls to protect against unauthorized access, alteration, disclosure, or destruction of your personal information. However, please be aware that no method of transmission over the Internet, or method of electronic storage, is 100% secure, and we cannot guarantee its absolute security.
+AlgoCoach may record events such as onboarding completion, practice starts, code runs, submissions, hint use, successful corrections, assessment completion, and satisfaction feedback. In the local demo these events can remain in the browser. If hosted analytics or server logging is enabled later, technical details such as time, browser type, and an abbreviated network identifier may also be processed to operate and improve the service.
 
-## Information Sharing and Disclosure
+### Content you import
 
-We do not sell, trade, or otherwise transfer your personal information to outside parties, except in the following circumstances:
+If you paste a problem statement, that content is processed to create a draft analysis. Do not submit confidential information, personal data, or material you do not have the right to use.
 
-- To comply with legal obligations or respond to lawful requests from public authorities.
-- To protect our rights, property, or safety, or that of our users or others.
-- To provide services through trusted third-party partners who assist us in operating our website or conducting our business, subject to confidentiality agreements.
+The MVP does not require an account and does not collect payment information.
+
+## Storage and Retention
+
+Local learning data remains on your device until you reset the product data, clear browser storage, or the browser removes it. Live AI providers and hosting services may retain request or log data under their own terms and configured retention policies.
+
+## Sharing
+
+We do not sell personal information. Information may be shared only as needed with:
+
+- A configured AI provider when you deliberately use a live AI feature
+- Hosting, security, error-monitoring, or analytics providers used to operate the service
+- Authorities or other parties when required by applicable law or necessary to protect users and the service
+
+## Security and Your Choices
+
+We use reasonable technical and organizational safeguards, but no internet service or storage method is completely secure. You can avoid live AI requests, remove imported content, reset local learning data, or clear your browser storage at any time.
+
+AI-generated feedback can be inaccurate. Use the correction controls and verify important conclusions against the actual code and test output.
 
 ## Changes to This Policy
 
-We may update this privacy policy from time to time. We will notify you of any changes by posting the new policy on this page and updating the "effective date" at the top of this policy. You are advised to review this privacy policy periodically for any changes. Changes to this privacy policy are effective when they are posted on this page.
+We may update this policy as AlgoCoach changes. The revised policy will be posted on this page with an updated date.
 
-## Contact Us
+## Contact
 
-If you have any questions or concerns about this privacy policy or our data practices, please contact us at:
-
-**Copyright Owner**: [your-domain.com](https://your-domain.com)
-**Email**: [support@your-domain.com](mailto:support@your-domain.com)
-
-By using YourAppName, you consent to our privacy policy and agree to its terms. Thank you for trusting us with your information!
+Questions about this policy or your data can be sent to [support@algocoach.example](mailto:support@algocoach.example).
