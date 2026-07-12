@@ -4,6 +4,7 @@ import { redirect } from '@/core/i18n/navigation';
 import { envConfigs } from '@/config';
 import { defaultLocale } from '@/config/locale';
 import { VerifyEmailPage } from '@/shared/blocks/sign/verify-email';
+import { getSafeInternalCallback } from '@/shared/lib/auth-redirect';
 
 export async function generateMetadata({
   params,
@@ -39,10 +40,14 @@ export default async function VerifyEmailRoute({
   const { locale } = await params;
   // If user lands here without required context (e.g. direct navigation),
   // send them to sign-in instead of showing an incomplete verify page.
-  if (!email && !callbackUrl) {
+  if (!email) {
     redirect({ href: '/sign-in', locale });
   }
   return (
-    <VerifyEmailPage email={email} callbackUrl={callbackUrl} sent={sent} />
+    <VerifyEmailPage
+      email={email}
+      callbackUrl={getSafeInternalCallback(callbackUrl, '/')}
+      sent={sent}
+    />
   );
 }

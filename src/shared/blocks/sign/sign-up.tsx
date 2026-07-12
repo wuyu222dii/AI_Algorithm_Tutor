@@ -1,14 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
-import { toast } from 'sonner';
 
 import { authClient, signUp } from '@/core/auth/client';
-import { Link } from '@/core/i18n/navigation';
-import { defaultLocale } from '@/config/locale';
+import { Link, useRouter } from '@/core/i18n/navigation';
 import { Button } from '@/shared/components/ui/button';
 import {
   Card,
@@ -18,10 +15,28 @@ import {
   CardHeader,
   CardTitle,
 } from '@/shared/components/ui/card';
+import { Checkbox } from '@/shared/components/ui/checkbox';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 
+import {
+  buildAuthHref,
+  getAuthErrorCode,
+  getLocaleLessCallback,
+  getLocalizedCallback,
+  isValidEmail,
+  isValidPassword,
+} from './auth-form-utils';
+import { PasswordInput } from './password-input';
 import { SocialProviders } from './social-providers';
+
+type SignUpErrors = {
+  name?: string;
+  email?: string;
+  password?: string;
+  confirmPassword?: string;
+  terms?: string;
+};
 
 export function SignUp({
   configs,
@@ -33,124 +48,122 @@ export function SignUp({
   const router = useRouter();
   const t = useTranslations('common.sign');
   const locale = useLocale();
-
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState<SignUpErrors>({});
+  const [formError, setFormError] = useState('');
 
   const isGoogleAuthEnabled = configs.google_auth_enabled === 'true';
   const isGithubAuthEnabled = configs.github_auth_enabled === 'true';
-  const isEmailAuthEnabled =
-    configs.email_auth_enabled !== 'false' ||
-    (!isGoogleAuthEnabled && !isGithubAuthEnabled); // no social providers enabled, auto enable email auth
+  const isEmailAuthEnabled = configs.email_auth_enabled !== 'false';
   const emailVerificationEnabled =
     configs.email_verification_enabled === 'true';
+  const hasAuthMethod =
+    isEmailAuthEnabled || isGoogleAuthEnabled || isGithubAuthEnabled;
+  const safeCallbackUrl = getLocaleLessCallback(callbackUrl, locale);
+  const localizedCallbackUrl = getLocalizedCallback(callbackUrl, locale);
+  const signInHref = buildAuthHref('/sign-in', callbackUrl, locale);
 
-  if (callbackUrl) {
-    if (
-      locale !== defaultLocale &&
-      callbackUrl.startsWith('/') &&
-      !callbackUrl.startsWith(`/${locale}`)
-    ) {
-      callbackUrl = `/${locale}${callbackUrl}`;
-    }
-  }
-
-  const base = locale !== defaultLocale ? `/${locale}` : '';
-  const stripLocalePrefix = (path: string) => {
-    if (!path?.startsWith('/')) return '/';
-    if (locale === defaultLocale) return path;
-    if (path === `/${locale}`) return '/';
-    if (path.startsWith(`/${locale}/`))
-      return path.slice(locale.length + 1) || '/';
-    return path;
-  };
-
-  const reportAffiliate = ({
-    userEmail,
-    stripeCustomerId,
-  }: {
-    userEmail: string;
-    stripeCustomerId?: string;
-  }) => {
-    if (typeof window === 'undefined' || !configs) {
-      return;
-    }
-
+  const reportAffiliate = ({ userEmail }: { userEmail: string }) => {
+    if (typeof window === 'undefined') return;
     const windowObject = window as any;
 
     if (configs.affonso_enabled === 'true' && windowObject.Affonso) {
       windowObject.Affonso.signup(userEmail);
     }
-
     if (configs.promotekit_enabled === 'true' && windowObject.promotekit) {
-      windowObject.promotekit.refer(userEmail, stripeCustomerId);
+      windowObject.promotekit.refer(userEmail);
     }
   };
 
+  const validate = () => {
+    const nextErrors: SignUpErrors = {};
+    const normalizedEmail = email.trim();
+
+    if (!name.trim()) nextErrors.name = t('name_required');
+    if (!normalizedEmail) nextErrors.email = t('email_required');
+    else if (!isValidEmail(normalizedEmail)) {
+      nextErrors.email = t('email_invalid');
+    }
+    if (!password) nextErrors.password = t('password_required');
+    else if (!isValidPassword(password)) {
+      nextErrors.password = t('password_length');
+    }
+    if (!confirmPassword) {
+      nextErrors.confirmPassword = t('confirm_password_required');
+    } else if (confirmPassword !== password) {
+      nextErrors.confirmPassword = t('password_mismatch');
+    }
+    if (!acceptedTerms) nextErrors.terms = t('terms_required');
+
+    setErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  };
+
   const handleSignUp = async () => {
-    if (loading) {
-      return;
-    }
+    if (loading || !validate()) return;
 
-    if (!email || !password || !name) {
-      toast.error('email, password and name are required');
-      return;
-    }
-
-    // Set loading immediately to avoid duplicate submits before request hooks fire.
     setLoading(true);
+    setFormError('');
+    const normalizedEmail = email.trim().toLowerCase();
 
     try {
       await signUp.email(
         {
-          email,
+          email: normalizedEmail,
           password,
-          name,
+          name: name.trim(),
         },
         {
-          onRequest: (ctx) => {
-            // loading is already set above; keep as no-op for safety
-          },
-          onResponse: (ctx) => {
-            // Do NOT reset loading here; navigation may not have completed yet.
-          },
-          onSuccess: (ctx) => {
-            // report affiliate
-            reportAffiliate({ userEmail: email });
-
-            const emailVerificationEnabled =
-              configs.email_verification_enabled === 'true';
+          onSuccess: async () => {
+            reportAffiliate({ userEmail: normalizedEmail });
 
             if (emailVerificationEnabled) {
-              const normalizedCallbackUrl = stripLocalePrefix(callbackUrl);
               const verifyPath = `/verify-email?sent=1&email=${encodeURIComponent(
-                email
-              )}&callbackUrl=${encodeURIComponent(normalizedCallbackUrl)}`;
+                normalizedEmail
+              )}&callbackUrl=${encodeURIComponent(safeCallbackUrl)}`;
 
-              // IMPORTANT: callbackURL must not contain its own '&' query params.
-              // We redirect to home/callbackUrl after verification; verify page is just the waiting UI.
-              void authClient.sendVerificationEmail({
-                email,
-                callbackURL: `${base}${normalizedCallbackUrl || '/'}`,
-              });
-
-              // next/navigation router expects fully qualified path (including locale when non-default)
-              router.push(`${base}${verifyPath}`);
+              try {
+                const result = await authClient.sendVerificationEmail({
+                  email: normalizedEmail,
+                  callbackURL: localizedCallbackUrl,
+                });
+                if (result.error) {
+                  setFormError(t('send_verification_failed'));
+                  setLoading(false);
+                  return;
+                }
+                router.push(verifyPath);
+              } catch {
+                setFormError(t('send_verification_failed'));
+                setLoading(false);
+              }
               return;
             }
 
-            router.push(callbackUrl);
+            router.push(safeCallbackUrl);
           },
-          onError: (e: any) => {
-            toast.error(e?.error?.message || 'sign up failed');
+          onError: (event: any) => {
+            const code = getAuthErrorCode(event);
+            setFormError(
+              code.includes('USER_ALREADY_EXISTS') ||
+                code.includes('EMAIL_ALREADY_EXISTS')
+                ? t('account_exists')
+                : code.includes('PASSWORD_TOO_SHORT') ||
+                    code.includes('PASSWORD_TOO_LONG')
+                  ? t('password_length')
+                  : t('sign_up_failed')
+            );
             setLoading(false);
           },
         }
       );
-    } catch (e: any) {
-      toast.error(e?.message || 'sign up failed');
+    } catch {
+      setFormError(t('sign_up_failed'));
       setLoading(false);
     }
   };
@@ -167,11 +180,21 @@ export function SignUp({
       </CardHeader>
       <CardContent>
         <div className="grid gap-4">
+          {!hasAuthMethod && (
+            <p
+              className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200"
+              role="status"
+            >
+              {t('auth_unavailable')}
+            </p>
+          )}
+
           {isEmailAuthEnabled && (
             <form
               className="grid gap-4"
-              onSubmit={(e) => {
-                e.preventDefault();
+              noValidate
+              onSubmit={(event) => {
+                event.preventDefault();
                 void handleSignUp();
               }}
             >
@@ -179,52 +202,165 @@ export function SignUp({
                 <Label htmlFor="name">{t('name_title')}</Label>
                 <Input
                   id="name"
+                  name="name"
                   type="text"
+                  autoComplete="name"
                   placeholder={t('name_placeholder')}
                   required
-                  onChange={(e) => {
-                    setName(e.target.value);
-                  }}
+                  disabled={loading}
+                  aria-invalid={Boolean(errors.name)}
+                  aria-describedby={errors.name ? 'name-error' : undefined}
                   value={name}
+                  onChange={(event) => {
+                    setName(event.target.value);
+                    setErrors((current) => ({ ...current, name: undefined }));
+                  }}
                 />
+                {errors.name && (
+                  <p
+                    id="name-error"
+                    className="text-destructive text-xs"
+                    role="alert"
+                  >
+                    {errors.name}
+                  </p>
+                )}
               </div>
 
               <div className="grid gap-2">
                 <Label htmlFor="email">{t('email_title')}</Label>
                 <Input
                   id="email"
+                  name="email"
                   type="email"
+                  inputMode="email"
+                  autoComplete="email"
                   placeholder={t('email_placeholder')}
                   required
-                  onChange={(e) => {
-                    setEmail(e.target.value);
-                  }}
+                  disabled={loading}
+                  aria-invalid={Boolean(errors.email)}
+                  aria-describedby={errors.email ? 'email-error' : undefined}
                   value={email}
+                  onChange={(event) => {
+                    setEmail(event.target.value);
+                    setErrors((current) => ({ ...current, email: undefined }));
+                  }}
                 />
-                {emailVerificationEnabled && (
-                  <p className="text-xs text-amber-600">
+                {errors.email ? (
+                  <p
+                    id="email-error"
+                    className="text-destructive text-xs"
+                    role="alert"
+                  >
+                    {errors.email}
+                  </p>
+                ) : emailVerificationEnabled ? (
+                  <p className="text-xs text-amber-700 dark:text-amber-300">
                     {t('email_verification_hint')}
+                  </p>
+                ) : null}
+              </div>
+
+              <PasswordInput
+                id="password"
+                label={t('password_title')}
+                placeholder={t('password_placeholder')}
+                autoComplete="new-password"
+                value={password}
+                error={errors.password}
+                hint={t('password_requirements')}
+                disabled={loading}
+                onChange={(value) => {
+                  setPassword(value);
+                  setErrors((current) => ({
+                    ...current,
+                    password: undefined,
+                  }));
+                }}
+              />
+
+              <PasswordInput
+                id="confirm-password"
+                label={t('confirm_password_title')}
+                placeholder={t('confirm_password_placeholder')}
+                autoComplete="new-password"
+                value={confirmPassword}
+                error={errors.confirmPassword}
+                disabled={loading}
+                onChange={(value) => {
+                  setConfirmPassword(value);
+                  setErrors((current) => ({
+                    ...current,
+                    confirmPassword: undefined,
+                  }));
+                }}
+              />
+
+              <div className="grid gap-2">
+                <div className="flex items-start gap-2">
+                  <Checkbox
+                    id="accept-terms"
+                    checked={acceptedTerms}
+                    disabled={loading}
+                    aria-invalid={Boolean(errors.terms)}
+                    aria-describedby={errors.terms ? 'terms-error' : undefined}
+                    onCheckedChange={(checked) => {
+                      setAcceptedTerms(checked === true);
+                      setErrors((current) => ({
+                        ...current,
+                        terms: undefined,
+                      }));
+                    }}
+                  />
+                  <Label
+                    htmlFor="accept-terms"
+                    className="text-muted-foreground block text-xs leading-5 font-normal"
+                  >
+                    {t('terms_prefix')}{' '}
+                    <Link
+                      href="/terms-of-service"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-foreground underline underline-offset-4"
+                    >
+                      {t('terms_of_service')}
+                    </Link>{' '}
+                    {t('terms_and')}{' '}
+                    <Link
+                      href="/privacy-policy"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-foreground underline underline-offset-4"
+                    >
+                      {t('privacy_policy')}
+                    </Link>
+                  </Label>
+                </div>
+                {errors.terms && (
+                  <p
+                    id="terms-error"
+                    className="text-destructive text-xs"
+                    role="alert"
+                  >
+                    {errors.terms}
                   </p>
                 )}
               </div>
 
-              <div className="grid gap-2">
-                <Label htmlFor="password">{t('password_title')}</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder={t('password_placeholder')}
-                  autoComplete="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-              </div>
+              {formError && (
+                <p className="text-destructive text-sm" role="alert">
+                  {formError}
+                </p>
+              )}
 
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? (
-                  <Loader2 size={16} className="animate-spin" />
+                  <>
+                    <Loader2 className="animate-spin" />
+                    <span>{t('signing_up')}</span>
+                  </>
                 ) : (
-                  <p>{t('sign_up_title')}</p>
+                  t('sign_up_title')
                 )}
               </Button>
             </form>
@@ -232,24 +368,20 @@ export function SignUp({
 
           <SocialProviders
             configs={configs}
-            callbackUrl={callbackUrl || '/'}
+            callbackUrl={callbackUrl}
             loading={loading}
             setLoading={setLoading}
           />
         </div>
       </CardContent>
-      {isEmailAuthEnabled && (
+      {hasAuthMethod && (
         <CardFooter>
-          <div className="flex w-full justify-center border-t py-4">
-            <p className="text-center text-xs text-neutral-500">
-              {t('already_have_account')}
-              <Link href="/sign-in" className="underline">
-                <span className="cursor-pointer dark:text-white/70">
-                  {t('sign_in_title')}
-                </span>
-              </Link>
-            </p>
-          </div>
+          <p className="w-full border-t pt-4 text-center text-xs text-neutral-500">
+            {t('already_have_account')}{' '}
+            <Link href={signInHref} className="underline underline-offset-4">
+              {t('sign_in_title')}
+            </Link>
+          </p>
         </CardFooter>
       )}
     </Card>

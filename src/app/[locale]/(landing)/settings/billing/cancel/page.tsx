@@ -14,14 +14,11 @@ import { Crumb } from '@/shared/types/blocks/common';
 import { Form } from '@/shared/types/blocks/form';
 
 export default async function CancelBillingPage({
-  params,
   searchParams,
 }: {
-  params: Promise<{ locale: string }>;
   searchParams: Promise<{ subscription_no: string }>;
 }) {
   const t = await getTranslations('settings.billing.cancel');
-  const { locale } = await params;
   const { subscription_no } = await searchParams;
 
   if (!subscription_no) {
@@ -69,42 +66,42 @@ export default async function CancelBillingPage({
     },
   ];
 
-  const handleCancelSubscription = async (data: FormData, passby: any) => {
+  const handleCancelSubscription = async () => {
     'use server';
 
-    const { subscription, user } = passby;
-    if (!user) {
+    const sessionUser = await getUserInfo();
+    if (!sessionUser) {
       throw new Error('no auth');
     }
-
-    if (!subscription || !subscription.subscriptionId) {
+    const ownedSubscription =
+      await findSubscriptionBySubscriptionNo(subscription_no);
+    if (!ownedSubscription || !ownedSubscription.subscriptionId) {
       throw new Error('invalid subscription');
     }
-
-    if (subscription.userId !== user.id) {
+    if (ownedSubscription.userId !== sessionUser.id) {
       throw new Error('no permission');
     }
 
     if (
-      subscription.status !== SubscriptionStatus.ACTIVE &&
-      subscription.status !== SubscriptionStatus.TRIALING
+      ownedSubscription.status !== SubscriptionStatus.ACTIVE &&
+      ownedSubscription.status !== SubscriptionStatus.TRIALING
     ) {
       throw new Error('subscription is not active or trialing');
     }
 
     const paymentService = await getPaymentService();
     const paymentProvider = paymentService.getProvider(
-      subscription.paymentProvider
+      ownedSubscription.paymentProvider
     );
 
     const result = await paymentProvider?.cancelSubscription?.({
-      subscriptionId: subscription.subscriptionId,
+      subscriptionId: ownedSubscription.subscriptionId,
     });
     if (!result) {
       throw new Error('cancel subscription failed');
     }
 
-    await updateSubscriptionBySubscriptionNo(subscription.subscriptionNo, {
+    await updateSubscriptionBySubscriptionNo(ownedSubscription.subscriptionNo, {
       status: SubscriptionStatus.CANCELED,
     });
 
@@ -149,10 +146,6 @@ export default async function CancelBillingPage({
       },
     ],
     data: subscription,
-    passby: {
-      subscription: subscription,
-      user: user,
-    },
     submit: {
       handler: handleCancelSubscription,
       button: {

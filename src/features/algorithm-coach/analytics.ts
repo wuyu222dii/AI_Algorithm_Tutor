@@ -1,10 +1,22 @@
 import { calculateProductMetrics } from './metrics';
+import {
+  COACH_ANALYTICS_KEY,
+  COACH_EXPERIMENT_KEY,
+  COACH_SESSION_KEY,
+  CoachStorageScope,
+  getScopedStorageKey,
+  GUEST_COACH_STORAGE_SCOPE,
+} from './storage';
 import { JsonValue, ProductEvent, ProductEventName } from './types';
 
-const ANALYTICS_KEY = 'algocoach:events:v1';
-const SESSION_KEY = 'algocoach:session-id';
-const EXPERIMENT_KEY = 'algocoach:hint-copy-variant';
 const MAX_STORED_EVENTS = 300;
+let activeStorageScope: CoachStorageScope | null = GUEST_COACH_STORAGE_SCOPE;
+
+export function setProductAnalyticsScope(
+  scope: CoachStorageScope | null
+): void {
+  activeStorageScope = scope;
+}
 
 function randomId(prefix: string): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -15,13 +27,15 @@ function randomId(prefix: string): string {
     .slice(2, 10)}`;
 }
 
-function getSessionId(): string {
+function getSessionId(scope: CoachStorageScope | null): string {
   if (typeof window === 'undefined') return 'server';
+  if (!scope) return 'session_pending';
   try {
-    const existing = window.sessionStorage.getItem(SESSION_KEY);
+    const sessionKey = getScopedStorageKey(COACH_SESSION_KEY, scope);
+    const existing = window.sessionStorage.getItem(sessionKey);
     if (existing) return existing;
     const next = randomId('session');
-    window.sessionStorage.setItem(SESSION_KEY, next);
+    window.sessionStorage.setItem(sessionKey, next);
     return next;
   } catch {
     return 'session_ephemeral';
@@ -37,18 +51,26 @@ function stableHash(value: string): number {
   return hash >>> 0;
 }
 
-export function getExperimentVariant(subjectId?: string): 'A' | 'B' {
+export function getExperimentVariant(
+  subjectId?: string,
+  scope: CoachStorageScope | null = activeStorageScope
+): 'A' | 'B' {
   if (typeof window === 'undefined') {
     return subjectId && stableHash(subjectId) % 2 === 1 ? 'B' : 'A';
   }
 
+  if (!scope) {
+    return subjectId && stableHash(subjectId) % 2 === 1 ? 'B' : 'A';
+  }
+
   try {
-    const existing = window.localStorage.getItem(EXPERIMENT_KEY);
+    const experimentKey = getScopedStorageKey(COACH_EXPERIMENT_KEY, scope);
+    const existing = window.localStorage.getItem(experimentKey);
     if (existing === 'A' || existing === 'B') return existing;
 
     const assignment =
-      stableHash(subjectId ?? getSessionId()) % 2 === 1 ? 'B' : 'A';
-    window.localStorage.setItem(EXPERIMENT_KEY, assignment);
+      stableHash(subjectId ?? getSessionId(scope)) % 2 === 1 ? 'B' : 'A';
+    window.localStorage.setItem(experimentKey, assignment);
     return assignment;
   } catch {
     return subjectId && stableHash(subjectId) % 2 === 1 ? 'B' : 'A';
@@ -61,13 +83,14 @@ export function createProductEvent(
     problemSlug?: string;
     properties?: Record<string, JsonValue>;
     sessionId?: string;
-  } = {}
+  } = {},
+  scope: CoachStorageScope | null = activeStorageScope
 ): ProductEvent {
   return {
     id: randomId('event'),
     name,
     timestamp: new Date().toISOString(),
-    sessionId: options.sessionId ?? getSessionId(),
+    sessionId: options.sessionId ?? getSessionId(scope),
     problemSlug: options.problemSlug,
     properties: options.properties,
   };
@@ -80,7 +103,8 @@ export function trackProductEvent(
     properties?: Record<string, JsonValue>;
     problemId?: string;
     [key: string]: JsonValue | Record<string, JsonValue> | undefined;
-  } = {}
+  } = {},
+  scope: CoachStorageScope | null = activeStorageScope
 ): ProductEvent {
   const aliases: Record<string, ProductEventName> = {
     activation: 'activated',
@@ -95,20 +119,25 @@ export function trackProductEvent(
   const directProperties = Object.fromEntries(
     Object.entries(options).filter(([key]) => !reserved.has(key))
   ) as Record<string, JsonValue>;
-  const event = createProductEvent(normalizedName, {
-    problemSlug: options.problemSlug ?? options.problemId,
-    properties:
-      options.properties ??
-      (Object.keys(directProperties).length ? directProperties : undefined),
-  });
-  if (typeof window === 'undefined') return event;
+  const event = createProductEvent(
+    normalizedName,
+    {
+      problemSlug: options.problemSlug ?? options.problemId,
+      properties:
+        options.properties ??
+        (Object.keys(directProperties).length ? directProperties : undefined),
+    },
+    scope
+  );
+  if (typeof window === 'undefined' || !scope) return event;
 
   try {
+    const analyticsKey = getScopedStorageKey(COACH_ANALYTICS_KEY, scope);
     const current = JSON.parse(
-      window.localStorage.getItem(ANALYTICS_KEY) ?? '[]'
+      window.localStorage.getItem(analyticsKey) ?? '[]'
     ) as ProductEvent[];
     window.localStorage.setItem(
-      ANALYTICS_KEY,
+      analyticsKey,
       JSON.stringify([...current, event].slice(-MAX_STORED_EVENTS))
     );
     window.dispatchEvent(
@@ -122,12 +151,20 @@ export function trackProductEvent(
   return event;
 }
 
-export function clearProductAnalytics(): void {
-  if (typeof window === 'undefined') return;
+export function clearProductAnalytics(
+  scope: CoachStorageScope | null = activeStorageScope
+): void {
+  if (typeof window === 'undefined' || !scope) return;
   try {
-    window.localStorage.removeItem(ANALYTICS_KEY);
-    window.localStorage.removeItem(EXPERIMENT_KEY);
-    window.sessionStorage.removeItem(SESSION_KEY);
+    window.localStorage.removeItem(
+      getScopedStorageKey(COACH_ANALYTICS_KEY, scope)
+    );
+    window.localStorage.removeItem(
+      getScopedStorageKey(COACH_EXPERIMENT_KEY, scope)
+    );
+    window.sessionStorage.removeItem(
+      getScopedStorageKey(COACH_SESSION_KEY, scope)
+    );
   } catch {
     // Reset remains best-effort in restricted browser storage contexts.
   }

@@ -47,6 +47,7 @@ import { cn } from '@/shared/lib/utils';
 import { getExperimentVariant, trackProductEvent } from '../analytics';
 import { getProblemBySlug } from '../data/problems';
 import { runCode } from '../runner';
+import { loadImportedProblem } from '../storage';
 import { useCoachStore } from '../store';
 import type { CoachResponse, CodeRunResult, Language, Problem } from '../types';
 import { CodeEditor } from './code-editor';
@@ -215,20 +216,17 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
 
   useEffect(() => {
     if (slug !== 'imported-draft') return;
+    if (!coach.storageScope) {
+      return;
+    }
     const timer = window.setTimeout(() => {
-      try {
-        const raw = window.localStorage.getItem(
-          'algocoach.imported-problem.v1'
-        );
-        setProblem(raw ? (JSON.parse(raw) as Problem) : null);
-      } catch {
-        setProblem(null);
-      } finally {
-        setLoaded(true);
-      }
+      setProblem(
+        loadImportedProblem(undefined, coach.storageScope ?? undefined)
+      );
+      setLoaded(true);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [slug]);
+  }, [coach.storageScope, slug]);
 
   useEffect(() => {
     if (!problem) return;
@@ -334,7 +332,10 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
           code,
           runResult,
           ...(action === 'hint' ? { hintLevel: nextHintLevel } : {}),
-          experimentVariant: getExperimentVariant(problem.slug),
+          experimentVariant: getExperimentVariant(
+            problem.slug,
+            coach.storageScope
+          ),
           locale,
         }),
       });
@@ -362,13 +363,21 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
         problemSlug: problem.slug,
       });
       if (action === 'counterexample') {
-        trackProductEvent('counterexample_requested', {
-          problemSlug: problem.slug,
-        });
+        trackProductEvent(
+          'counterexample_requested',
+          {
+            problemSlug: problem.slug,
+          },
+          coach.storageScope
+        );
       } else if (action === 'review_card') {
-        trackProductEvent('review_card_created', {
-          problemSlug: problem.slug,
-        });
+        trackProductEvent(
+          'review_card_created',
+          {
+            problemSlug: problem.slug,
+          },
+          coach.storageScope
+        );
       }
       if (action === 'hint') {
         setHintLevel(nextHintLevel);

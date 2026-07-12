@@ -1,7 +1,7 @@
 export const COACH_PROMPT_VERSION = 'coach-v1.0';
 export const COACH_MODEL_WHITELIST = [
   'google/gemini-2.5-flash',
-  'openai/gpt-5',
+  'openai/gpt-5.5',
   'anthropic/claude-4.5-sonnet',
 ] as const;
 export const DEFAULT_COACH_MODEL = COACH_MODEL_WHITELIST[0];

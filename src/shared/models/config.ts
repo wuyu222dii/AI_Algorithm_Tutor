@@ -108,7 +108,7 @@ export async function getAllConfigs(): Promise<Configs> {
 }
 
 export async function getPublicConfigs(): Promise<Configs> {
-  let allConfigs = await getAllConfigs();
+  const allConfigs = await getAllConfigs();
 
   const publicConfigs: Record<string, string> = {};
 
@@ -119,9 +119,41 @@ export async function getPublicConfigs(): Promise<Configs> {
     }
   }
 
-  const configs = {
-    ...publicConfigs,
-  };
+  const emailAuthEnabled = allConfigs.email_auth_enabled !== 'false';
+  const resendConfigured = Boolean(
+    allConfigs.resend_api_key?.trim() && allConfigs.resend_sender_email?.trim()
+  );
+  const googleAuthReady = Boolean(
+    allConfigs.google_auth_enabled === 'true' &&
+      allConfigs.google_client_id?.trim() &&
+      allConfigs.google_client_secret?.trim()
+  );
+  const githubAuthReady = Boolean(
+    allConfigs.github_auth_enabled === 'true' &&
+      allConfigs.github_client_id?.trim() &&
+      allConfigs.github_client_secret?.trim()
+  );
 
-  return configs;
+  // Only expose capability flags and public identifiers. Provider secrets and
+  // operational configuration must never be serialized to the browser.
+  publicConfigs.email_auth_enabled = emailAuthEnabled ? 'true' : 'false';
+  publicConfigs.email_verification_enabled =
+    emailAuthEnabled &&
+    resendConfigured &&
+    allConfigs.email_verification_enabled === 'true'
+      ? 'true'
+      : 'false';
+  publicConfigs.password_reset_enabled =
+    emailAuthEnabled && resendConfigured ? 'true' : 'false';
+  publicConfigs.google_auth_enabled = googleAuthReady ? 'true' : 'false';
+  publicConfigs.google_one_tap_enabled =
+    googleAuthReady && allConfigs.google_one_tap_enabled === 'true'
+      ? 'true'
+      : 'false';
+  publicConfigs.google_client_id = googleAuthReady
+    ? allConfigs.google_client_id
+    : '';
+  publicConfigs.github_auth_enabled = githubAuthReady ? 'true' : 'false';
+
+  return publicConfigs;
 }

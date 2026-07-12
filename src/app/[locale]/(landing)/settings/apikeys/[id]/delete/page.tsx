@@ -58,32 +58,18 @@ export default async function DeleteApiKeyPage({
         },
       },
     ],
-    passby: {
-      user: user,
-      apikey: apikey,
-    },
     data: apikey,
     submit: {
-      handler: async (data: FormData, passby: any) => {
+      handler: async () => {
         'use server';
 
-        const { user, apikey } = passby;
-
-        if (!apikey) {
-          throw new Error('apikey not found');
-        }
-
-        if (!user) {
+        const sessionUser = await getUserInfo();
+        if (!sessionUser) {
           throw new Error('no auth');
         }
-
-        if (apikey.userId !== user.id) {
+        const ownedApikey = await findApikeyById(id);
+        if (!ownedApikey || ownedApikey.userId !== sessionUser.id) {
           throw new Error('no permission');
-        }
-
-        const title = data.get('title') as string;
-        if (!title?.trim()) {
-          throw new Error('title is required');
         }
 
         const updatedApikey: UpdateApikey = {
@@ -91,7 +77,7 @@ export default async function DeleteApiKeyPage({
           deletedAt: new Date(),
         };
 
-        await updateApikey(apikey.id, updatedApikey);
+        await updateApikey(ownedApikey.id, updatedApikey);
 
         return {
           status: 'success',

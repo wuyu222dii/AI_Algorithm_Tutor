@@ -5,12 +5,12 @@ import { RiGithubFill, RiGoogleFill } from 'react-icons/ri';
 import { toast } from 'sonner';
 
 import { signIn } from '@/core/auth/client';
-import { useRouter } from '@/core/i18n/navigation';
-import { defaultLocale } from '@/config/locale';
 import { Button } from '@/shared/components/ui/button';
 import { useAppContext } from '@/shared/contexts/app';
 import { cn } from '@/shared/lib/utils';
 import { Button as ButtonType } from '@/shared/types/blocks/common';
+
+import { getLocalizedCallback } from './auth-form-utils';
 
 export function SocialProviders({
   configs,
@@ -24,44 +24,31 @@ export function SocialProviders({
   setLoading: (loading: boolean) => void;
 }) {
   const t = useTranslations('common.sign');
-  const router = useRouter();
+  const locale = useLocale();
 
   const { setIsShowSignModal } = useAppContext();
-
-  if (callbackUrl) {
-    const locale = useLocale();
-    if (
-      locale !== defaultLocale &&
-      callbackUrl.startsWith('/') &&
-      !callbackUrl.startsWith(`/${locale}`)
-    ) {
-      callbackUrl = `/${locale}${callbackUrl}`;
-    }
-  }
+  const localizedCallbackUrl = getLocalizedCallback(callbackUrl, locale);
 
   const handleSignIn = async ({ provider }: { provider: string }) => {
-    await signIn.social(
-      {
-        provider: provider,
-        callbackURL: callbackUrl,
-      },
-      {
-        onRequest: (ctx) => {
-          setLoading(true);
+    try {
+      await signIn.social(
+        {
+          provider,
+          callbackURL: localizedCallbackUrl,
         },
-        onResponse: (ctx) => {
-          // Do NOT reset loading here; navigation may not have completed yet.
-        },
-        onSuccess: (ctx) => {
-          // Close modal if any; navigation will proceed.
-          setIsShowSignModal(false);
-        },
-        onError: (e: any) => {
-          toast.error(e?.error?.message || 'sign in failed');
-          setLoading(false);
-        },
-      }
-    );
+        {
+          onRequest: () => setLoading(true),
+          onSuccess: () => setIsShowSignModal(false),
+          onError: () => {
+            toast.error(t('social_sign_in_failed'));
+            setLoading(false);
+          },
+        }
+      );
+    } catch {
+      toast.error(t('social_sign_in_failed'));
+      setLoading(false);
+    }
   };
 
   const providers: ButtonType[] = [];

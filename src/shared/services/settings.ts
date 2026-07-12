@@ -937,6 +937,7 @@ export async function getSettings() {
 
 export const publicSettingNames = [
   'email_auth_enabled',
+  'email_verification_enabled',
   'google_auth_enabled',
   'google_one_tap_enabled',
   'google_client_id',

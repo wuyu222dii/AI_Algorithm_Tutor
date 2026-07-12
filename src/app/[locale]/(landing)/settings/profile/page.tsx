@@ -32,32 +32,36 @@ export default async function ProfilePage() {
       },
     ],
     data: user,
-    passby: {
-      user: user,
-    },
     submit: {
-      handler: async (data: FormData, passby: any) => {
+      handler: async (data: FormData) => {
         'use server';
 
-        const { user } = passby;
-        if (!user) {
+        const sessionUser = await getUserInfo();
+        if (!sessionUser) {
           throw new Error('no auth');
         }
 
-        const name = data.get('name') as string;
-        if (!name?.trim()) {
+        const nameValue = data.get('name');
+        const name = typeof nameValue === 'string' ? nameValue.trim() : '';
+        if (!name) {
           throw new Error('name is required');
         }
+        if (name.length > 80) {
+          throw new Error('name is too long');
+        }
 
-        const image = data.get('image');
-        console.log('image', image, typeof image);
+        const imageValue = data.get('image');
+        const image =
+          typeof imageValue === 'string'
+            ? imageValue.trim().slice(0, 2048)
+            : '';
 
         const updatedUser: UpdateUser = {
-          name: name.trim(),
-          image: image as string,
+          name,
+          image,
         };
 
-        await updateUser(user.id, updatedUser);
+        await updateUser(sessionUser.id, updatedUser);
 
         return {
           status: 'success',

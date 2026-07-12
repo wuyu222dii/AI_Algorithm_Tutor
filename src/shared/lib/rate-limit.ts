@@ -16,10 +16,27 @@ type MinIntervalOptions = {
 };
 
 type Store = Map<string, number>;
+type WindowStore = Map<
+  string,
+  {
+    count: number;
+    resetAt: number;
+  }
+>;
+
+export type WindowRateLimitOptions = {
+  windowMs: number;
+  max: number;
+  keyPrefix?: string;
+  extraKey?: string;
+  identity?: 'source' | 'extra' | 'source-and-extra';
+};
+
+const MAX_RATE_LIMIT_ENTRIES = 10_000;
 
 declare global {
-  // eslint-disable-next-line no-var
   var __minIntervalRateLimitStore: Store | undefined;
+  var __windowRateLimitStore: WindowStore | undefined;
 }
 
 function getClientIpFromRequest(request: Request): string {
@@ -41,6 +58,28 @@ function getStore(): Store {
     globalThis.__minIntervalRateLimitStore = new Map();
   }
   return globalThis.__minIntervalRateLimitStore;
+}
+
+function getWindowStore(): WindowStore {
+  if (!globalThis.__windowRateLimitStore) {
+    globalThis.__windowRateLimitStore = new Map();
+  }
+  return globalThis.__windowRateLimitStore;
+}
+
+function pruneWindowStore(store: WindowStore, now: number) {
+  for (const [key, entry] of store) {
+    if (entry.resetAt <= now) store.delete(key);
+  }
+
+  if (store.size < MAX_RATE_LIMIT_ENTRIES) return;
+  const overflow = store.size - MAX_RATE_LIMIT_ENTRIES + 1;
+  let removed = 0;
+  for (const key of store.keys()) {
+    store.delete(key);
+    removed += 1;
+    if (removed >= overflow) break;
+  }
 }
 
 function buildKey(request: Request, opts: MinIntervalOptions): string {
@@ -93,6 +132,68 @@ export function enforceMinIntervalRateLimit(
     }
   }
 
+  if (store.size >= MAX_RATE_LIMIT_ENTRIES) {
+    const oldestKey = store.keys().next().value;
+    if (typeof oldestKey === 'string') store.delete(oldestKey);
+  }
   store.set(key, now);
+  return null;
+}
+
+/**
+ * Bounded in-memory fixed-window limiter for authentication mutations.
+ * Account rules should use `extra`; source rules should use `source`.
+ */
+export function enforceWindowRateLimit(
+  request: Request,
+  opts: WindowRateLimitOptions
+): Response | null {
+  const windowMs = Math.max(1_000, Number(opts.windowMs) || 0);
+  const max = Math.max(1, Math.floor(Number(opts.max) || 0));
+  if (!windowMs || !max) return null;
+
+  const now = Date.now();
+  const store = getWindowStore();
+  pruneWindowStore(store, now);
+
+  const url = new URL(request.url);
+  const identity = opts.identity ?? 'source-and-extra';
+  const source = getClientIpFromRequest(request) || 'unknown-source';
+  const extra = opts.extraKey || 'no-extra';
+  const identityKey =
+    identity === 'source'
+      ? source
+      : identity === 'extra'
+        ? extra
+        : `${source}|${extra}`;
+  const key = `${opts.keyPrefix || 'window'}|${request.method}|${url.pathname}|${identityKey}`;
+  const current = store.get(key);
+  const entry =
+    !current || current.resetAt <= now
+      ? { count: 0, resetAt: now + windowMs }
+      : current;
+
+  if (entry.count >= max) {
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil((entry.resetAt - now) / 1000)
+    );
+    return Response.json(
+      {
+        error: 'too_many_requests',
+        message: `Please retry after ${retryAfterSeconds}s.`,
+      },
+      {
+        status: 429,
+        headers: {
+          'cache-control': 'no-store',
+          'retry-after': String(retryAfterSeconds),
+        },
+      }
+    );
+  }
+
+  entry.count += 1;
+  store.set(key, entry);
   return null;
 }

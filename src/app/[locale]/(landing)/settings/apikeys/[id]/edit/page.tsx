@@ -2,7 +2,6 @@ import { getTranslations } from 'next-intl/server';
 
 import { Empty } from '@/shared/blocks/common';
 import { FormCard } from '@/shared/blocks/form';
-import { getNonceStr } from '@/shared/lib/hash';
 import {
   findApikeyById,
   updateApikey,
@@ -45,41 +44,32 @@ export default async function EditApiKeyPage({
         validation: { required: true },
       },
     ],
-    passby: {
-      user: user,
-      apikey: apikey,
-    },
     data: apikey,
     submit: {
-      handler: async (data: FormData, passby: any) => {
+      handler: async (data: FormData) => {
         'use server';
 
-        const { user, apikey } = passby;
-
-        if (!apikey) {
-          throw new Error('apikey not found');
-        }
-
-        if (!user) {
+        const sessionUser = await getUserInfo();
+        if (!sessionUser) {
           throw new Error('no auth');
         }
-
-        if (apikey.userId !== user.id) {
+        const ownedApikey = await findApikeyById(id);
+        if (!ownedApikey || ownedApikey.userId !== sessionUser.id) {
           throw new Error('no permission');
         }
 
-        const title = data.get('title') as string;
-        if (!title?.trim()) {
+        const titleValue = data.get('title');
+        const title =
+          typeof titleValue === 'string' ? titleValue.trim().slice(0, 80) : '';
+        if (!title) {
           throw new Error('title is required');
         }
 
-        const key = `sk-${getNonceStr(32)}`;
-
         const updatedApikey: UpdateApikey = {
-          title: title.trim(),
+          title,
         };
 
-        await updateApikey(apikey.id, updatedApikey);
+        await updateApikey(ownedApikey.id, updatedApikey);
 
         return {
           status: 'success',

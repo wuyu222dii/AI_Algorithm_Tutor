@@ -4,22 +4,17 @@ import { redirect } from '@/core/i18n/navigation';
 import { envConfigs } from '@/config';
 import { defaultLocale } from '@/config/locale';
 import { SignUp } from '@/shared/blocks/sign/sign-up';
-import { getConfigs } from '@/shared/models/config';
+import { getSafeInternalCallback } from '@/shared/lib/auth-redirect';
+import { getPublicConfigs } from '@/shared/models/config';
 import { getSignUser } from '@/shared/models/user';
 
-function safeInternalPath(raw?: string) {
-  if (!raw) return '/';
-  if (!raw.startsWith('/')) return '/';
-  return raw;
-}
-
 function stripLocalePrefix(path: string, locale: string) {
-  if (!path?.startsWith('/')) return '/';
-  if (locale === defaultLocale) return path;
-  if (path === `/${locale}`) return '/';
-  if (path.startsWith(`/${locale}/`))
-    return path.slice(locale.length + 1) || '/';
-  return path;
+  let stripped = path;
+  if (path === `/${locale}`) stripped = '/';
+  else if (path.startsWith(`/${locale}/`)) {
+    stripped = path.slice(locale.length + 1) || '/';
+  }
+  return getSafeInternalCallback(stripped, '/');
 }
 
 export async function generateMetadata({
@@ -51,15 +46,16 @@ export default async function SignUpPage({
 }) {
   const { callbackUrl } = await searchParams;
   const { locale } = await params;
+  const safeCallbackUrl = getSafeInternalCallback(callbackUrl, '/');
 
   // If user is already signed in, don't show sign-up form again.
   const sessionUser = await getSignUser();
   if (sessionUser) {
-    const target = stripLocalePrefix(safeInternalPath(callbackUrl), locale);
+    const target = stripLocalePrefix(safeCallbackUrl, locale);
     redirect({ href: target || '/', locale });
   }
 
-  const configs = await getConfigs();
+  const configs = await getPublicConfigs();
 
-  return <SignUp configs={configs} callbackUrl={callbackUrl || '/'} />;
+  return <SignUp configs={configs} callbackUrl={safeCallbackUrl} />;
 }

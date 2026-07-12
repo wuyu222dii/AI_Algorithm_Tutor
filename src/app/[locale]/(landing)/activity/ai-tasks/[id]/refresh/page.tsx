@@ -1,9 +1,8 @@
-import { getTranslations } from 'next-intl/server';
-
 import { redirect } from '@/core/i18n/navigation';
 import { AITaskStatus } from '@/extensions/ai';
 import { Empty } from '@/shared/blocks/common';
 import { findAITaskById, updateAITaskById } from '@/shared/models/ai_task';
+import { getUserInfo } from '@/shared/models/user';
 import { getAIService } from '@/shared/services/ai';
 
 export default async function RefreshAITaskPage({
@@ -12,10 +11,19 @@ export default async function RefreshAITaskPage({
   params: Promise<{ locale: string; id: string }>;
 }) {
   const { locale, id } = await params;
-  const t = await getTranslations('activity.ai-tasks');
+  const user = await getUserInfo();
+  if (!user) {
+    return <Empty message="Task not found" />;
+  }
 
   const task = await findAITaskById(id);
-  if (!task || !task.taskId || !task.provider || !task.status) {
+  if (
+    !task ||
+    task.userId !== user.id ||
+    !task.taskId ||
+    !task.provider ||
+    !task.status
+  ) {
     return <Empty message="Task not found" />;
   }
 

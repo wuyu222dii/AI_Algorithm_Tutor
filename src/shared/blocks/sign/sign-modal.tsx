@@ -33,7 +33,7 @@ export function SignModal({ callbackUrl = '/' }: { callbackUrl?: string }) {
   if (isDesktop) {
     return (
       <Dialog open={isShowSignModal} onOpenChange={setIsShowSignModal}>
-        <DialogContent className="sm:max-w-[425px]">
+        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-[425px]">
           <DialogHeader>
             <DialogTitle>{t('sign_in_title')}</DialogTitle>
             <DialogDescription>{t('sign_in_description')}</DialogDescription>
@@ -46,12 +46,12 @@ export function SignModal({ callbackUrl = '/' }: { callbackUrl?: string }) {
 
   return (
     <Drawer open={isShowSignModal} onOpenChange={setIsShowSignModal}>
-      <DrawerContent>
+      <DrawerContent className="overflow-y-auto overscroll-contain">
         <DrawerHeader className="text-left">
           <DrawerTitle>{t('sign_in_title')}</DrawerTitle>
           <DrawerDescription>{t('sign_in_description')}</DrawerDescription>
         </DrawerHeader>
-        <SignInForm callbackUrl={callbackUrl} className="mt-8 px-4" />
+        <SignInForm callbackUrl={callbackUrl} className="px-4" />
         <DrawerFooter className="pt-4">
           <DrawerClose asChild>
             <Button variant="outline">{t('cancel_title')}</Button>

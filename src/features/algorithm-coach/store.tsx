@@ -14,12 +14,17 @@ import {
 import {
   clearProductAnalytics,
   createProductEvent,
+  setProductAnalyticsScope,
   trackProductEvent,
 } from './analytics';
 import { calculateProductMetrics } from './metrics';
 import {
+  claimGuestCoachData,
   clearCoachState,
+  clearImportedProblem,
+  CoachStorageScope,
   createInitialCoachState,
+  GUEST_COACH_STORAGE_SCOPE,
   loadCoachState,
   saveCoachState,
 } from './storage';
@@ -70,6 +75,7 @@ export interface CoachStoreValue {
   state: CoachState;
   metrics: ProductMetrics;
   hydrated: boolean;
+  storageScope: CoachStorageScope | null;
   completeOnboarding: (profile: OnboardingInput) => void;
   setPreferredLanguage: (language: Language) => void;
   saveCode: (problemSlug: string, language: Language, code: string) => void;
@@ -99,26 +105,67 @@ function createSession(problemSlug: string) {
   };
 }
 
-export function CoachProvider({ children }: { children: ReactNode }) {
+export function CoachProvider({
+  children,
+  storageScope = GUEST_COACH_STORAGE_SCOPE,
+}: {
+  children: ReactNode;
+  storageScope?: CoachStorageScope | null;
+}) {
   const [state, setState] = useState<CoachState>(createInitialCoachState);
   const stateRef = useRef(state);
-  const [hydrated, setHydrated] = useState(false);
+  const activeScopeRef = useRef<CoachStorageScope | null>(null);
+  const [hydratedScope, setHydratedScope] = useState<CoachStorageScope | null>(
+    null
+  );
+  const hydrated = Boolean(
+    storageScope && hydratedScope && storageScope === hydratedScope
+  );
 
   useEffect(() => {
+    let cancelled = false;
+    activeScopeRef.current = null;
+    setProductAnalyticsScope(null);
+
+    if (!storageScope) return;
+
     const timeout = window.setTimeout(() => {
-      setState(loadCoachState());
-      setHydrated(true);
+      claimGuestCoachData(storageScope);
+      const nextState = loadCoachState(undefined, storageScope);
+      if (cancelled) return;
+
+      activeScopeRef.current = storageScope;
+      stateRef.current = nextState;
+      setProductAnalyticsScope(storageScope);
+      setState(nextState);
+      setHydratedScope(storageScope);
     }, 0);
-    return () => window.clearTimeout(timeout);
-  }, []);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+      if (activeScopeRef.current === storageScope) {
+        activeScopeRef.current = null;
+        setProductAnalyticsScope(null);
+      }
+    };
+  }, [storageScope]);
 
   useEffect(() => {
     stateRef.current = state;
-    if (hydrated) saveCoachState(state);
-  }, [hydrated, state]);
+    const activeScope = activeScopeRef.current;
+    if (activeScope && hydratedScope === activeScope) {
+      saveCoachState(state, undefined, activeScope);
+    }
+  }, [hydratedScope, state]);
 
   useEffect(() => {
-    const flush = () => saveCoachState(stateRef.current);
+    const flush = () => {
+      const activeScope = activeScopeRef.current;
+      if (activeScope) {
+        saveCoachState(stateRef.current, undefined, activeScope);
+      }
+    };
     window.addEventListener('pagehide', flush);
     return () => window.removeEventListener('pagehide', flush);
   }, []);
@@ -386,8 +433,11 @@ export function CoachProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const resetData = useCallback(() => {
-    clearCoachState();
-    clearProductAnalytics();
+    const activeScope = activeScopeRef.current;
+    if (!activeScope) return;
+    clearCoachState(undefined, activeScope);
+    clearProductAnalytics(activeScope);
+    clearImportedProblem(undefined, activeScope);
     setState(createInitialCoachState());
   }, []);
 
@@ -396,6 +446,7 @@ export function CoachProvider({ children }: { children: ReactNode }) {
       state,
       metrics: calculateProductMetrics(state),
       hydrated,
+      storageScope: hydrated ? storageScope : null,
       completeOnboarding,
       setPreferredLanguage,
       saveCode,
@@ -409,6 +460,7 @@ export function CoachProvider({ children }: { children: ReactNode }) {
     [
       state,
       hydrated,
+      storageScope,
       completeOnboarding,
       setPreferredLanguage,
       saveCode,

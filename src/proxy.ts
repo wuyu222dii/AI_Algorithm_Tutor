@@ -3,6 +3,7 @@ import { getSessionCookie } from 'better-auth/cookies';
 import createIntlMiddleware from 'next-intl/middleware';
 
 import { routing } from '@/core/i18n/config';
+import { getSafeInternalCallback } from '@/shared/lib/auth-redirect';
 import { legacyFeaturesEnabled } from '@/shared/lib/legacy-features';
 
 const intlMiddleware = createIntlMiddleware(routing);
@@ -13,6 +14,21 @@ const legacyPagePrefixes = [
   '/chat',
   '/pricing',
 ];
+const authFlowPagePrefixes = [
+  '/auth',
+  '/sign-in',
+  '/sign-up',
+  '/sign-out',
+  '/verify-email',
+  '/forgot-password',
+  '/reset-password',
+];
+
+function matchesPagePrefix(pathname: string, prefixes: string[]) {
+  return prefixes.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  );
+}
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -58,7 +74,9 @@ export async function proxy(request: NextRequest) {
         request.url
       );
       // Add the current path (including search params) as callback - use relative path for multi-language support
-      const callbackPath = pathWithoutLocale + request.nextUrl.search;
+      const callbackPath = getSafeInternalCallback(
+        pathWithoutLocale + request.nextUrl.search
+      );
       signInUrl.searchParams.set('callbackUrl', callbackPath);
       return NextResponse.redirect(signInUrl);
     }
@@ -73,6 +91,22 @@ export async function proxy(request: NextRequest) {
   intlResponse.headers.set('x-pathname', request.nextUrl.pathname);
   intlResponse.headers.set('x-url', request.url);
 
+  const isAuthFlowPage = matchesPagePrefix(
+    pathWithoutLocale,
+    authFlowPagePrefixes
+  );
+
+  if (isAuthFlowPage) {
+    intlResponse.headers.set(
+      'Cache-Control',
+      'private, no-store, no-cache, max-age=0, must-revalidate'
+    );
+    intlResponse.headers.set('CDN-Cache-Control', 'no-store');
+    intlResponse.headers.set('Cloudflare-CDN-Cache-Control', 'no-store');
+    intlResponse.headers.set('Pragma', 'no-cache');
+    intlResponse.headers.set('Expires', '0');
+  }
+
   // Remove Set-Cookie from public pages to allow caching
   // We exclude admin, settings, activity, and auth pages from this behavior
   if (
@@ -80,7 +114,7 @@ export async function proxy(request: NextRequest) {
     !pathWithoutLocale.startsWith('/settings') &&
     !pathWithoutLocale.startsWith('/activity') &&
     !pathWithoutLocale.startsWith('/sign-') &&
-    !pathWithoutLocale.startsWith('/auth')
+    !isAuthFlowPage
   ) {
     intlResponse.headers.delete('Set-Cookie');
 

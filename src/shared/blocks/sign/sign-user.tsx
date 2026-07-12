@@ -37,10 +37,12 @@ export function SignUser({
   isScrolled,
   signButtonSize = 'sm',
   userNav,
+  callbackUrl = '/',
 }: {
   isScrolled?: boolean;
   signButtonSize?: 'default' | 'sm' | 'lg' | 'icon';
   userNav?: UserNav;
+  callbackUrl?: string;
 }) {
   const t = useTranslations('common.sign');
   const router = useRouter();
@@ -76,12 +78,12 @@ export function SignUser({
 
   useEffect(() => {
     fetchConfigs();
-  }, []);
+  }, [fetchConfigs]);
 
   // set is check sign
   useEffect(() => {
     setIsCheckSign(isPending);
-  }, [isPending]);
+  }, [isPending, setIsCheckSign]);
 
   // show one tap if not initialized
   useEffect(() => {
@@ -96,7 +98,7 @@ export function SignUser({
       oneTapInitialized.current = true;
       showOneTap(configs);
     }
-  }, [configs, session, isPending]);
+  }, [configs, session, isPending, showOneTap]);
 
   // set user
   useEffect(() => {
@@ -148,17 +150,23 @@ export function SignUser({
             <Button
               variant="ghost"
               className="relative h-10 w-10 rounded-full p-0"
+              aria-label={t('account_menu')}
+              title={t('account_menu')}
             >
               <Avatar>
                 <AvatarImage
                   src={displayUser.image || ''}
                   alt={displayUser.name || ''}
                 />
-                <AvatarFallback>{displayUser.name.charAt(0)}</AvatarFallback>
+                <AvatarFallback>
+                  {displayUser.name?.charAt(0) ||
+                    displayUser.email?.charAt(0) ||
+                    'U'}
+                </AvatarFallback>
               </Avatar>
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent>
+          <DropdownMenuContent align="end">
             {userNav?.show_name && (
               <>
                 <DropdownMenuItem asChild>
@@ -244,19 +252,19 @@ export function SignUser({
           </DropdownMenuContent>
         </DropdownMenu>
       ) : (
-        <div className="flex w-full flex-col space-y-3 sm:flex-row sm:gap-3 sm:space-y-0 md:w-fit">
+        <div className="flex shrink-0 items-center">
           <Button
-            asChild
+            type="button"
             size={signButtonSize}
             className={cn(
-              'border-foreground/10 ml-4 cursor-pointer ring-0',
+              'border-foreground/10 cursor-pointer ring-0',
               isScrolled && 'lg:hidden'
             )}
             onClick={() => setIsShowSignModal(true)}
           >
-            <span>{t('sign_in_title')}</span>
+            {t('sign_in_title')}
           </Button>
-          <SignModal />
+          <SignModal callbackUrl={callbackUrl} />
         </div>
       )}
     </>

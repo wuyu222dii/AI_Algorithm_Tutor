@@ -5,6 +5,7 @@ import { getLocale } from 'next-intl/server';
 import { db } from '@/core/db';
 import { envConfigs } from '@/config';
 import * as schema from '@/config/db/schema';
+import { ResetPasswordEmail } from '@/shared/blocks/email/reset-password';
 import { VerifyEmail } from '@/shared/blocks/email/verify-email';
 import {
   getCookieFromCtx,
@@ -22,6 +23,40 @@ import { grantRoleForNewUser } from '@/shared/services/rbac';
 // and to add a server-side throttle beyond any client-side cooldown.
 const recentVerificationEmailSentAt = new Map<string, number>();
 const VERIFICATION_EMAIL_MIN_INTERVAL_MS = 60_000;
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_PASSWORD_LENGTH = 128;
+
+function getEmailLocale(user: any, request?: Request): 'zh' | 'en' {
+  const userLocale = String(user?.locale || '').toLowerCase();
+  const acceptedLocale = String(
+    request?.headers.get('accept-language') || ''
+  ).toLowerCase();
+  return userLocale.startsWith('zh') || acceptedLocale.startsWith('zh')
+    ? 'zh'
+    : 'en';
+}
+
+function getBrandLogoUrl() {
+  if (!envConfigs.app_logo) return undefined;
+  if (envConfigs.app_logo.startsWith('http')) return envConfigs.app_logo;
+
+  try {
+    return new URL(envConfigs.app_logo, envConfigs.app_url).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function assertEmailSent(
+  result: { success: boolean; error?: string },
+  purpose: 'verification' | 'password reset'
+) {
+  if (!result.success) {
+    throw new Error(
+      `${purpose} email delivery failed${result.error ? `: ${result.error}` : ''}`
+    );
+  }
+}
 
 // Static auth options - NO database connection
 // This ensures zero database calls during build time
@@ -62,6 +97,8 @@ const authOptions = {
   },
   emailAndPassword: {
     enabled: true,
+    minPasswordLength: MIN_PASSWORD_LENGTH,
+    maxPasswordLength: MAX_PASSWORD_LENGTH,
   },
   logger: {
     verboseLogging: false,
@@ -72,8 +109,15 @@ const authOptions = {
 
 // get auth options with configs
 export async function getAuthOptions(configs: Record<string, string>) {
+  const emailAuthEnabled = configs.email_auth_enabled !== 'false';
+  const resendConfigured = Boolean(
+    configs.resend_api_key?.trim() && configs.resend_sender_email?.trim()
+  );
   const emailVerificationEnabled =
-    configs.email_verification_enabled === 'true' && !!configs.resend_api_key;
+    emailAuthEnabled &&
+    configs.email_verification_enabled === 'true' &&
+    resendConfigured;
+  const passwordResetEnabled = emailAuthEnabled && resendConfigured;
 
   return {
     ...authOptions,
@@ -148,10 +192,40 @@ export async function getAuthOptions(configs: Record<string, string>) {
       },
     },
     emailAndPassword: {
-      enabled: configs.email_auth_enabled !== 'false',
+      enabled: emailAuthEnabled,
+      minPasswordLength: MIN_PASSWORD_LENGTH,
+      maxPasswordLength: MAX_PASSWORD_LENGTH,
       requireEmailVerification: emailVerificationEnabled,
       // Avoid creating a session immediately after sign up when verification is required.
       autoSignIn: emailVerificationEnabled ? false : true,
+      resetPasswordTokenExpiresIn: 60 * 60,
+      revokeSessionsOnPasswordReset: true,
+      ...(passwordResetEnabled
+        ? {
+            sendResetPassword: async (
+              { user, url }: { user: any; url: string; token: string },
+              request?: Request
+            ) => {
+              const locale = getEmailLocale(user, request);
+              const emailService = await getEmailService(configs as any);
+              const result = await emailService.sendEmail({
+                to: user.email,
+                subject:
+                  locale === 'zh'
+                    ? `重置你的 ${envConfigs.app_name} 密码`
+                    : `Reset your ${envConfigs.app_name} password`,
+                react: ResetPasswordEmail({
+                  appName: envConfigs.app_name,
+                  logoUrl: getBrandLogoUrl(),
+                  url,
+                  locale,
+                }),
+              });
+
+              assertEmailSent(result, 'password reset');
+            },
+          }
+        : {}),
     },
     ...(emailVerificationEnabled
       ? {
@@ -164,10 +238,14 @@ export async function getAuthOptions(configs: Record<string, string>) {
             autoSignInAfterVerification: true,
             // 24 hours
             expiresIn: 60 * 60 * 24,
-            sendVerificationEmail: async (
-              { user, url }: { user: any; url: string; token: string },
-              _request: Request
-            ) => {
+            sendVerificationEmail: async ({
+              user,
+              url,
+            }: {
+              user: any;
+              url: string;
+              token: string;
+            }) => {
               try {
                 const key = String(user?.email || '').toLowerCase();
                 const now = Date.now();
@@ -175,26 +253,24 @@ export async function getAuthOptions(configs: Record<string, string>) {
                 if (key && now - last < VERIFICATION_EMAIL_MIN_INTERVAL_MS) {
                   return;
                 }
-                if (key) {
-                  recentVerificationEmailSentAt.set(key, now);
-                }
-
                 const emailService = await getEmailService(configs as any);
-                const logoUrl = envConfigs.app_logo?.startsWith('http')
-                  ? envConfigs.app_logo
-                  : `${envConfigs.app_url}${envConfigs.app_logo?.startsWith('/') ? '' : '/'}${envConfigs.app_logo || ''}`;
-                // Avoid blocking auth response on email sending.
-                await emailService.sendEmail({
+                const result = await emailService.sendEmail({
                   to: user.email,
                   subject: `Verify your email - ${envConfigs.app_name}`,
                   react: VerifyEmail({
                     appName: envConfigs.app_name,
-                    logoUrl,
+                    logoUrl: getBrandLogoUrl(),
                     url,
                   }),
                 });
+
+                assertEmailSent(result, 'verification');
+                if (key) {
+                  recentVerificationEmailSentAt.set(key, now);
+                }
               } catch (e) {
                 console.log('send verification email failed:', e);
+                throw e;
               }
             },
           },
@@ -202,7 +278,9 @@ export async function getAuthOptions(configs: Record<string, string>) {
       : {}),
     socialProviders: await getSocialProviders(configs),
     plugins:
-      configs.google_client_id && configs.google_one_tap_enabled === 'true'
+      configs.google_auth_enabled === 'true' &&
+      configs.google_client_id &&
+      configs.google_one_tap_enabled === 'true'
         ? [oneTap()]
         : [],
   };
@@ -213,7 +291,11 @@ export async function getSocialProviders(configs: Record<string, string>) {
   const providers: any = {};
 
   // google auth
-  if (configs.google_client_id && configs.google_client_secret) {
+  if (
+    configs.google_auth_enabled === 'true' &&
+    configs.google_client_id &&
+    configs.google_client_secret
+  ) {
     providers.google = {
       clientId: configs.google_client_id,
       clientSecret: configs.google_client_secret,
@@ -221,7 +303,11 @@ export async function getSocialProviders(configs: Record<string, string>) {
   }
 
   // github auth
-  if (configs.github_client_id && configs.github_client_secret) {
+  if (
+    configs.github_auth_enabled === 'true' &&
+    configs.github_client_id &&
+    configs.github_client_secret
+  ) {
     providers.github = {
       clientId: configs.github_client_id,
       clientSecret: configs.github_client_secret,

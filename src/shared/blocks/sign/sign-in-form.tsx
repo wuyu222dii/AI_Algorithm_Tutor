@@ -3,16 +3,23 @@
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
-import { toast } from 'sonner';
 
 import { authClient, signIn } from '@/core/auth/client';
 import { Link, useRouter } from '@/core/i18n/navigation';
-import { defaultLocale } from '@/config/locale';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { useAppContext } from '@/shared/contexts/app';
+import { cn } from '@/shared/lib/utils';
 
+import {
+  buildAuthHref,
+  getAuthErrorCode,
+  getLocaleLessCallback,
+  getLocalizedCallback,
+  isValidEmail,
+} from './auth-form-utils';
+import { PasswordInput } from './password-input';
 import { SocialProviders } from './social-providers';
 
 export function SignInForm({
@@ -28,154 +35,183 @@ export function SignInForm({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-
-  const { configs } = useAppContext();
+  const [emailError, setEmailError] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [formError, setFormError] = useState('');
+  const { configs, setIsShowSignModal } = useAppContext();
 
   const isGoogleAuthEnabled = configs.google_auth_enabled === 'true';
   const isGithubAuthEnabled = configs.github_auth_enabled === 'true';
-  const isEmailAuthEnabled =
-    configs.email_auth_enabled !== 'false' ||
-    (!isGoogleAuthEnabled && !isGithubAuthEnabled); // no social providers enabled, auto enable email auth
+  const isEmailAuthEnabled = configs.email_auth_enabled !== 'false';
+  const hasAuthMethod =
+    isEmailAuthEnabled || isGoogleAuthEnabled || isGithubAuthEnabled;
+  const safeCallbackUrl = getLocaleLessCallback(callbackUrl, locale);
+  const localizedCallbackUrl = getLocalizedCallback(callbackUrl, locale);
+  const signUpHref = buildAuthHref('/sign-up', callbackUrl, locale);
+  const forgotPasswordHref = `/forgot-password?callbackUrl=${encodeURIComponent(
+    safeCallbackUrl
+  )}`;
 
-  if (callbackUrl) {
-    if (
-      locale !== defaultLocale &&
-      callbackUrl.startsWith('/') &&
-      !callbackUrl.startsWith(`/${locale}`)
-    ) {
-      callbackUrl = `/${locale}${callbackUrl}`;
-    }
-  }
-
-  const base = locale !== defaultLocale ? `/${locale}` : '';
-  const stripLocalePrefix = (path: string) => {
-    if (!path?.startsWith('/')) return '/';
-    if (locale === defaultLocale) return path;
-    if (path === `/${locale}`) return '/';
-    if (path.startsWith(`/${locale}/`))
-      return path.slice(locale.length + 1) || '/';
-    return path;
+  const validate = () => {
+    const normalizedEmail = email.trim();
+    const nextEmailError = !normalizedEmail
+      ? t('email_required')
+      : !isValidEmail(normalizedEmail)
+        ? t('email_invalid')
+        : '';
+    const nextPasswordError = password ? '' : t('password_required');
+    setEmailError(nextEmailError);
+    setPasswordError(nextPasswordError);
+    return !nextEmailError && !nextPasswordError;
   };
 
   const handleSignIn = async () => {
-    if (loading) {
-      return;
-    }
+    if (loading || !validate()) return;
 
-    if (!email || !password) {
-      toast.error('email and password are required');
-      return;
-    }
-
-    // Set loading immediately to avoid duplicate submits before request hooks fire.
     setLoading(true);
+    setFormError('');
+    const normalizedEmail = email.trim().toLowerCase();
 
     try {
       await signIn.email(
         {
-          email,
+          email: normalizedEmail,
           password,
-          callbackURL: callbackUrl,
+          callbackURL: localizedCallbackUrl,
         },
         {
-          onRequest: (ctx) => {
-            // loading is already set above; keep as no-op for safety
-          },
-          onResponse: (ctx) => {
-            // Do NOT reset loading here; navigation may not have completed yet.
-          },
-          onSuccess: (ctx) => {
-            // Keep loading=true until navigation completes.
-          },
-          onError: (e: any) => {
-            const status = e?.error?.status;
-            if (status === 403) {
-              const normalizedCallbackUrl = stripLocalePrefix(callbackUrl);
+          onError: async (event: any) => {
+            const status = event?.error?.status;
+            const code = getAuthErrorCode(event);
+            if (status === 403 || code.includes('EMAIL_NOT_VERIFIED')) {
               const verifyPath = `/verify-email?sent=1&email=${encodeURIComponent(
-                email
-              )}&callbackUrl=${encodeURIComponent(normalizedCallbackUrl)}`;
+                normalizedEmail
+              )}&callbackUrl=${encodeURIComponent(safeCallbackUrl)}`;
 
-              // Send verification email with callback to verify page.
-              void authClient.sendVerificationEmail({
-                email,
-                callbackURL: `${base}${verifyPath}`,
-              });
-
-              // i18n router will prefix locale automatically; do NOT include locale here.
-              router.push(verifyPath);
+              try {
+                const result = await authClient.sendVerificationEmail({
+                  email: normalizedEmail,
+                  callbackURL: localizedCallbackUrl,
+                });
+                if (result.error) {
+                  setFormError(t('send_verification_failed'));
+                  setLoading(false);
+                  return;
+                }
+                setIsShowSignModal(false);
+                router.push(verifyPath);
+              } catch {
+                setFormError(t('send_verification_failed'));
+                setLoading(false);
+              }
               return;
             }
 
-            toast.error(e?.error?.message || 'sign in failed');
+            setFormError(
+              code.includes('INVALID_EMAIL_OR_PASSWORD') ||
+                code.includes('INVALID_PASSWORD') ||
+                code.includes('USER_NOT_FOUND')
+                ? t('invalid_credentials')
+                : t('sign_in_failed')
+            );
             setLoading(false);
           },
         }
       );
-    } catch (e: any) {
-      toast.error(e?.message || 'sign in failed');
+    } catch {
+      setFormError(t('sign_in_failed'));
       setLoading(false);
     }
   };
 
   return (
-    <div className={`w-full md:max-w-md ${className}`}>
+    <div className={cn('w-full md:max-w-md', className)}>
       <div className="grid gap-4">
+        {!hasAuthMethod && (
+          <p
+            className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200"
+            role="status"
+          >
+            {t('auth_unavailable')}
+          </p>
+        )}
+
         {isEmailAuthEnabled && (
           <form
             className="grid gap-4"
-            onSubmit={(e) => {
-              e.preventDefault();
+            noValidate
+            onSubmit={(event) => {
+              event.preventDefault();
               void handleSignIn();
             }}
           >
             <div className="grid gap-2">
-              <Label htmlFor="email">{t('email_title')}</Label>
+              <Label htmlFor="modal-email">{t('email_title')}</Label>
               <Input
-                id="email"
+                id="modal-email"
+                name="email"
                 type="email"
+                inputMode="email"
+                autoComplete="email"
                 placeholder={t('email_placeholder')}
                 required
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                }}
+                disabled={loading}
+                aria-invalid={Boolean(emailError)}
+                aria-describedby={emailError ? 'modal-email-error' : undefined}
                 value={email}
+                onChange={(event) => {
+                  setEmail(event.target.value);
+                  setEmailError('');
+                }}
               />
+              {emailError && (
+                <p
+                  id="modal-email-error"
+                  className="text-destructive text-xs"
+                  role="alert"
+                >
+                  {emailError}
+                </p>
+              )}
             </div>
 
-            <div className="grid gap-2">
-              {/* <div className="flex items-center">
-              <Label htmlFor="password">{t("password_title")}</Label>
-              <Link href="#" className="ml-auto inline-block text-sm underline">
-                Forgot your password?
-              </Link>
-            </div> */}
-
-              <Input
-                id="password"
-                type="password"
-                placeholder={t('password_placeholder')}
-                autoComplete="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-
-            {/* <div className="flex items-center gap-2">
-            <Checkbox
-              id="remember"
-              onClick={() => {
-                setRememberMe(!rememberMe);
+            <PasswordInput
+              id="modal-password"
+              label={t('password_title')}
+              placeholder={t('password_placeholder')}
+              autoComplete="current-password"
+              value={password}
+              error={passwordError}
+              disabled={loading}
+              labelAction={
+                <Link
+                  href={forgotPasswordHref}
+                  className="text-muted-foreground hover:text-foreground text-xs underline underline-offset-4"
+                  onClick={() => setIsShowSignModal(false)}
+                >
+                  {t('forgot_password')}
+                </Link>
+              }
+              onChange={(value) => {
+                setPassword(value);
+                setPasswordError('');
               }}
             />
-            <Label htmlFor="remember">{t("remember_me_title")}</Label>
-          </div> */}
+
+            {formError && (
+              <p className="text-destructive text-sm" role="alert">
+                {formError}
+              </p>
+            )}
 
             <Button type="submit" className="w-full" disabled={loading}>
               {loading ? (
-                <Loader2 size={16} className="animate-spin" />
+                <>
+                  <Loader2 className="animate-spin" />
+                  <span>{t('signing_in')}</span>
+                </>
               ) : (
-                <p> {t('sign_in_title')} </p>
+                t('sign_in_title')
               )}
             </Button>
           </form>
@@ -183,22 +219,22 @@ export function SignInForm({
 
         <SocialProviders
           configs={configs}
-          callbackUrl={callbackUrl || '/'}
+          callbackUrl={callbackUrl}
           loading={loading}
           setLoading={setLoading}
         />
       </div>
-      {isEmailAuthEnabled && (
-        <div className="flex w-full justify-center border-t py-4">
-          <p className="text-center text-xs text-neutral-500">
-            {t('no_account')}
-            <Link href="/sign-up" className="underline">
-              <span className="cursor-pointer dark:text-white/70">
-                {t('sign_up_title')}
-              </span>
-            </Link>
-          </p>
-        </div>
+      {hasAuthMethod && (
+        <p className="mt-4 border-t pt-4 text-center text-xs text-neutral-500">
+          {t('no_account')}{' '}
+          <Link
+            href={signUpHref}
+            className="underline underline-offset-4"
+            onClick={() => setIsShowSignModal(false)}
+          >
+            {t('sign_up_title')}
+          </Link>
+        </p>
       )}
     </div>
   );

@@ -88,8 +88,11 @@ export async function getCoachRuntimeConfig(
   requestedModel?: string
 ): Promise<CoachRuntimeConfig> {
   const configs = await getAllConfigs();
+  const forceDemo = process.env.ALGO_COACH_FORCE_DEMO === 'true';
   return {
-    apiKey: configs.openrouter_api_key ?? process.env.OPENROUTER_API_KEY ?? '',
+    apiKey: forceDemo
+      ? ''
+      : (configs.openrouter_api_key ?? process.env.OPENROUTER_API_KEY ?? ''),
     baseURL:
       configs.openrouter_base_url ||
       process.env.OPENROUTER_BASE_URL ||

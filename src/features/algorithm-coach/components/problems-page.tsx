@@ -38,6 +38,7 @@ import { cn } from '@/shared/lib/utils';
 
 import { problems } from '../data/problems';
 import { parseProblemDraft } from '../parser';
+import { saveImportedProblem } from '../storage';
 import { useCoachStore } from '../store';
 import type { Language, ParsedProblemDraft, Problem } from '../types';
 import { CoachPage, EmptyState, InlineNotice } from './coach-ui';
@@ -189,7 +190,7 @@ export function ProblemsPage() {
   }
 
   function openImportedPractice() {
-    if (!draft) return;
+    if (!draft || !coach.storageScope) return;
     const now = Date.now();
     const imported: Problem = {
       id: `imported-${now}`,
@@ -213,10 +214,7 @@ export function ProblemsPage() {
       reviewPoints: [],
       estimatedMinutes: 20,
     };
-    window.localStorage.setItem(
-      'algocoach.imported-problem.v1',
-      JSON.stringify(imported)
-    );
+    saveImportedProblem(imported, undefined, coach.storageScope);
     setImportOpen(false);
     router.push('/practice/imported-draft');
   }

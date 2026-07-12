@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
@@ -17,28 +17,17 @@ import {
   CardHeader,
   CardTitle,
 } from '@/shared/components/ui/card';
+import { getSafeInternalCallback } from '@/shared/lib/auth-redirect';
 
 const RESEND_COOLDOWN_SECONDS = 60;
 
-function safeDecodeCallbackUrl(raw?: string) {
-  if (!raw) return '/';
-  try {
-    const decoded = decodeURIComponent(raw);
-    // only allow internal redirects
-    if (decoded.startsWith('/')) return decoded;
-    return '/';
-  } catch {
-    return '/';
-  }
-}
-
 function stripLocalePrefix(path: string, locale: string) {
-  if (!path?.startsWith('/')) return '/';
-  if (locale === defaultLocale) return path;
-  if (path === `/${locale}`) return '/';
-  if (path.startsWith(`/${locale}/`))
-    return path.slice(locale.length + 1) || '/';
-  return path;
+  let stripped = path;
+  if (path === `/${locale}`) stripped = '/';
+  else if (path.startsWith(`/${locale}/`)) {
+    stripped = path.slice(locale.length + 1) || '/';
+  }
+  return getSafeInternalCallback(stripped, '/');
 }
 
 function getCooldownKey(email?: string) {
@@ -83,7 +72,7 @@ export function VerifyEmailPage({
   const lastSessionCheckAtRef = useRef(0);
 
   const nextUrl = useMemo(() => {
-    const decoded = safeDecodeCallbackUrl(callbackUrl);
+    const decoded = getSafeInternalCallback(callbackUrl, '/');
     // i18n router will prefix locale automatically; store locale-less paths
     return stripLocalePrefix(decoded, locale);
   }, [callbackUrl, locale]);
@@ -94,7 +83,7 @@ export function VerifyEmailPage({
     // Back to sign-in should allow users to sign in with a different account.
     // Do not include email/verify flags that would show "verification sent" hints.
     return `/sign-in?${query.toString()}`;
-  }, [email, nextUrl]);
+  }, [nextUrl]);
 
   const hardNavigateToSignIn = (prefillEmail?: string) => {
     if (typeof window === 'undefined') return;
@@ -115,13 +104,13 @@ export function VerifyEmailPage({
     return () => window.clearInterval(timer);
   }, [email]);
 
-  const hardNavigateToNextUrl = () => {
+  const hardNavigateToNextUrl = useCallback(() => {
     if (typeof window === 'undefined') return;
     // Force a full navigation so server components read the latest cookies/session.
     window.location.assign(`${base}${nextUrl}`);
-  };
+  }, [base, nextUrl]);
 
-  const checkSessionAndRedirect = async () => {
+  const checkSessionAndRedirect = useCallback(async () => {
     // Avoid spamming get-session (especially since we also poll cooldown timer).
     const now = Date.now();
     if (now - lastSessionCheckAtRef.current < 800) return;
@@ -135,7 +124,7 @@ export function VerifyEmailPage({
     } catch {
       // ignore
     }
-  };
+  }, [hardNavigateToNextUrl]);
 
   // If verification email link signs the user in successfully, session will exist.
   useEffect(() => {
@@ -144,7 +133,7 @@ export function VerifyEmailPage({
     if (!isPending && session?.user) {
       hardNavigateToNextUrl();
     }
-  }, [isPending, session?.user, nextUrl, router]);
+  }, [hardNavigateToNextUrl, isPending, session?.user]);
 
   // On initial mount, actively fetch session once (and briefly poll) to catch
   // the common flow: user clicks verification link -> cookie gets set -> redirected here.
@@ -172,7 +161,7 @@ export function VerifyEmailPage({
     return () => {
       cancelled = true;
     };
-  }, [nextUrl]);
+  }, [checkSessionAndRedirect]);
 
   // Cross-tab session sync: when user verifies/logs in in another tab,
   // this tab should detect the new session without a full refresh.
@@ -196,7 +185,7 @@ export function VerifyEmailPage({
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [nextUrl]);
+  }, [checkSessionAndRedirect]);
 
   useEffect(() => {
     if (sent === '1') {
@@ -207,6 +196,7 @@ export function VerifyEmailPage({
         markSentNow(email);
       }
       setCooldownSeconds(getCooldownRemainingSeconds(email));
+      toast.success(t('verify_email_sent'));
 
       // Remove `sent=1` from the URL to avoid re-triggering on locale switch/refresh.
       if (typeof window !== 'undefined') {
@@ -223,7 +213,7 @@ export function VerifyEmailPage({
 
   const handleResend = async () => {
     if (!email) {
-      toast.error('email is required');
+      toast.error(t('email_required'));
       return;
     }
     if (loading) return;
@@ -242,13 +232,14 @@ export function VerifyEmailPage({
         callbackURL: `${base}${nextUrl || '/'}`,
       });
       if (result?.error) {
-        toast.error(result.error.message || 'send verification email failed');
+        toast.error(t('send_verification_failed'));
         return;
       }
       markSentNow(email);
       setCooldownSeconds(getCooldownRemainingSeconds(email));
-    } catch (e: any) {
-      toast.error(e?.message || 'send verification email failed');
+      toast.success(t('resend_verification_sent'));
+    } catch {
+      toast.error(t('send_verification_failed'));
     } finally {
       setLoading(false);
     }
