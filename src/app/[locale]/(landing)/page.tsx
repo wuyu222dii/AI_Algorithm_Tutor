@@ -6,5 +6,5 @@ export default async function LandingPage({
   params: Promise<{ locale: string }>;
 }) {
   const { locale } = await params;
-  redirect({ href: '/learn', locale });
+  redirect({ href: '/about', locale });
 }

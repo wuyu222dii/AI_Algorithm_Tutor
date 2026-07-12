@@ -53,10 +53,10 @@ export default async function SignInPage({
 
   // If user is already signed in, don't show sign-in form again.
   const sessionUser = await getSignUser();
-  const safeCallbackUrl = getSafeInternalCallback(callbackUrl, '/');
+  const safeCallbackUrl = getSafeInternalCallback(callbackUrl, '/learn');
   if (sessionUser) {
     const target = stripLocalePrefix(safeCallbackUrl, locale);
-    redirect({ href: target || '/', locale });
+    redirect({ href: target || '/learn', locale });
   }
 
   const configs = await getPublicConfigs();

@@ -46,13 +46,13 @@ export default async function SignUpPage({
 }) {
   const { callbackUrl } = await searchParams;
   const { locale } = await params;
-  const safeCallbackUrl = getSafeInternalCallback(callbackUrl, '/');
+  const safeCallbackUrl = getSafeInternalCallback(callbackUrl, '/learn');
 
   // If user is already signed in, don't show sign-up form again.
   const sessionUser = await getSignUser();
   if (sessionUser) {
     const target = stripLocalePrefix(safeCallbackUrl, locale);
-    redirect({ href: target || '/', locale });
+    redirect({ href: target || '/learn', locale });
   }
 
   const configs = await getPublicConfigs();

@@ -1,21 +1,27 @@
-FROM node:20-alpine AS base
+FROM node:22-alpine AS base
 
 # Install dependencies only when needed
 FROM base AS deps
-RUN apk add --no-cache libc6-compat && yarn global add pnpm
+ARG PNPM_VERSION=11.7.0
+
+RUN apk add --no-cache libc6-compat
+RUN npm install --global "pnpm@${PNPM_VERSION}" --no-audit --no-fund \
+    && test "$(pnpm --version)" = "${PNPM_VERSION}"
 
 WORKDIR /app
 
-# Install dependencies based on the preferred package manager
-COPY package.json pnpm-lock.yaml* source.config.ts next.config.mjs ./
-RUN pnpm i --frozen-lockfile
+# The root postinstall builds Fumadocs metadata and copies browser runtimes.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml source.config.ts next.config.mjs tsconfig.json ./
+COPY content ./content
+COPY scripts/copy-pyodide-assets.mjs ./scripts/copy-pyodide-assets.mjs
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --store-dir /pnpm/store
 
 # Rebuild the source code only when needed
 FROM deps AS builder
 
 WORKDIR /app
 
-# Install dependencies based on the preferred package manager
 COPY . .
 RUN pnpm build
 

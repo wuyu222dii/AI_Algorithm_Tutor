@@ -2,9 +2,16 @@
 .vercel
 .vscode
 .wrangler
+.env
+.env.*
+!.env.example
+.test
+coverage
 data
 debug
 node_modules
+playwright-report
+test-results
 .cursorrules
 .git
 vercel.json

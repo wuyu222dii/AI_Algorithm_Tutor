@@ -79,6 +79,13 @@ test('onboarding, problem filtering, and imported draft flow', async ({
   page,
 }) => {
   await page.goto('/');
+  await expect(page).toHaveURL(/\/about$/);
+  await expect(
+    page.getByRole('dialog').getByRole('heading', {
+      name: '先看看 AI 算法教练能做什么',
+    })
+  ).toBeVisible();
+  await page.getByRole('link', { name: '以访客身份开始' }).click();
   await expect(page).toHaveURL(/\/learn$/);
   await expect(
     page.getByRole('heading', { name: '先定一个学习目标' })

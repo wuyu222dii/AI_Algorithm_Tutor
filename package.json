@@ -7,7 +7,7 @@
   "homepage": "https://algocoach.example",
   "packageManager": "pnpm@11.7.0",
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=22.13.0"
   },
   "repository": {
     "type": "git",
