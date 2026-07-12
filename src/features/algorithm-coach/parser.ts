@@ -138,3 +138,4 @@ export function parseProblemDraft(
 }
 
 export const parseProblemStatement = parseProblemDraft;
+export const parseImportedProblem = parseProblemDraft;

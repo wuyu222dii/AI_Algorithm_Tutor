@@ -3,8 +3,16 @@ import { getSessionCookie } from 'better-auth/cookies';
 import createIntlMiddleware from 'next-intl/middleware';
 
 import { routing } from '@/core/i18n/config';
+import { legacyFeaturesEnabled } from '@/shared/lib/legacy-features';
 
 const intlMiddleware = createIntlMiddleware(routing);
+const legacyPagePrefixes = [
+  '/ai-image-generator',
+  '/ai-music-generator',
+  '/ai-video-generator',
+  '/chat',
+  '/pricing',
+];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -18,6 +26,21 @@ export async function proxy(request: NextRequest) {
   const pathWithoutLocale = isValidLocale
     ? pathname.slice(locale.length + 1)
     : pathname;
+
+  if (
+    !legacyFeaturesEnabled() &&
+    legacyPagePrefixes.some(
+      (prefix) =>
+        pathWithoutLocale === prefix ||
+        pathWithoutLocale.startsWith(`${prefix}/`)
+    )
+  ) {
+    const learnUrl = new URL(
+      isValidLocale ? `/${locale}/learn` : '/learn',
+      request.url
+    );
+    return NextResponse.redirect(learnUrl);
+  }
 
   // Only check authentication for admin routes
   if (

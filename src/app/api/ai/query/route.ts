@@ -1,3 +1,7 @@
+import {
+  legacyFeatureDisabledResponse,
+  legacyFeaturesEnabled,
+} from '@/shared/lib/legacy-features';
 import { respData, respErr } from '@/shared/lib/resp';
 import {
   findAITaskById,
@@ -8,6 +12,10 @@ import { getUserInfo } from '@/shared/models/user';
 import { getAIService } from '@/shared/services/ai';
 
 export async function POST(req: Request) {
+  if (!legacyFeaturesEnabled()) {
+    return legacyFeatureDisabledResponse();
+  }
+
   try {
     const { taskId } = await req.json();
     if (!taskId) {

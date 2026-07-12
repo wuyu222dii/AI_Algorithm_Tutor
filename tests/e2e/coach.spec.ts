@@ -279,3 +279,52 @@ test('English locale renders the complete onboarding surface', async ({
     page.getByRole('button', { name: 'Start learning' })
   ).toBeVisible();
 });
+
+test('core pages render without browser errors or horizontal overflow', async ({
+  page,
+}, testInfo) => {
+  const browserErrors: string[] = [];
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+
+  for (const route of [
+    '/learn',
+    '/problems',
+    '/practice/first-unique-position',
+    '/assessment',
+    '/review',
+    '/progress',
+    '/about',
+  ]) {
+    await page.goto(route);
+    await page.waitForLoadState('domcontentloaded');
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth + 1
+        )
+      )
+      .toBe(true);
+
+    if (
+      route.startsWith('/practice/') &&
+      testInfo.project.name.startsWith('desktop')
+    ) {
+      await expect(page.locator('.monaco-editor:visible')).toBeVisible({
+        timeout: 20_000,
+      });
+    }
+
+    if (route === '/learn' || route.startsWith('/practice/')) {
+      const slug = route === '/learn' ? 'learn' : 'practice';
+      await page.screenshot({
+        path: testInfo.outputPath(`${slug}.png`),
+        fullPage: false,
+      });
+    }
+  }
+
+  expect(browserErrors).toEqual([]);
+});

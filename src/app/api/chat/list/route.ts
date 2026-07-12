@@ -1,8 +1,16 @@
+import {
+  legacyFeatureDisabledResponse,
+  legacyFeaturesEnabled,
+} from '@/shared/lib/legacy-features';
 import { respData, respErr } from '@/shared/lib/resp';
 import { ChatStatus, getChats, getChatsCount } from '@/shared/models/chat';
 import { getUserInfo } from '@/shared/models/user';
 
 export async function POST(req: Request) {
+  if (!legacyFeaturesEnabled()) {
+    return legacyFeatureDisabledResponse();
+  }
+
   try {
     let { page, limit } = await req.json();
     if (!page) {

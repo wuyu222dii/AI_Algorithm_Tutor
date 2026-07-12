@@ -1,10 +1,18 @@
 import { generateId } from 'ai';
 
+import {
+  legacyFeatureDisabledResponse,
+  legacyFeaturesEnabled,
+} from '@/shared/lib/legacy-features';
 import { respData, respErr } from '@/shared/lib/resp';
 import { ChatStatus, createChat, NewChat } from '@/shared/models/chat';
 import { getUserInfo } from '@/shared/models/user';
 
 export async function POST(req: Request) {
+  if (!legacyFeaturesEnabled()) {
+    return legacyFeatureDisabledResponse();
+  }
+
   try {
     const { message, body } = await req.json();
     if (!message || !message.text) {

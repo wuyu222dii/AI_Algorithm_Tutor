@@ -47,6 +47,8 @@ yarn-error.log*
 next-env.d.ts
 
 data*
+!src/features/algorithm-coach/data/
+!src/features/algorithm-coach/data/problems.ts
 *debug*
 
 *.db

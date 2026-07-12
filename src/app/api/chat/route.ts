@@ -12,6 +12,10 @@ import {
 } from 'ai';
 import { z } from 'zod';
 
+import {
+  legacyFeatureDisabledResponse,
+  legacyFeaturesEnabled,
+} from '@/shared/lib/legacy-features';
 import { findChatById } from '@/shared/models/chat';
 import {
   ChatMessageStatus,
@@ -23,6 +27,10 @@ import { getAllConfigs } from '@/shared/models/config';
 import { getUserInfo } from '@/shared/models/user';
 
 export async function POST(req: Request) {
+  if (!legacyFeaturesEnabled()) {
+    return legacyFeatureDisabledResponse();
+  }
+
   try {
     const {
       chatId,
