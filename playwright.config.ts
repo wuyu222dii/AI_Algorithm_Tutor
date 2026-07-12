@@ -8,6 +8,7 @@ export default defineConfig({
   timeout: 45_000,
   expect: { timeout: 8_000 },
   fullyParallel: false,
+  workers: 2,
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? 'github' : 'list',
   use: {
@@ -34,7 +35,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `ALGO_COACH_FORCE_DEMO=true pnpm dev --port ${port}`,
+    command: `tsx scripts/start-e2e-server.ts --port ${port}`,
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

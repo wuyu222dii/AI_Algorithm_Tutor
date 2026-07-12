@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1783850010327,
+      "tag": "0000_eminent_supreme_intelligence",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783850036538,
+      "tag": "0001_seed_coach_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783852529147,
+      "tag": "0002_great_susan_delgado",
+      "breakpoints": true
+    }
+  ]
+}

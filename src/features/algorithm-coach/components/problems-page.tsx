@@ -38,7 +38,6 @@ import { cn } from '@/shared/lib/utils';
 
 import { problems } from '../data/problems';
 import { parseProblemDraft } from '../parser';
-import { saveImportedProblem } from '../storage';
 import { useCoachStore } from '../store';
 import type { Language, ParsedProblemDraft, Problem } from '../types';
 import { CoachPage, EmptyState, InlineNotice } from './coach-ui';
@@ -54,7 +53,7 @@ const copy = {
   zh: {
     title: '算法题库',
     description:
-      '围绕高频算法模式组织练习，完成状态与代码草稿会保存在当前设备。',
+      '围绕高频算法模式组织练习；登录后，完成状态与代码草稿会同步到云端。',
     import: '导入题目',
     search: '搜索题目、知识点',
     allDifficulty: '全部难度',
@@ -82,8 +81,7 @@ const copy = {
     template: '初始模板',
     confirm: '确认并练习',
     edit: '继续编辑',
-    demoNotice:
-      '导入题在演示模式下只包含题面中明确给出的样例，不会伪造隐藏测试。',
+    demoNotice: '导入题只包含题面中明确给出的样例，系统不会伪造隐藏测试。',
     parseError: '无法解析这段题面，请补充输入、输出和至少一个样例。',
     javascript: 'JavaScript 模板',
     python: 'Python 模板',
@@ -91,7 +89,7 @@ const copy = {
   en: {
     title: 'Problem Library',
     description:
-      'Practice common algorithm patterns. Completion and code drafts stay on this device.',
+      'Practice common algorithm patterns. Sign in to sync completion and code drafts to the cloud.',
     import: 'Import problem',
     search: 'Search problems or topics',
     allDifficulty: 'All difficulties',
@@ -120,7 +118,7 @@ const copy = {
     confirm: 'Confirm and practice',
     edit: 'Keep editing',
     demoNotice:
-      'Imported problems only use examples explicitly present in the prompt. Demo mode never invents hidden tests.',
+      'Imported problems only use examples explicitly present in the prompt. The system never invents hidden tests.',
     parseError:
       'This statement could not be parsed. Add inputs, outputs, and at least one example.',
     javascript: 'JavaScript template',
@@ -214,7 +212,7 @@ export function ProblemsPage() {
       reviewPoints: [],
       estimatedMinutes: 20,
     };
-    saveImportedProblem(imported, undefined, coach.storageScope);
+    coach.saveImportedProblem(imported);
     setImportOpen(false);
     router.push('/practice/imported-draft');
   }

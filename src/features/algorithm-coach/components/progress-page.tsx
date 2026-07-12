@@ -22,7 +22,6 @@ import { Button } from '@/shared/components/ui/button';
 import { Progress } from '@/shared/components/ui/progress';
 import { cn } from '@/shared/lib/utils';
 
-import { trackProductEvent } from '../analytics';
 import { problems } from '../data/problems';
 import { useCoachStore } from '../store';
 import type { CodeRunResult } from '../types';
@@ -67,11 +66,12 @@ const copy = {
     helpful: '有帮助',
     notHelpful: '需改进',
     thanks: '反馈已记录',
-    data: '本地学习数据',
-    dataDetail: '当前 MVP 将代码、运行记录和复习卡片保存在此浏览器。',
+    data: '学习数据',
+    dataDetail: '访客数据保存在此浏览器；登录后会同步至账户数据库。',
     reset: '重置全部数据',
     resetConfirm: '确定要清除所有学习记录和设置吗？此操作无法撤销。',
     resetDone: '学习数据已重置',
+    resetFailed: '本地数据已清除，但云端重置失败，请稍后重试',
     weeklyGoal: '本周目标',
   },
   en: {
@@ -107,12 +107,15 @@ const copy = {
     helpful: 'Helpful',
     notHelpful: 'Needs improvement',
     thanks: 'Feedback recorded',
-    data: 'Local learning data',
-    dataDetail: 'This MVP stores code, runs, and review cards in this browser.',
+    data: 'Learning data',
+    dataDetail:
+      'Guest data stays in this browser; signed-in data syncs to your account database.',
     reset: 'Reset all data',
     resetConfirm:
       'Clear all learning history and settings? This cannot be undone.',
     resetDone: 'Learning data reset',
+    resetFailed:
+      'Local data was cleared, but cloud reset failed. Try again later.',
     weeklyGoal: 'Weekly target',
   },
 } as const;
@@ -127,6 +130,7 @@ export function ProgressPage() {
   const profile = getProfile(state);
   const completedIds = getCompletedProblemIds(state);
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
+  const [isResetting, setIsResetting] = useState(false);
 
   const completionRate = Math.round(
     (completedIds.size / Math.max(problems.length, 1)) * 100
@@ -198,16 +202,22 @@ export function ProgressPage() {
 
   function sendFeedback(value: 'up' | 'down') {
     setFeedback(value);
-    trackProductEvent('csat_submitted', {
+    coach.trackEvent('csat_submitted', {
       properties: { score: value === 'up' ? 5 : 2 },
     });
     toast.success(t.thanks);
   }
 
-  function resetData() {
+  async function resetData() {
     if (!window.confirm(t.resetConfirm)) return;
-    coach.resetData();
-    toast.success(t.resetDone);
+    setIsResetting(true);
+    try {
+      const reset = await coach.resetData();
+      if (reset) toast.success(t.resetDone);
+      else toast.error(t.resetFailed);
+    } finally {
+      setIsResetting(false);
+    }
   }
 
   return (
@@ -422,6 +432,7 @@ export function ProgressPage() {
               variant="outline"
               size="sm"
               onClick={resetData}
+              disabled={isResetting}
               className="shrink-0"
             >
               <RotateCcw />

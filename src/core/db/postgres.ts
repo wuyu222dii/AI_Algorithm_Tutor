@@ -12,7 +12,7 @@ export function getPostgresDb() {
   let databaseUrl = envConfigs.database_url;
 
   let isHyperdrive = false;
-  const schemaName = (envConfigs.db_schema || 'public').trim();
+  const schemaName = (envConfigs.db_schema || 'algocoach').trim();
   const connectionSchemaOptions =
     schemaName && schemaName !== 'public'
       ? { connection: { options: `-c search_path=${schemaName}` } }

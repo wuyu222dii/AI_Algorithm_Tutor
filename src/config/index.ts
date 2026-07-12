@@ -20,8 +20,8 @@ export const envConfigs: ConfigMap = {
   database_auth_token: process.env.DATABASE_AUTH_TOKEN ?? '',
   database_provider: process.env.DATABASE_PROVIDER ?? 'postgresql',
   db_schema_file: process.env.DB_SCHEMA_FILE ?? './src/config/db/schema.ts',
-  // PostgreSQL schema name (e.g. 'web'). Default: 'public'
-  db_schema: process.env.DB_SCHEMA ?? 'public',
+  // Keep application and auth tables outside Supabase's Data API schema.
+  db_schema: process.env.DB_SCHEMA ?? 'algocoach',
   // Drizzle migrations journal table name (avoid conflicts across projects)
   db_migrations_table:
     process.env.DB_MIGRATIONS_TABLE ?? '__drizzle_migrations',

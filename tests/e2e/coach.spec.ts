@@ -1,5 +1,8 @@
 import { expect, test } from '@playwright/test';
 
+import { createDemoArtifact } from '../../src/features/algorithm-coach/fixtures';
+import type { CoachRequest } from '../../src/features/algorithm-coach/types';
+
 async function completeOnboarding(page: import('@playwright/test').Page) {
   await page.goto('/learn');
   const start = page.getByRole('button', { name: '开始学习' });
@@ -41,6 +44,28 @@ async function setEditorCode(
 }
 
 test.beforeEach(async ({ page }) => {
+  await page.route(/\/api\/coach$/, async (route) => {
+    const request = route.request().postDataJSON() as CoachRequest;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        artifact: createDemoArtifact(request),
+        mode: 'live',
+        model: 'test/fixture',
+        promptVersion: 'e2e-v1',
+        latencyMs: 1,
+        traceId: `e2e-${Date.now()}`,
+      }),
+    });
+  });
+  await page.route(/\/api\/coach\/chat$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/plain; charset=utf-8',
+      body: '先说明你当前维护的不变量，再检查它在哪一步被破坏。',
+    });
+  });
   await page.addInitScript(() => {
     const marker = '__algocoach_e2e_initialized__';
     if (window.sessionStorage.getItem(marker) === 'true') return;
@@ -133,7 +158,7 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
     });
   }
   await expect(
-    page.getByText('演示 AI', { exact: true }).first()
+    page.getByText('在线 AI', { exact: true }).first()
   ).toBeVisible();
 
   const solution = `function firstUniquePosition(values) {
@@ -153,7 +178,7 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
   );
 
   await page.getByRole('button', { name: '提交测试' }).click();
-  await expect(page.getByText('本题已完成，复习卡片已生成。')).toBeVisible({
+  await expect(page.getByText('本题已完成。')).toBeVisible({
     timeout: 15_000,
   });
 

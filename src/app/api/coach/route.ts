@@ -1,4 +1,3 @@
-import { createDemoArtifact } from '@/features/algorithm-coach/fixtures';
 import {
   CoachHttpError,
   errorResponse,
@@ -47,35 +46,21 @@ export async function POST(request: Request) {
     }
 
     const config = await getCoachRuntimeConfig(coachRequest.model);
-    let mode: CoachResponse['mode'] = config.apiKey ? 'live' : 'demo';
-    let model = config.apiKey ? config.model : 'fixture/algocoach-v1';
-    let fallbackReason: string | undefined;
-    let artifact;
-
-    if (config.apiKey) {
-      try {
-        artifact = await generateLiveArtifact(coachRequest, config);
-      } catch (error) {
-        if (
-          !(error instanceof CoachModelError) ||
-          error.code !== 'provider_failed'
-        ) {
-          throw error;
-        }
-        console.error(`[coach:${traceId}] provider failure`, error.message);
-        artifact = createDemoArtifact(coachRequest);
-        mode = 'demo';
-        model = 'fixture/algocoach-v1';
-        fallbackReason = 'provider_failed';
-      }
-    } else {
-      artifact = createDemoArtifact(coachRequest);
+    if (!config.apiKey) {
+      throw new CoachHttpError(
+        503,
+        'ai_not_configured',
+        'The AI coach is not configured.'
+      );
     }
+
+    const artifact = await generateLiveArtifact(coachRequest, config);
+    const mode: CoachResponse['mode'] = 'live';
 
     const response: CoachResponse = {
       artifact,
       mode,
-      model,
+      model: config.model,
       promptVersion: COACH_PROMPT_VERSION,
       latencyMs: Math.round(performance.now() - startedAt),
       traceId,
@@ -86,7 +71,6 @@ export async function POST(request: Request) {
         'cache-control': 'no-store',
         'x-coach-mode': mode,
         'x-coach-trace-id': traceId,
-        ...(fallbackReason ? { 'x-coach-fallback': fallbackReason } : {}),
       },
     });
   } catch (error) {

@@ -14,6 +14,7 @@ export const COACH_ANALYTICS_KEY = 'algocoach:events:v1';
 export const COACH_SESSION_KEY = 'algocoach:session-id';
 export const COACH_EXPERIMENT_KEY = 'algocoach:hint-copy-variant';
 export const COACH_IMPORTED_PROBLEM_KEY = 'algocoach.imported-problem.v1';
+export const COACH_REVISION_KEY = 'algocoach:revision:v1';
 export const COACH_GUEST_CLAIM_KEY = 'algocoach:guest-claimed-by:v1';
 export const GUEST_COACH_STORAGE_SCOPE = 'guest';
 export type CoachStorageScope = 'guest' | `user:${string}`;
@@ -126,7 +127,7 @@ function uniqueBy<T>(items: T[], getKey: (item: T) => string): T[] {
   });
 }
 
-function mergeCoachStates(
+export function mergeCoachStates(
   current: CoachState,
   inherited: CoachState
 ): CoachState {
@@ -311,6 +312,39 @@ export function clearImportedProblem(
     target.removeItem(getScopedStorageKey(COACH_IMPORTED_PROBLEM_KEY, scope));
   } catch {
     // Reset remains best-effort in restricted browser storage.
+  }
+}
+
+export function loadCoachRevision(
+  storage?: Storage,
+  scope: CoachStorageScope = GUEST_COACH_STORAGE_SCOPE
+): number {
+  const target = getStorage(storage);
+  if (!target) return 0;
+  try {
+    const value = Number(
+      target.getItem(getScopedStorageKey(COACH_REVISION_KEY, scope)) ?? 0
+    );
+    return Number.isInteger(value) && value >= 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function saveCoachRevision(
+  revision: number,
+  storage?: Storage,
+  scope: CoachStorageScope = GUEST_COACH_STORAGE_SCOPE
+): void {
+  const target = getStorage(storage);
+  if (!target || !Number.isInteger(revision) || revision < 0) return;
+  try {
+    target.setItem(
+      getScopedStorageKey(COACH_REVISION_KEY, scope),
+      String(revision)
+    );
+  } catch {
+    // Revision metadata is best-effort when browser storage is unavailable.
   }
 }
 

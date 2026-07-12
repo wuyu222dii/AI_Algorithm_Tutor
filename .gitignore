@@ -59,8 +59,6 @@ wrangler.toml
 .wrangler
 src/shared/types/cloudflare.d.ts
 
-src/config/db/migrations*
-
 .debug 
 .test
 
@@ -68,3 +66,7 @@ src/config/db/migrations*
 .source
 
 .chats
+
+# Versioned database migrations are source code and must be committed.
+!src/config/db/migrations/
+!src/config/db/migrations/**

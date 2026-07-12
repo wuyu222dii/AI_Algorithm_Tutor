@@ -87,6 +87,7 @@ export interface TestCaseResult {
 }
 
 export interface CodeRunResult {
+  id?: string;
   problemSlug: string;
   language: Language;
   status: CodeRunStatus;
@@ -97,6 +98,9 @@ export interface CodeRunResult {
   error?: string;
   durationMs: number;
   executedAt: string;
+  codeSnapshot?: string;
+  testScope?: 'sample' | 'full' | 'unknown';
+  submitted?: boolean;
 }
 
 export type LearningGoal = 'foundation' | 'interview' | 'contest';
@@ -176,6 +180,7 @@ export interface LearningArtifact {
   type: LearningArtifactType;
   locale: CoachLocale;
   problemSlug?: string;
+  runId?: string;
   title: string;
   summary: string;
   details: string[];
@@ -186,6 +191,11 @@ export interface LearningArtifact {
   counterexample?: CounterexamplePayload;
   reviewCard?: ReviewCardPayload;
   draft?: ParsedProblemDraft;
+  generationMode?: 'live' | 'local';
+  model?: string;
+  promptVersion?: string;
+  traceId?: string;
+  latencyMs?: number;
   createdAt: string;
 }
 
@@ -291,7 +301,7 @@ export interface CoachRequest {
 
 export interface CoachResponse {
   artifact: LearningArtifact;
-  mode: 'live' | 'demo';
+  mode: 'live';
   model: string;
   promptVersion: string;
   latencyMs: number;

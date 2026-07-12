@@ -104,8 +104,8 @@ export function parseProblemDraft(
       ? '导入结果是可编辑草稿，请确认函数参数与返回值。'
       : 'This import is an editable draft; verify parameters and return type.',
     locale === 'zh'
-      ? '演示模式不会生成隐藏测试；请自行添加可验证的测试用例。'
-      : 'Demo mode does not invent hidden tests; add test cases you can verify.',
+      ? '系统不会生成隐藏测试；请自行添加可验证的测试用例。'
+      : 'The system does not invent hidden tests; add test cases you can verify.',
   ];
 
   if (!statement) {

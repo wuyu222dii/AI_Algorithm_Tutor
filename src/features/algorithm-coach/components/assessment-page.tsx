@@ -295,7 +295,9 @@ export function AssessmentPage() {
           )
         : DURATION_SECONDS - secondsLeft;
       const summary = {
-        id: `assessment-${Date.now()}`,
+        id:
+          coach.state.activeAssessment?.id ??
+          `assessment_${crypto.randomUUID()}`,
         score: Math.round(
           (passedCount / Math.max(assessmentProblems.length, 1)) * 100
         ),
@@ -346,7 +348,12 @@ export function AssessmentPage() {
                 <IntroFact icon={<Target />} value={t.count} />
                 <IntroFact icon={<Code2 />} value={t.languages} />
               </div>
-              <Button size="lg" className="mt-8" onClick={startAssessment}>
+              <Button
+                size="lg"
+                className="mt-8"
+                disabled={!coach.hydrated}
+                onClick={startAssessment}
+              >
                 {t.start}
                 <ArrowRight />
               </Button>

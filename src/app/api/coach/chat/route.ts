@@ -1,4 +1,3 @@
-import { createDemoChatResponse } from '@/features/algorithm-coach/fixtures';
 import {
   CoachHttpError,
   errorResponse,
@@ -18,17 +17,6 @@ import {
 import { enforceMinIntervalRateLimit } from '@/shared/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
-
-function demoStream(text: string): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
-  const chunks = text.match(/[^。！？.!?]+[。！？.!?]?/g) ?? [text];
-  return new ReadableStream({
-    start(controller) {
-      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
-      controller.close();
-    },
-  });
-}
 
 export async function POST(request: Request) {
   const traceId = crypto.randomUUID();
@@ -55,32 +43,43 @@ export async function POST(request: Request) {
 
     const chatRequest = normalizeCoachChatRequest(parsed.data);
     const config = await getCoachRuntimeConfig(chatRequest.model);
+    if (!config.apiKey) {
+      throw new CoachHttpError(
+        503,
+        'ai_not_configured',
+        'The AI coach is not configured.'
+      );
+    }
+
     const headers = {
       'cache-control': 'no-store',
       'content-type': 'text/plain; charset=utf-8',
-      'x-coach-model': config.apiKey ? config.model : 'fixture/algocoach-v1',
-      'x-coach-mode': config.apiKey ? 'live' : 'demo',
+      'x-coach-model': config.model,
+      'x-coach-mode': 'live',
       'x-coach-prompt-version': COACH_PROMPT_VERSION,
       'x-coach-trace-id': traceId,
     };
 
-    if (!config.apiKey) {
-      return new Response(demoStream(createDemoChatResponse(chatRequest)), {
-        headers,
-      });
-    }
-
-    return streamLiveCoachChat(chatRequest, config).toTextStreamResponse({
+    return new Response(await streamLiveCoachChat(chatRequest, config), {
       headers,
     });
   } catch (error) {
     if (error instanceof CoachHttpError) return errorResponse(error, traceId);
     if (error instanceof CoachModelError) {
+      if (error.code === 'provider_failed') {
+        console.error(
+          `[coach-chat:${traceId}] provider failure`,
+          error.message
+        );
+      }
       return errorResponse(
         new CoachHttpError(
           error.code === 'model_not_allowed' ? 400 : 502,
           error.code,
-          error.message
+          error.code === 'provider_failed'
+            ? 'The AI provider could not start a coach response.'
+            : error.message,
+          error.code === 'provider_failed' ? undefined : error.message
         ),
         traceId
       );

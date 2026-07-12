@@ -175,15 +175,15 @@
           },
           {
             "question": "Is the AI treated as an authority?",
-            "answer": "No. AI feedback can be wrong. The interface grounds diagnosis in observable results, identifies demo or live mode, and gives users a correction path."
+            "answer": "No. AI feedback can be wrong. The interface grounds diagnosis in observable results, reports provider failures explicitly, and gives users a correction path."
           },
           {
             "question": "Does the MVP require a backend account?",
-            "answer": "No. The visitor experience is local-first. Cloud sync and production-scale judging are intentionally outside the first version."
+            "answer": "No. Visitors can practice locally; signing in enables account-backed cloud synchronization. Production-scale remote judging remains outside this version."
           },
           {
             "question": "How are imported problems handled?",
-            "answer": "The learner confirms the parsed draft and remains responsible for having the right to use the source material. Demo mode does not claim to provide hidden tests."
+            "answer": "The learner confirms the parsed draft and remains responsible for having the right to use the source material. The system does not claim to provide hidden tests."
           }
         ]
       },

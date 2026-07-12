@@ -44,10 +44,9 @@ import {
 import { Textarea } from '@/shared/components/ui/textarea';
 import { cn } from '@/shared/lib/utils';
 
-import { getExperimentVariant, trackProductEvent } from '../analytics';
+import { getExperimentVariant } from '../analytics';
 import { getProblemBySlug } from '../data/problems';
 import { runCode } from '../runner';
-import { loadImportedProblem } from '../storage';
 import { useCoachStore } from '../store';
 import type { CoachResponse, CodeRunResult, Language, Problem } from '../types';
 import { CodeEditor } from './code-editor';
@@ -59,7 +58,6 @@ import {
   getTestResults,
   localeKey,
   localizedProblem,
-  problemHint,
   runDuration,
   runError,
   runPassed,
@@ -103,16 +101,15 @@ const copy = {
     chatPlaceholder: '追问思路、复杂度或某个错误…',
     send: '发送',
     you: '你',
-    unavailable: 'AI 服务暂时不可用，已切换为题目内置提示。',
+    unavailable: 'AI 服务暂时不可用，请稍后重试。',
     error: '代码运行失败，请检查语法或稍后重试。',
-    completed: '本题已完成，复习卡片已生成。',
+    completed: '本题已完成。',
     imported: '导入题',
     importedNotice:
       '该导入草稿当前没有可验证测试；你可以编辑代码，但运行与提交会保持关闭。',
     noVerifiedTests: '无验证测试',
     notFound: '没有找到这道题',
     notFoundDetail: '题目可能已被移除，或导入草稿已从浏览器中清除。',
-    demo: '演示 AI',
     live: '在线 AI',
     reviewCard: '复习卡片',
     javascript: 'JavaScript',
@@ -157,10 +154,9 @@ const copy = {
     chatPlaceholder: 'Ask about the approach, complexity, or an error…',
     send: 'Send',
     you: 'You',
-    unavailable:
-      'AI is temporarily unavailable. Using the built-in problem guidance instead.',
+    unavailable: 'AI is temporarily unavailable. Please try again later.',
     error: 'Code execution failed. Check the syntax or try again.',
-    completed: 'Problem completed and a review card was generated.',
+    completed: 'Problem completed.',
     imported: 'Imported',
     importedNotice:
       'This imported draft has no verified tests yet. You can edit code, but run and submit stay disabled.',
@@ -168,7 +164,6 @@ const copy = {
     notFound: 'Problem not found',
     notFoundDetail:
       'It may have been removed, or the imported draft was cleared from this browser.',
-    demo: 'Demo AI',
     live: 'Live AI',
     reviewCard: 'Review card',
     javascript: 'JavaScript',
@@ -185,7 +180,7 @@ type CoachMessage = {
 type ArtifactView = {
   type: string;
   content: string;
-  mode?: string;
+  mode: CoachResponse['mode'];
 };
 
 export function PracticeWorkspace({ slug }: { slug: string }) {
@@ -193,10 +188,11 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
   const t = copy[locale];
   const coach = useCoachStore();
   const state = coach.state;
-  const [problem, setProblem] = useState<Problem | null>(
-    () => getProblemBySlug(slug) ?? null
-  );
-  const [loaded, setLoaded] = useState(slug !== 'imported-draft');
+  const problem: Problem | null =
+    slug === 'imported-draft'
+      ? coach.importedProblem
+      : (getProblemBySlug(slug) ?? null);
+  const loaded = slug !== 'imported-draft' || coach.hydrated;
   const [language, setLanguage] = useState<Language>(
     getPreferredLanguage(state)
   );
@@ -213,20 +209,6 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const codeInitializedFor = useRef('');
-
-  useEffect(() => {
-    if (slug !== 'imported-draft') return;
-    if (!coach.storageScope) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      setProblem(
-        loadImportedProblem(undefined, coach.storageScope ?? undefined)
-      );
-      setLoaded(true);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [coach.storageScope, slug]);
 
   useEffect(() => {
     if (!problem) return;
@@ -274,7 +256,14 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
     setActiveMobileTab('code');
     try {
       coach.saveCode(problem.slug, language, code);
-      const nextResult = await runCode({ problem, language, code, scope });
+      const rawResult = await runCode({ problem, language, code, scope });
+      const nextResult: CodeRunResult = {
+        ...rawResult,
+        id: rawResult.id ?? crypto.randomUUID(),
+        codeSnapshot: code,
+        testScope: scope === 'all' ? 'full' : 'sample',
+        submitted: scope === 'all',
+      };
       setResult(nextResult);
       coach.recordRun(problem.slug, nextResult, {
         submitted: scope === 'all',
@@ -342,10 +331,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
       if (!response.ok) throw new Error('Coach request failed');
       const payload = (await response.json()) as CoachResponse;
       const artifact = payload.artifact;
-      let content = artifactText(artifact, locale);
-      if (!content && action === 'hint') {
-        content = problemHint(problem, locale, nextHintLevel - 1);
-      }
+      const content = artifactText(artifact, locale);
       if (!content) throw new Error('Empty coach response');
 
       const view = {
@@ -361,40 +347,27 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
         ...artifact,
         type: action,
         problemSlug: problem.slug,
+        runId: runResult?.id,
+        generationMode: payload.mode,
+        model: payload.model,
+        promptVersion: payload.promptVersion,
+        traceId: payload.traceId,
+        latencyMs: payload.latencyMs,
       });
       if (action === 'counterexample') {
-        trackProductEvent(
-          'counterexample_requested',
-          {
-            problemSlug: problem.slug,
-          },
-          coach.storageScope
-        );
+        coach.trackEvent('counterexample_requested', {
+          problemSlug: problem.slug,
+        });
       } else if (action === 'review_card') {
-        trackProductEvent(
-          'review_card_created',
-          {
-            problemSlug: problem.slug,
-          },
-          coach.storageScope
-        );
+        coach.trackEvent('review_card_created', {
+          problemSlug: problem.slug,
+        });
       }
       if (action === 'hint') {
         setHintLevel(nextHintLevel);
         coach.revealHint(problem.slug);
       }
     } catch {
-      if (action === 'hint') {
-        const fallback = problemHint(problem, locale, nextHintLevel - 1);
-        if (fallback) {
-          setArtifacts((current) => [
-            { type: action, content: fallback, mode: 'demo' },
-            ...current.filter((item) => item.type !== action),
-          ]);
-          setHintLevel(nextHintLevel);
-          coach.revealHint(problem.slug);
-        }
-      }
       if (!silent) toast.info(t.unavailable);
     } finally {
       setAiLoading(null);
@@ -455,13 +428,12 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
         ...current,
         { id: `assistant-${Date.now()}`, role: 'assistant', content },
       ]);
+      coach.trackEvent('coach_chat_message', {
+        problemSlug: problem.slug,
+        properties: { messageLength: prompt.length },
+      });
     } catch {
-      const fallback =
-        problemHint(problem, locale, Math.min(hintLevel, 2)) || t.unavailable;
-      setMessages((current) => [
-        ...current,
-        { id: `assistant-${Date.now()}`, role: 'assistant', content: fallback },
-      ]);
+      toast.info(t.unavailable);
     } finally {
       setChatLoading(false);
     }
@@ -1006,7 +978,7 @@ function CoachPanel({
                     variant="outline"
                     className="ml-auto rounded-md px-1.5 py-0 text-[10px] font-normal"
                   >
-                    {artifact.mode === 'live' ? t.live : t.demo}
+                    {t.live}
                   </Badge>
                 </div>
                 <p className="text-muted-foreground mt-2 text-xs leading-6 whitespace-pre-wrap">

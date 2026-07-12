@@ -10,11 +10,12 @@ import { SignUser } from '@/shared/blocks/sign/sign-user';
 import { Badge } from '@/shared/components/ui/badge';
 import { Button } from '@/shared/components/ui/button';
 import { SidebarTrigger } from '@/shared/components/ui/sidebar';
+import { cn } from '@/shared/lib/utils';
 import { UserNav } from '@/shared/types/blocks/common';
 import { Sidebar as SidebarType } from '@/shared/types/blocks/dashboard';
 
 import { createCoachStorageScope } from '../storage';
-import { CoachProvider } from '../store';
+import { CoachProvider, useCoachStore } from '../store';
 
 const pageNames = {
   zh: {
@@ -26,7 +27,10 @@ const pageNames = {
     about: '关于产品',
     practice: '代码演练',
     workspace: '学习工作台',
-    demo: '演示模式',
+    sync: '云端已同步',
+    syncing: '同步中',
+    syncError: '同步失败',
+    guest: '访客本地',
     profile: '个人资料',
     security: '安全设置',
   },
@@ -39,7 +43,10 @@ const pageNames = {
     about: 'About',
     practice: 'Practice',
     workspace: 'Learning workspace',
-    demo: 'Demo mode',
+    sync: 'Cloud synced',
+    syncing: 'Syncing',
+    syncError: 'Sync failed',
+    guest: 'Guest local',
     profile: 'Profile',
     security: 'Security',
   },
@@ -140,12 +147,10 @@ export function CoachShell({ children }: { children: ReactNode }) {
               {currentPage}
             </span>
             <div className="ml-auto flex items-center gap-2">
-              <Badge
-                variant="outline"
-                className="hidden rounded-md border-amber-500/40 bg-amber-500/10 text-amber-700 sm:inline-flex dark:text-amber-300"
-              >
-                {copy.demo}
-              </Badge>
+              <CoachSyncBadge
+                signedIn={Boolean(session?.user?.id)}
+                copy={copy}
+              />
               <Button
                 asChild
                 size="sm"
@@ -161,5 +166,42 @@ export function CoachShell({ children }: { children: ReactNode }) {
         </div>
       </DashboardLayout>
     </CoachProvider>
+  );
+}
+
+function CoachSyncBadge({
+  signedIn,
+  copy,
+}: {
+  signedIn: boolean;
+  copy: (typeof pageNames)[keyof typeof pageNames];
+}) {
+  const { syncStatus } = useCoachStore();
+  const status = signedIn ? syncStatus : 'local';
+  const label = !signedIn
+    ? copy.guest
+    : status === 'syncing'
+      ? copy.syncing
+      : status === 'error'
+        ? copy.syncError
+        : copy.sync;
+
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        'hidden rounded-md sm:inline-flex',
+        status === 'local' &&
+          'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+        status === 'syncing' &&
+          'border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300',
+        status === 'synced' &&
+          'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+        status === 'error' &&
+          'border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300'
+      )}
+    >
+      {label}
+    </Badge>
   );
 }

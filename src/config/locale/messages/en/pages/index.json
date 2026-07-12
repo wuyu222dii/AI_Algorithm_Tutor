@@ -197,15 +197,15 @@
           },
           {
             "question": "What happens without an AI key?",
-            "answer": "Curated problems use deterministic demo feedback, so diagnosis, hints, counterexamples, and review cards remain available for a reliable walkthrough."
+            "answer": "Code execution and tests still work, while AI feedback reports that the provider is not configured instead of returning simulated advice."
           },
           {
             "question": "Can I import my own problem?",
-            "answer": "Yes. You can review a parsed draft with estimated difficulty, constraints, function signature, and starter code. Demo mode does not invent hidden tests for imported prompts."
+            "answer": "Yes. You can review a parsed draft with estimated difficulty, constraints, function signature, and starter code. The system does not invent hidden tests for imported prompts."
           },
           {
             "question": "Where is my learning data stored?",
-            "answer": "Visitor goals, code, attempts, hints, assessments, and review cards are stored locally in your browser and can be reset."
+            "answer": "Visitor data stays in the browser. After sign-in, learning profiles, code runs, feedback, assessments, and events are synchronized to the account database."
           }
         ]
       },
