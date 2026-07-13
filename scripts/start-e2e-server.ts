@@ -25,6 +25,8 @@ const env = {
   AUTH_SOCIAL_SIGN_IN_RATE_WINDOW_MS: '60000',
   AUTH_SOCIAL_SIGN_IN_RATE_MAX: '20',
   NEXT_PUBLIC_APP_URL: `http://localhost:${port}`,
+  NEXT_PUBLIC_DEFAULT_LOCALE: 'zh',
+  NEXT_PUBLIC_LOCALE_DETECT_ENABLED: 'false',
   AUTH_URL: `http://localhost:${port}`,
   GOOGLE_AUTH_ENABLED: 'true',
   GOOGLE_CLIENT_ID: 'algocoach-e2e-google-client-id',

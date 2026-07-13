@@ -377,8 +377,7 @@ test('core pages render without browser errors or horizontal overflow', async ({
     '/progress',
     '/about',
   ]) {
-    await page.goto(route);
-    await page.waitForLoadState('domcontentloaded');
+    await page.goto(route, { waitUntil: 'domcontentloaded' });
     await expect
       .poll(() =>
         page.evaluate(
