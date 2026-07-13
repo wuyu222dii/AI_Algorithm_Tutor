@@ -66,7 +66,7 @@ export default async function CategoryAddPage({
       button: {
         title: t('add.buttons.submit'),
       },
-      handler: async (data, passby) => {
+      handler: async (data) => {
         'use server';
 
         const user = await getUserInfo();

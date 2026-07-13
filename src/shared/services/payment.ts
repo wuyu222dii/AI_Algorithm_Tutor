@@ -20,7 +20,6 @@ import {
   NewCredit,
 } from '../models/credit';
 import {
-  findOrderByOrderNo,
   NewOrder,
   Order,
   OrderStatus,

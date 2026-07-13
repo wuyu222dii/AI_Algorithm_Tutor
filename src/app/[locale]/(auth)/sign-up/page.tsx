@@ -14,7 +14,7 @@ function stripLocalePrefix(path: string, locale: string) {
   else if (path.startsWith(`/${locale}/`)) {
     stripped = path.slice(locale.length + 1) || '/';
   }
-  return getSafeInternalCallback(stripped, '/');
+  return getSafeInternalCallback(stripped, '/learn');
 }
 
 export async function generateMetadata({

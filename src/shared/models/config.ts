@@ -146,13 +146,6 @@ export async function getPublicConfigs(): Promise<Configs> {
   publicConfigs.password_reset_enabled =
     emailAuthEnabled && resendConfigured ? 'true' : 'false';
   publicConfigs.google_auth_enabled = googleAuthReady ? 'true' : 'false';
-  publicConfigs.google_one_tap_enabled =
-    googleAuthReady && allConfigs.google_one_tap_enabled === 'true'
-      ? 'true'
-      : 'false';
-  publicConfigs.google_client_id = googleAuthReady
-    ? allConfigs.google_client_id
-    : '';
   publicConfigs.github_auth_enabled = githubAuthReady ? 'true' : 'false';
 
   return publicConfigs;

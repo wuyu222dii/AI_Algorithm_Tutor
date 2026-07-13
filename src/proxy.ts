@@ -22,6 +22,7 @@ const authFlowPagePrefixes = [
   '/verify-email',
   '/forgot-password',
   '/reset-password',
+  '/auth-error',
 ];
 
 function matchesPagePrefix(pathname: string, prefixes: string[]) {

@@ -62,7 +62,6 @@ export class FalProvider implements AIProvider {
 
     // build request params
     const input = this.formatInput({
-      mediaType,
       model,
       prompt,
       options,
@@ -310,12 +309,10 @@ export class FalProvider implements AIProvider {
 
   // format input
   private formatInput({
-    mediaType,
     model,
     prompt,
     options,
   }: {
-    mediaType: AIMediaType;
     model: string;
     prompt: string;
     options: any;

@@ -39,7 +39,7 @@ export function Subscribe({
         throw new Error(`request failed with status ${resp.status}`);
       }
 
-      const { code, message, data } = await resp.json();
+      const { code, message } = await resp.json();
       if (code !== 0) {
         throw new Error(message);
       }

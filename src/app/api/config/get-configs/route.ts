@@ -1,7 +1,7 @@
 import { respData, respErr } from '@/shared/lib/resp';
 import { getPublicConfigs } from '@/shared/models/config';
 
-export async function POST(req: Request) {
+export async function POST() {
   try {
     const configs = await getPublicConfigs();
 

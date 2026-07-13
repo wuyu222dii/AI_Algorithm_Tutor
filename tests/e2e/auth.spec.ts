@@ -1,6 +1,23 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 
+import { createGoogleOAuthMockToken } from '../../src/core/auth/google-oauth-mock';
+
 const PASSWORD = 'AlgoCoach-E2E-Password-2026!';
+const GOOGLE_MOCK_SECRET = 'algocoach-e2e-google-oauth-mock-secret-2026';
+
+function googleToken(email: string, sub: string, name: string) {
+  return createGoogleOAuthMockToken(
+    {
+      sub,
+      email,
+      emailVerified: true,
+      name,
+      image: 'https://lh3.googleusercontent.com/e2e-avatar.png',
+      exp: Math.floor(Date.now() / 1000) + 300,
+    },
+    GOOGLE_MOCK_SECRET
+  );
+}
 
 function isMobileProject(testInfo: TestInfo) {
   return testInfo.project.name.startsWith('mobile');
@@ -61,6 +78,218 @@ async function sessionEmail(
 }
 
 test.describe('desktop registration and login', () => {
+  test('starts secure Google OAuth and localizes a cancelled authorization', async ({
+    page,
+  }, testInfo) => {
+    test.skip(isMobileProject(testInfo), 'Desktop Google OAuth coverage');
+
+    await page.goto('/sign-in?callbackUrl=%2Freview');
+    await expect(
+      page.getByRole('button', { name: '使用 Google 登录' })
+    ).toBeVisible();
+    await expect(
+      page.locator('iframe[src*="accounts.google.com/gsi"]')
+    ).toHaveCount(0);
+
+    let browserStartBody: Record<string, unknown> | null = null;
+    const socialStartPattern = '**/api/auth/sign-in/social';
+    await page.route(socialStartPattern, async (route) => {
+      browserStartBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ url: '', redirect: false }),
+      });
+    });
+    await page.getByRole('button', { name: '使用 Google 登录' }).click();
+    await expect.poll(() => browserStartBody).not.toBeNull();
+    expect(browserStartBody).toMatchObject({
+      provider: 'google',
+      callbackURL: '/review',
+      errorCallbackURL: '/auth-error?callbackUrl=%2Freview',
+    });
+    await page.unroute(socialStartPattern);
+
+    const startResponse = await page
+      .context()
+      .request.post('/api/auth/sign-in/social', {
+        data: {
+          provider: 'google',
+          callbackURL: '/review',
+          errorCallbackURL: '/auth-error?callbackUrl=%2Freview',
+          disableRedirect: true,
+        },
+      });
+    expect(startResponse.ok()).toBe(true);
+    const startBody = (await startResponse.json()) as { url?: string };
+    const providerUrl = new URL(startBody.url || '');
+    expect(providerUrl.origin).toBe('https://accounts.google.com');
+    expect(providerUrl.searchParams.get('state')).toBeTruthy();
+    expect(providerUrl.searchParams.get('code_challenge')).toBeTruthy();
+    expect(providerUrl.searchParams.get('code_challenge_method')).toBe('S256');
+
+    const callbackResponse = await page
+      .context()
+      .request.get(
+        `/api/auth/callback/google?error=access_denied&state=${encodeURIComponent(
+          providerUrl.searchParams.get('state') || ''
+        )}`,
+        { maxRedirects: 0 }
+      );
+    expect(callbackResponse.status()).toBe(302);
+    const location = callbackResponse.headers().location;
+    expect(location).toBeTruthy();
+    const errorUrl = new URL(location || '/', page.url());
+    expect(errorUrl.pathname).toBe('/auth-error');
+    expect(errorUrl.searchParams.get('callbackUrl')).toBe('/review');
+    expect(errorUrl.searchParams.get('error')).toBe('access_denied');
+
+    await page.goto(`${errorUrl.pathname}${errorUrl.search}`);
+    await expect(
+      page.getByRole('heading', { name: 'Google 登录未完成' })
+    ).toBeVisible();
+    await expect(page.getByText(/已取消 Google 授权/)).toBeVisible();
+    await expect(page.getByRole('link', { name: '重新登录' })).toHaveAttribute(
+      'href',
+      '/sign-in?callbackUrl=%2Freview'
+    );
+  });
+
+  test('does not expose the removed anonymous email endpoint', async ({
+    request,
+  }, testInfo) => {
+    test.skip(isMobileProject(testInfo), 'Desktop API surface coverage');
+
+    const response = await request.post('/api/email/send-email', {
+      data: { emails: ['attacker@example.com'], subject: 'probe' },
+    });
+    expect(response.status()).toBe(404);
+  });
+
+  test('registers through mocked Google and preserves visitor learning data', async ({
+    page,
+  }, testInfo) => {
+    test.skip(isMobileProject(testInfo), 'Desktop Google account coverage');
+    const email = uniqueEmail(testInfo, 'google-first');
+    const now = new Date().toISOString();
+
+    await page.addInitScript((onboardedAt) => {
+      if (sessionStorage.getItem('algocoach-google-guest-seeded')) return;
+      sessionStorage.setItem('algocoach-google-guest-seeded', 'true');
+      localStorage.setItem(
+        'algocoach:state:v2',
+        JSON.stringify({
+          version: 2,
+          profile: {
+            goal: 'interview',
+            preferredLanguage: 'python',
+            weeklyTarget: 5,
+            onboardingCompleted: true,
+            onboardedAt,
+          },
+          sessions: {},
+          artifacts: [],
+          events: [],
+          activeAssessment: null,
+          assessments: [],
+          code: {},
+          runs: [],
+          completedProblemIds: [],
+        })
+      );
+    }, now);
+    await page.goto('/learn');
+    await expect(
+      page.getByRole('heading', { name: '今天，从一道好题开始' })
+    ).toBeVisible();
+
+    const response = await page
+      .context()
+      .request.post('/api/auth/sign-in/social', {
+        data: {
+          provider: 'google',
+          callbackURL: '/progress',
+          idToken: {
+            token: googleToken(email, `google-${Date.now()}`, 'Google Learner'),
+          },
+        },
+      });
+    expect(response.ok()).toBe(true);
+    await expect.poll(() => sessionEmail(page)).toBe(email);
+
+    await page.goto('/progress');
+    await expect(page.getByRole('heading', { name: '学习进度' })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          localStorage.getItem('algocoach:guest-claimed-by:v1')
+        )
+      )
+      .toMatch(/^user:/);
+    const claimed = await page.evaluate(() => {
+      const scope = localStorage.getItem('algocoach:guest-claimed-by:v1');
+      const state = scope
+        ? localStorage.getItem(`algocoach:state:v2:${scope}`)
+        : null;
+      return { scope, state: state ? JSON.parse(state) : null };
+    });
+    expect(claimed.scope).toMatch(/^user:/);
+    expect(claimed.state?.profile).toMatchObject({
+      goal: 'interview',
+      preferredLanguage: 'python',
+    });
+  });
+
+  test('links verified Google email without replacing the existing profile', async ({
+    page,
+  }, testInfo) => {
+    test.skip(isMobileProject(testInfo), 'Desktop Google linking coverage');
+    const email = uniqueEmail(testInfo, 'google-link');
+    const request = page.context().request;
+
+    const signUp = await request.post('/api/auth/sign-up/email', {
+      data: {
+        name: 'Existing Learner',
+        email,
+        password: PASSWORD,
+        callbackURL: '/learn',
+      },
+    });
+    expect(signUp.ok()).toBe(true);
+    const originalSession = (await request
+      .get('/api/auth/get-session')
+      .then((response) => response.json())) as {
+      user: { id: string; name: string; image?: string | null };
+    };
+    expect(originalSession.user.name).toBe('Existing Learner');
+    expect((await request.post('/api/auth/sign-out')).ok()).toBe(true);
+
+    const googleSignIn = await request.post('/api/auth/sign-in/social', {
+      data: {
+        provider: 'google',
+        callbackURL: '/review',
+        idToken: {
+          token: googleToken(
+            email,
+            `linked-google-${Date.now()}`,
+            'Replacement Google Name'
+          ),
+        },
+      },
+    });
+    expect(googleSignIn.ok()).toBe(true);
+    const linkedSession = (await request
+      .get('/api/auth/get-session')
+      .then((response) => response.json())) as {
+      user: { id: string; name: string; image?: string | null };
+    };
+    expect(linkedSession.user.id).toBe(originalSession.user.id);
+    expect(linkedSession.user.name).toBe('Existing Learner');
+    expect(linkedSession.user.image ?? null).toBe(
+      originalSession.user.image ?? null
+    );
+  });
+
   test('registers, persists a session, signs out, and signs back in', async ({
     page,
   }, testInfo) => {

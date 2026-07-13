@@ -209,6 +209,8 @@ const productEventSchema = z.object({
 
 const assessmentResultSchema = z.object({
   id: z.string().min(1).max(160),
+  version: z.string().max(100).optional(),
+  verificationToken: z.string().max(4096).optional(),
   problemSlugs: z.array(z.string().max(120)).max(20),
   startedAt: z.iso.datetime(),
   completedAt: z.iso.datetime(),
@@ -263,3 +265,75 @@ export const coachSyncRequestSchema = z.object({
   state: persistedCoachStateSchema,
   importedProblem: persistedProblemSchema.nullable(),
 });
+
+export const coachSyncMutationSchema = z
+  .object({
+    id: z.string().min(1).max(160),
+    baseRevision: z.number().int().min(0),
+    createdAt: z.iso.datetime(),
+    changes: z
+      .object({
+        profile: learningProfileSchema.nullable().optional(),
+        sessions: z
+          .record(z.string().min(1).max(120), practiceSessionSchema)
+          .optional(),
+        artifacts: z.array(artifactSchema).max(100).optional(),
+        events: z.array(productEventSchema).max(300).optional(),
+        activeAssessment: activeAssessmentSchema.nullable().optional(),
+        assessments: z.array(assessmentResultSchema).max(20).optional(),
+        code: z
+          .record(
+            z.string().min(1).max(120),
+            z.object({
+              javascript: z.string().max(30_000).optional(),
+              python: z.string().max(30_000).optional(),
+            })
+          )
+          .optional(),
+        runs: z.array(codeRunSchema).max(200).optional(),
+        completedProblemIds: z
+          .array(z.string().min(1).max(160))
+          .max(500)
+          .optional(),
+      })
+      .strict(),
+    importedProblem: persistedProblemSchema.nullable().optional(),
+  })
+  .superRefine((value, context) => {
+    if (
+      !Object.keys(value.changes).length &&
+      !Object.hasOwn(value, 'importedProblem')
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['changes'],
+        message: 'mutation must contain at least one change',
+      });
+    }
+  });
+
+export const coachMutationSyncRequestSchema = z
+  .object({
+    revision: z.number().int().min(0),
+    mutations: z.array(coachSyncMutationSchema).min(1).max(100),
+  })
+  .superRefine((value, context) => {
+    const ids = new Set<string>();
+    value.mutations.forEach((mutation, index) => {
+      if (ids.has(mutation.id)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['mutations', index, 'id'],
+          message: 'mutation ids must be unique within a request',
+        });
+      }
+      if (mutation.baseRevision > value.revision) {
+        context.addIssue({
+          code: 'custom',
+          path: ['mutations', index, 'baseRevision'],
+          message: 'mutation baseRevision cannot exceed request revision',
+        });
+      }
+      ids.add(mutation.id);
+    });
+  });

@@ -19,8 +19,16 @@ import {
   PaperclipIcon,
   XIcon,
 } from "lucide-react";
+import Image from "next/image";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
-import { createContext, memo, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  memo,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { Streamdown } from "streamdown";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
@@ -188,7 +196,10 @@ export const MessageBranchContent = ({
   ...props
 }: MessageBranchContentProps) => {
   const { currentBranch, setBranches, branches } = useMessageBranch();
-  const childrenArray = Array.isArray(children) ? children : [children];
+  const childrenArray = useMemo(
+    () => (Array.isArray(children) ? children : [children]),
+    [children]
+  );
 
   // Use useEffect to update branches when they change
   useEffect(() => {
@@ -229,7 +240,12 @@ export const MessageBranchSelector = ({
 
   return (
     <ButtonGroup
-      className="[&>*:not(:first-child)]:rounded-l-md [&>*:not(:last-child)]:rounded-r-md"
+      className={cn(
+        "[&>*:not(:first-child)]:rounded-l-md [&>*:not(:last-child)]:rounded-r-md",
+        from === "user" && "ml-auto",
+        className
+      )}
+      data-from={from}
       orientation="horizontal"
       {...props}
     />
@@ -271,6 +287,7 @@ export const MessageBranchNext = ({
   return (
     <Button
       aria-label="Next branch"
+      className={className}
       disabled={totalBranches <= 1}
       onClick={goToNext}
       size="icon-sm"
@@ -349,11 +366,12 @@ export function MessageAttachment({
     >
       {isImage ? (
         <>
-          <img
+          <Image
             alt={filename || "attachment"}
             className="size-full object-cover"
             height={100}
             src={data.url}
+            unoptimized
             width={100}
           />
           {onRemove && (

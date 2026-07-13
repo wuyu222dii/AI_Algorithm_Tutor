@@ -6,6 +6,7 @@ import {
   Problem,
   ProblemTopic,
 } from '../types';
+import { extendedProblems } from './extended-problems';
 
 const text = (zh: string, en: string): LocalizedText => ({ zh, en });
 const localizedHints = (
@@ -667,6 +668,7 @@ export const problems: Problem[] = [
     ],
     estimatedMinutes: 25,
   },
+  ...extendedProblems,
 ];
 
 export const PROBLEMS = problems;

@@ -85,7 +85,8 @@ export class GeminiProvider implements AIProvider {
       }
     }
 
-    const { image_input, ...generationConfig } = options || {};
+    const generationConfig = { ...(options || {}) };
+    delete generationConfig.image_input;
 
     const payload = {
       contents: {

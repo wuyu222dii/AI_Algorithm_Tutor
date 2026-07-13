@@ -2,21 +2,13 @@
 
 import { useState } from 'react';
 import { UIMessage, UseChatHelpers } from '@ai-sdk/react';
-import { BrainCircuitIcon, GlobeIcon } from 'lucide-react';
+import { BrainCircuitIcon } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import {
   PromptInput,
-  PromptInputActionAddAttachments,
-  PromptInputActionMenu,
-  PromptInputActionMenuContent,
-  PromptInputActionMenuTrigger,
-  PromptInputAttachment,
-  PromptInputAttachments,
   PromptInputBody,
-  PromptInputButton,
   PromptInputFooter,
-  PromptInputHeader,
   PromptInputSelect,
   PromptInputSelectContent,
   PromptInputSelectItem,
@@ -34,7 +26,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/shared/components/ui/tooltip';
-import { useChatContext } from '@/shared/contexts/chat';
 import { ChatModel } from '@/shared/types/chat';
 
 export function ChatInput({
@@ -75,7 +66,7 @@ export function ChatInput({
 
   const [model, setModel] = useState<string>(models[0].name);
   const [input, setInput] = useState('');
-  const [webSearch, setWebSearch] = useState(false);
+  const webSearch = false;
   const [reasoning, setReasoning] = useState(false);
   const selectedModelLabel =
     models.find((item) => item.name === model)?.title ?? models[0]?.title ?? '';
@@ -85,9 +76,9 @@ export function ChatInput({
       <PromptInput
         onSubmit={async (message) => {
           try {
-            handleSubmit(message, { model, webSearch, reasoning });
+            await handleSubmit(message, { model, webSearch, reasoning });
             setInput('');
-          } catch (err) {
+          } catch {
             // Allow parent to control error display/state. Do not clear input.
           }
         }}
@@ -95,11 +86,6 @@ export function ChatInput({
         globalDrop
         multiple
       >
-        {/* <PromptInputHeader>
-        <PromptInputAttachments>
-          {(attachment) => <PromptInputAttachment data={attachment} />}
-        </PromptInputAttachments>
-      </PromptInputHeader> */}
         <PromptInputBody>
           <PromptInputTextarea
             className="overflow-hidden p-4 ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
@@ -114,19 +100,6 @@ export function ChatInput({
         </PromptInputBody>
         <PromptInputFooter>
           <PromptInputTools>
-            {/* <PromptInputActionMenu>
-            <PromptInputActionMenuTrigger />
-            <PromptInputActionMenuContent>
-              <PromptInputActionAddAttachments />
-            </PromptInputActionMenuContent>
-          </PromptInputActionMenu>
-          <PromptInputButton
-            variant={webSearch ? 'default' : 'ghost'}
-            onClick={() => setWebSearch(!webSearch)}
-          >
-            <GlobeIcon size={16} />
-            <span>Search</span>
-          </PromptInputButton> */}
             <div className="flex items-center">
               <Switch
                 id="prompt-reasoning-switch"

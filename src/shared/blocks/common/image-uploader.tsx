@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import Image from 'next/image';
 import { IconRefresh, IconUpload, IconX } from '@tabler/icons-react';
 import { ImageIcon } from 'lucide-react';
 import { toast } from 'sonner';
@@ -26,6 +27,8 @@ interface ImageUploaderProps {
   emptyHint?: string;
   className?: string;
   defaultPreviews?: string[];
+  uploadUrl?: string;
+  onUpload?: (files: File[]) => Promise<string[]>;
   onChange?: (items: ImageUploaderValue[]) => void;
 }
 
@@ -43,11 +46,23 @@ const formatBytes = (bytes?: number) => {
   return `${mb.toFixed(2)} MB`;
 };
 
-const uploadImageFile = async (file: File) => {
+const uploadImageFile = async (
+  file: File,
+  uploadUrl: string,
+  onUpload?: (files: File[]) => Promise<string[]>
+) => {
+  if (onUpload) {
+    const [url] = await onUpload([file]);
+    if (!url) {
+      throw new Error('Upload returned no image URL');
+    }
+    return url;
+  }
+
   const formData = new FormData();
   formData.append('files', file);
 
-  const response = await fetch('/api/storage/upload-image', {
+  const response = await fetch(uploadUrl, {
     method: 'POST',
     body: formData,
   });
@@ -72,6 +87,8 @@ export function ImageUploader({
   emptyHint,
   className,
   defaultPreviews,
+  uploadUrl = '/api/storage/upload-image',
+  onUpload,
   onChange,
 }: ImageUploaderProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -198,7 +215,7 @@ export function ImageUploader({
         })
       );
 
-      uploadImageFile(file)
+      uploadImageFile(file, uploadUrl, onUpload)
         .then((url) => {
           setItems((prev) =>
             prev.map((item) => {
@@ -321,7 +338,11 @@ export function ImageUploader({
     Promise.all(
       newItems.map(async (item) => {
         try {
-          const url = await uploadImageFile(item.file as File);
+          const url = await uploadImageFile(
+            item.file as File,
+            uploadUrl,
+            onUpload
+          );
           setItems((prev) => {
             const next = prev.map((current) => {
               if (current.id === item.id) {
@@ -501,9 +522,12 @@ export function ImageUploader({
             className="group border-border bg-muted/50 hover:border-border hover:bg-muted relative overflow-hidden rounded-xl border p-1 shadow-sm transition"
           >
             <div className="relative overflow-hidden rounded-lg">
-              <img
+              <Image
                 src={item.preview}
                 alt="Reference"
+                width={128}
+                height={128}
+                unoptimized
                 className="h-32 w-32 rounded-lg object-cover"
               />
               {item.size && (

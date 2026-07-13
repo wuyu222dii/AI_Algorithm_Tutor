@@ -47,6 +47,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { nanoid } from "nanoid";
+import Image from "next/image";
 import {
   type ChangeEvent,
   type ChangeEventHandler,
@@ -294,11 +295,12 @@ export function PromptInputAttachment({
           <div className="relative size-5 shrink-0">
             <div className="absolute inset-0 flex size-5 items-center justify-center overflow-hidden rounded bg-background transition-opacity group-hover:opacity-0">
               {isImage ? (
-                <img
+                <Image
                   alt={filename || "attachment"}
                   className="size-5 object-cover"
                   height={20}
-                  src={data.url}
+                  src={data.url!}
+                  unoptimized
                   width={20}
                 />
               ) : (
@@ -329,11 +331,12 @@ export function PromptInputAttachment({
         <div className="w-auto space-y-3">
           {isImage && (
             <div className="flex max-h-96 w-96 items-center justify-center overflow-hidden rounded-md border">
-              <img
+              <Image
                 alt={filename || "attachment preview"}
                 className="max-h-full max-w-full object-contain"
                 height={384}
-                src={data.url}
+                src={data.url!}
+                unoptimized
                 width={448}
               />
             </div>
@@ -542,36 +545,58 @@ export const PromptInput = ({
     [matchesAccept, maxFiles, maxFileSize, onError]
   );
 
-  const add = usingProvider
-    ? (files: File[] | FileList) => controller.attachments.add(files)
-    : addLocal;
+  const add = useCallback(
+    (files: File[] | FileList) => {
+      if (controller) {
+        controller.attachments.add(files);
+      } else {
+        addLocal(files);
+      }
+    },
+    [addLocal, controller]
+  );
 
-  const remove = usingProvider
-    ? (id: string) => controller.attachments.remove(id)
-    : (id: string) =>
-        setItems((prev) => {
-          const found = prev.find((file) => file.id === id);
-          if (found?.url) {
-            URL.revokeObjectURL(found.url);
-          }
-          return prev.filter((file) => file.id !== id);
-        });
+  const remove = useCallback(
+    (id: string) => {
+      if (controller) {
+        controller.attachments.remove(id);
+        return;
+      }
 
-  const clear = usingProvider
-    ? () => controller.attachments.clear()
-    : () =>
-        setItems((prev) => {
-          for (const file of prev) {
-            if (file.url) {
-              URL.revokeObjectURL(file.url);
-            }
-          }
-          return [];
-        });
+      setItems((prev) => {
+        const found = prev.find((file) => file.id === id);
+        if (found?.url) {
+          URL.revokeObjectURL(found.url);
+        }
+        return prev.filter((file) => file.id !== id);
+      });
+    },
+    [controller]
+  );
 
-  const openFileDialog = usingProvider
-    ? () => controller.attachments.openFileDialog()
-    : openFileDialogLocal;
+  const clear = useCallback(() => {
+    if (controller) {
+      controller.attachments.clear();
+      return;
+    }
+
+    setItems((prev) => {
+      for (const file of prev) {
+        if (file.url) {
+          URL.revokeObjectURL(file.url);
+        }
+      }
+      return [];
+    });
+  }, [controller]);
+
+  const openFileDialog = useCallback(() => {
+    if (controller) {
+      controller.attachments.openFileDialog();
+    } else {
+      openFileDialogLocal();
+    }
+  }, [controller, openFileDialogLocal]);
 
   // Let provider know about our hidden file input so external menus can call openFileDialog()
   useEffect(() => {
@@ -696,7 +721,9 @@ export const PromptInput = ({
 
     // Convert blob URLs to data URLs asynchronously
     Promise.all(
-      files.map(async ({ id, ...item }) => {
+      files.map(async (file) => {
+        const item: FileUIPart & { id?: string } = { ...file };
+        delete item.id;
         if (item.url && item.url.startsWith("blob:")) {
           return {
             ...item,
@@ -728,7 +755,7 @@ export const PromptInput = ({
             controller.textInput.clear();
           }
         }
-      } catch (error) {
+      } catch {
         // Don't clear on error - user may want to retry
       }
     });

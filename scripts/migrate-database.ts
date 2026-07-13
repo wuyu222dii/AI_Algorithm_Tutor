@@ -28,9 +28,16 @@ function positiveInteger(value: string | undefined, fallback: number): number {
 }
 
 export async function migrateDatabase(options?: {
-  allowMissingDatabase?: boolean;
+  databaseUrl?: string;
+  allowApplicationDatabaseUrl?: boolean;
+  respectAutoMigrateFlag?: boolean;
+  applicationRole?: string;
+  requireApplicationRole?: boolean;
 }): Promise<void> {
-  if (process.env.DB_AUTO_MIGRATE === 'false') {
+  if (
+    options?.respectAutoMigrateFlag &&
+    process.env.DB_AUTO_MIGRATE === 'false'
+  ) {
     console.log('[database] automatic migrations are disabled');
     return;
   }
@@ -42,13 +49,18 @@ export async function migrateDatabase(options?: {
     );
   }
 
-  const databaseUrl = process.env.DATABASE_URL?.trim();
+  const databaseUrl =
+    options?.databaseUrl?.trim() ||
+    process.env.MIGRATION_DATABASE_URL?.trim() ||
+    (options?.allowApplicationDatabaseUrl
+      ? process.env.DATABASE_URL?.trim()
+      : undefined);
   if (!databaseUrl) {
-    if (options?.allowMissingDatabase) {
-      console.log('[database] migration skipped because DATABASE_URL is unset');
-      return;
-    }
-    throw new Error('DATABASE_URL is required');
+    throw new Error(
+      options?.allowApplicationDatabaseUrl
+        ? 'MIGRATION_DATABASE_URL or DATABASE_URL is required for development migrations'
+        : 'MIGRATION_DATABASE_URL is required for release migrations'
+    );
   }
 
   const migrationsFolder = path.resolve(
@@ -70,6 +82,28 @@ export async function migrateDatabase(options?: {
   if (applicationSchema !== 'algocoach') {
     throw new Error(
       'DB_SCHEMA must be algocoach because the committed migrations target that schema'
+    );
+  }
+  const configuredApplicationRole =
+    options?.applicationRole?.trim() ||
+    process.env.DATABASE_APPLICATION_ROLE?.trim();
+  if (options?.requireApplicationRole && !configuredApplicationRole) {
+    throw new Error(
+      'DATABASE_APPLICATION_ROLE is required for release migrations'
+    );
+  }
+  const applicationRole = configuredApplicationRole
+    ? validatedIdentifier(
+        configuredApplicationRole,
+        'DATABASE_APPLICATION_ROLE'
+      )
+    : undefined;
+  if (
+    applicationRole &&
+    decodeURIComponent(new URL(databaseUrl).username) === applicationRole
+  ) {
+    throw new Error(
+      'DATABASE_APPLICATION_ROLE must differ from the migration database role'
     );
   }
   const lockTimeoutMs = positiveInteger(
@@ -164,6 +198,72 @@ export async function migrateDatabase(options?: {
         appliedCount += 1;
       }
 
+      if (applicationRole) {
+        const [role] = await transaction<
+          {
+            exists: boolean;
+            owns_schema: boolean;
+            rolcreatedb: boolean;
+            rolcreaterole: boolean;
+            rolsuper: boolean;
+          }[]
+        >`
+          select
+            exists(select 1 from pg_roles where rolname = ${applicationRole}) as exists,
+            exists(
+              select 1
+              from pg_namespace
+              where nspname = ${applicationSchema}
+                and pg_get_userbyid(nspowner) = ${applicationRole}
+            ) as owns_schema,
+            coalesce((select rolsuper from pg_roles where rolname = ${applicationRole}), false) as rolsuper,
+            coalesce((select rolcreatedb from pg_roles where rolname = ${applicationRole}), false) as rolcreatedb,
+            coalesce((select rolcreaterole from pg_roles where rolname = ${applicationRole}), false) as rolcreaterole
+        `;
+        if (!role?.exists) {
+          throw new Error(
+            `Application database role ${applicationRole} does not exist`
+          );
+        }
+        if (
+          role.owns_schema ||
+          role.rolsuper ||
+          role.rolcreatedb ||
+          role.rolcreaterole
+        ) {
+          throw new Error(
+            `Application database role ${applicationRole} is not restricted`
+          );
+        }
+
+        const applicationSchemaSql = quotedIdentifier(applicationSchema);
+        const applicationRoleSql = quotedIdentifier(applicationRole);
+        await transaction.unsafe(
+          `REVOKE CREATE ON SCHEMA ${applicationSchemaSql} FROM ${applicationRoleSql}`
+        );
+        await transaction.unsafe(
+          `GRANT USAGE ON SCHEMA ${applicationSchemaSql} TO ${applicationRoleSql}`
+        );
+        await transaction.unsafe(
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${applicationSchemaSql} TO ${applicationRoleSql}`
+        );
+        await transaction.unsafe(
+          `GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA ${applicationSchemaSql} TO ${applicationRoleSql}`
+        );
+        await transaction.unsafe(
+          `ALTER DEFAULT PRIVILEGES IN SCHEMA ${applicationSchemaSql} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${applicationRoleSql}`
+        );
+        await transaction.unsafe(
+          `ALTER DEFAULT PRIVILEGES IN SCHEMA ${applicationSchemaSql} GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO ${applicationRoleSql}`
+        );
+        await transaction.unsafe(
+          `GRANT USAGE ON SCHEMA ${migrationSchemaSql} TO ${applicationRoleSql}`
+        );
+        await transaction.unsafe(
+          `GRANT SELECT ON ${migrationSchemaSql}.${migrationTableSql} TO ${applicationRoleSql}`
+        );
+      }
+
       console.log(
         appliedCount > 0
           ? `[database] applied ${appliedCount} migration(s)`
@@ -181,7 +281,10 @@ const entryPoint = process.argv[1]
 
 if (import.meta.url === entryPoint) {
   migrateDatabase({
-    allowMissingDatabase: process.argv.includes('--allow-missing-database'),
+    allowApplicationDatabaseUrl: process.argv.includes(
+      '--allow-application-database-url'
+    ),
+    requireApplicationRole: process.argv.includes('--require-application-role'),
   }).catch((error) => {
     console.error(
       `[database] migration failed: ${

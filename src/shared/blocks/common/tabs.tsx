@@ -23,18 +23,15 @@ export function Tabs({
   const [tabName, setTabName] = useState(
     tabs?.find((tab) => tab.is_active)?.name || ''
   );
-  const [tab, setTab] = useState({} as Tab);
-
   useEffect(() => {
     if (tabName) {
       const currentTab =
         tabs?.find((tab) => tab.name === tabName) || ({} as Tab);
       if (currentTab.url) {
         router.push(currentTab.url);
-        // setTab(currentTab);
       }
     }
-  }, [tabName]);
+  }, [router, tabName, tabs]);
 
   return (
     <div className="relative mb-8">

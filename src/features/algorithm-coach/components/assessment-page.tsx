@@ -66,6 +66,8 @@ const copy = {
     count: '2 道题',
     languages: 'JavaScript / Python',
     start: '开始测评',
+    starting: '正在创建测评…',
+    startFailed: '暂时无法创建安全测评，请稍后重试。',
     rules: '测评规则',
     rule1: '两道题可自由切换，代码会自动保留。',
     rule2: '运行样例不计分，最终提交会运行完整测试。',
@@ -109,6 +111,8 @@ const copy = {
     count: '2 problems',
     languages: 'JavaScript / Python',
     start: 'Start assessment',
+    starting: 'Creating assessment…',
+    startFailed: 'A secure assessment could not be created. Please try again.',
     rules: 'Assessment rules',
     rule1: 'Switch freely between both problems. Code is kept automatically.',
     rule2:
@@ -152,13 +156,16 @@ export function AssessmentPage() {
   const locale = localeKey(useLocale());
   const t = copy[locale];
   const coach = useCoachStore();
-  const assessmentProblems = useMemo(
+  const defaultAssessmentProblems = useMemo(
     () =>
       [
         getProblemBySlug('minimum-processing-rate') ?? problems[0],
         getProblemBySlug('dependency-cycle') ?? problems[1],
       ].filter(Boolean) as Problem[],
     []
+  );
+  const [assessmentProblems, setAssessmentProblems] = useState<Problem[]>(
+    defaultAssessmentProblems
   );
   const [phase, setPhase] = useState<'intro' | 'active' | 'complete'>('intro');
   const [secondsLeft, setSecondsLeft] = useState(DURATION_SECONDS);
@@ -185,8 +192,10 @@ export function AssessmentPage() {
     Record<string, CodeRunResult>
   >({});
   const [running, setRunning] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [assessmentToken, setAssessmentToken] = useState('');
 
   const currentProblem = assessmentProblems[activeIndex];
   const currentText = currentProblem
@@ -212,14 +221,66 @@ export function AssessmentPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secondsLeft, phase]);
 
-  function startAssessment() {
-    setPhase('active');
-    setSecondsLeft(DURATION_SECONDS);
-    setStartedAt(Date.now());
-    coach.startAssessment(
-      assessmentProblems.map((problem) => problem.slug),
-      20
-    );
+  async function startAssessment() {
+    if (starting) return;
+    setStarting(true);
+    try {
+      const response = await fetch('/api/assessment/session', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'start' }),
+      });
+      if (!response.ok) throw new Error(t.startFailed);
+      const payload = (await response.json()) as {
+        data?: {
+          token: string;
+          problemSlugs: string[];
+          durationMinutes: number;
+          startedAt: string;
+        };
+      };
+      const data = payload.data;
+      const selected = data?.problemSlugs
+        .map((slug) => getProblemBySlug(slug))
+        .filter(Boolean) as Problem[] | undefined;
+      if (!data?.token || selected?.length !== 2)
+        throw new Error(t.startFailed);
+
+      setAssessmentProblems(selected);
+      setCodes(
+        Object.fromEntries(
+          selected.map((problem) => [
+            problem.id,
+            {
+              javascript: problem.templates.javascript,
+              python: problem.templates.python,
+            },
+          ])
+        )
+      );
+      setAssessmentToken(data.token);
+      setSecondsLeft(data.durationMinutes * 60);
+      setStartedAt(Date.parse(data.startedAt));
+      setActiveIndex(0);
+      setPhase('active');
+      coach.startAssessment(data.problemSlugs, data.durationMinutes);
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'production') {
+        setAssessmentProblems(defaultAssessmentProblems);
+        setAssessmentToken('');
+        setSecondsLeft(DURATION_SECONDS);
+        setStartedAt(Date.now());
+        setPhase('active');
+        coach.startAssessment(
+          defaultAssessmentProblems.map((problem) => problem.slug),
+          20
+        );
+      } else {
+        toast.error(error instanceof Error ? error.message : t.startFailed);
+      }
+    } finally {
+      setStarting(false);
+    }
   }
 
   function updateCode(value: string) {
@@ -323,8 +384,36 @@ export function AssessmentPage() {
         results,
         completedAt: new Date().toISOString(),
       };
-      coach.completeAssessment(summary);
+      let verifiedSummary = summary;
+      if (assessmentToken) {
+        const response = await fetch('/api/assessment/session', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            action: 'complete',
+            token: assessmentToken,
+            runs: assessmentProblems.map((problem) => ({
+              problemSlug: problem.slug,
+              passed: runPassed(results[problem.id]),
+              durationMs: runDuration(results[problem.id]),
+            })),
+          }),
+        });
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as {
+            message?: string;
+          } | null;
+          throw new Error(payload?.message || t.startFailed);
+        }
+        const payload = (await response.json()) as {
+          data: typeof summary & { verificationToken: string; version: string };
+        };
+        verifiedSummary = { ...summary, ...payload.data };
+      }
+      coach.completeAssessment(verifiedSummary);
       setPhase('complete');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.failed);
     } finally {
       setSubmitting(false);
     }
@@ -351,11 +440,12 @@ export function AssessmentPage() {
               <Button
                 size="lg"
                 className="mt-8"
-                disabled={!coach.hydrated}
-                onClick={startAssessment}
+                disabled={!coach.hydrated || starting}
+                onClick={() => void startAssessment()}
               >
-                {t.start}
-                <ArrowRight />
+                {starting ? <LoaderCircle className="animate-spin" /> : null}
+                {starting ? t.starting : t.start}
+                {!starting ? <ArrowRight /> : null}
               </Button>
             </div>
           </Panel>
@@ -449,6 +539,7 @@ export function AssessmentPage() {
                   setSecondsLeft(DURATION_SECONDS);
                   setSampleResults({});
                   setFinalResults({});
+                  setAssessmentToken('');
                 }}
               >
                 <RotateCcw />

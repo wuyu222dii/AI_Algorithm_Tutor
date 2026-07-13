@@ -25,8 +25,7 @@ export const envConfigs: ConfigMap = {
   // Drizzle migrations journal table name (avoid conflicts across projects)
   db_migrations_table:
     process.env.DB_MIGRATIONS_TABLE ?? '__drizzle_migrations',
-  // Drizzle migrations journal schema (default in drizzle-kit is 'drizzle')
-  // We keep 'public' as template default for stability on fresh Supabase DBs.
+  // Drizzle migration journal schema (kept separate from application tables).
   db_migrations_schema: process.env.DB_MIGRATIONS_SCHEMA ?? 'drizzle',
   // Output folder for drizzle-kit generated migrations
   db_migrations_out:

@@ -50,7 +50,7 @@ function withMysqlCompat<T extends object>(dbInstance: T): T {
           prop === 'returning' &&
           typeof (target as any).returning !== 'function'
         ) {
-          return async (..._args: any[]) => {
+          return async () => {
             // Ensure the query actually runs.
             await (target as any);
             if (ctx.payload === undefined) return [];
@@ -131,7 +131,7 @@ function withSqliteCompat<T extends object>(dbInstance: T): T {
       get(target, prop, receiver) {
         // `.for('update')` is not meaningful in SQLite; treat it as no-op when missing.
         if (prop === 'for' && typeof (target as any).for !== 'function') {
-          return (..._args: any[]) => receiver;
+          return () => receiver;
         }
 
         const value = Reflect.get(target, prop, receiver);

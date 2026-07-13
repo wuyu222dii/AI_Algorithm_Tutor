@@ -2,14 +2,9 @@ import { getTranslations } from 'next-intl/server';
 
 import { Empty } from '@/shared/blocks/common';
 import { TableCard } from '@/shared/blocks/table';
-import {
-  Chat,
-  ChatStatus,
-  getChats,
-  getChatsCount,
-} from '@/shared/models/chat';
+import { Chat, getChats, getChatsCount } from '@/shared/models/chat';
 import { getUserInfo } from '@/shared/models/user';
-import { Button, Tab } from '@/shared/types/blocks/common';
+import { Button } from '@/shared/types/blocks/common';
 import { type Table } from '@/shared/types/blocks/table';
 
 export default async function ChatsPage({

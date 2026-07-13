@@ -142,7 +142,7 @@ export default async function DynamicPage({
       const Page = await getThemePage('dynamic-page');
       return <Page locale={locale} page={t.raw('page')} />;
     }
-  } catch (error) {
+  } catch {
     // ignore error if translation not found
     return notFound();
   }

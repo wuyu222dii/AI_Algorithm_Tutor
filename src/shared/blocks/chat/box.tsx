@@ -18,7 +18,7 @@ export function ChatBox({
   initialChat?: Chat;
   initialMessages?: UIMessage[];
 }) {
-  const { chat, setChat } = useChatContext();
+  const { setChat } = useChatContext();
 
   // create chat instance
   const chatInstance = useChat({
@@ -44,7 +44,7 @@ export function ChatBox({
     if (initialChat) {
       setChat(initialChat);
     }
-  }, [initialChat]);
+  }, [initialChat, setChat]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { UIMessage } from 'ai';
 
@@ -16,40 +16,7 @@ export default function ChatPage() {
     null
   );
 
-  const fetchChat = async (chatId: string) => {
-    try {
-      const resp = await fetch('/api/chat/info', {
-        method: 'POST',
-        body: JSON.stringify({ chatId }),
-      });
-      if (!resp.ok) {
-        throw new Error(`request failed with status: ${resp.status}`);
-      }
-      const { code, message, data } = await resp.json();
-      if (code !== 0) {
-        throw new Error(message);
-      }
-
-      setInitialChat({
-        id: data.id,
-        title: data.title,
-        createdAt: data.createdAt,
-        model: data.model,
-        provider: data.provider,
-        parts: data.parts ? JSON.parse(data.parts) : [],
-        metadata: data.metadata ? JSON.parse(data.metadata) : undefined,
-        content: data.content ? JSON.parse(data.content) : undefined,
-      } as Chat);
-
-      if (data.id) {
-        fetchMessages(data.id);
-      }
-    } catch (e: any) {
-      console.log('fetch chat failed:', e);
-    }
-  };
-
-  const fetchMessages = async (chatId: string) => {
+  const fetchMessages = useCallback(async (chatId: string) => {
     try {
       const resp = await fetch('/api/chat/messages', {
         method: 'POST',
@@ -75,11 +42,47 @@ export default function ChatPage() {
     } catch (e: any) {
       console.log('fetch messages failed:', e);
     }
-  };
+  }, []);
+
+  const fetchChat = useCallback(
+    async (chatId: string) => {
+      try {
+        const resp = await fetch('/api/chat/info', {
+          method: 'POST',
+          body: JSON.stringify({ chatId }),
+        });
+        if (!resp.ok) {
+          throw new Error(`request failed with status: ${resp.status}`);
+        }
+        const { code, message, data } = await resp.json();
+        if (code !== 0) {
+          throw new Error(message);
+        }
+
+        setInitialChat({
+          id: data.id,
+          title: data.title,
+          createdAt: data.createdAt,
+          model: data.model,
+          provider: data.provider,
+          parts: data.parts ? JSON.parse(data.parts) : [],
+          metadata: data.metadata ? JSON.parse(data.metadata) : undefined,
+          content: data.content ? JSON.parse(data.content) : undefined,
+        } as Chat);
+
+        if (data.id) {
+          fetchMessages(data.id);
+        }
+      } catch (e: any) {
+        console.log('fetch chat failed:', e);
+      }
+    },
+    [fetchMessages]
+  );
 
   useEffect(() => {
     fetchChat(params.id as string);
-  }, [params.id]);
+  }, [fetchChat, params.id]);
 
   return initialChat && initialMessages ? (
     <ChatBox initialChat={initialChat} initialMessages={initialMessages} />

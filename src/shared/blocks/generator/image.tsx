@@ -433,7 +433,7 @@ export function ImageGenerator({
         return true;
       }
     },
-    [generationStartTime, resetTaskState]
+    [fetchUserCredits, generationStartTime, resetTaskState]
   );
 
   useEffect(() => {

@@ -410,7 +410,6 @@ export class StripeProvider implements PaymentProvider {
   ): Promise<PaymentSession> {
     let subscription: Stripe.Response<Stripe.Subscription> | undefined =
       undefined;
-    let billingUrl = '';
 
     if (session.subscription) {
       subscription = await this.client.subscriptions.retrieve(
@@ -461,7 +460,6 @@ export class StripeProvider implements PaymentProvider {
   ): Promise<PaymentSession> {
     let subscription: Stripe.Response<Stripe.Subscription> | undefined =
       undefined;
-    let billingUrl = '';
 
     if (invoice.lines.data.length > 0) {
       const data = invoice.lines.data[0];

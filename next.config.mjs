@@ -12,6 +12,37 @@ const withNextIntl = createNextIntlPlugin({
   requestConfig: './src/core/i18n/request.ts',
 });
 
+const configuredImageHosts = (process.env.NEXT_PUBLIC_IMAGE_HOSTS ?? '')
+  .split(',')
+  .map((host) => host.trim())
+  .filter(Boolean);
+const imageHosts = [
+  'picsum.photos',
+  'lh3.googleusercontent.com',
+  'avatars.githubusercontent.com',
+  'models.dev',
+  ...configuredImageHosts,
+];
+
+const contentSecurityPolicy = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self' https://accounts.google.com",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://accounts.google.com https://www.googletagmanager.com",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https://picsum.photos https://fastly.picsum.photos https://lh3.googleusercontent.com https://avatars.githubusercontent.com https://models.dev",
+  "font-src 'self' data:",
+  "connect-src 'self' https://accounts.google.com https://openrouter.ai https://*.sentry.io",
+  "frame-src 'self' https://accounts.google.com",
+  "worker-src 'self' blob:",
+  "child-src 'self' blob:",
+  process.env.NODE_ENV === 'production' ? 'upgrade-insecure-requests' : '',
+]
+  .filter(Boolean)
+  .join('; ');
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: process.env.VERCEL ? undefined : 'standalone',
@@ -21,12 +52,10 @@ const nextConfig = {
     imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
     deviceSizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
     qualities: [60, 70, 75],
-    remotePatterns: [
-      {
-        protocol: 'https',
-        hostname: '*',
-      },
-    ],
+    remotePatterns: imageHosts.map((hostname) => ({
+      protocol: 'https',
+      hostname,
+    })),
   },
   async redirects() {
     return [];
@@ -34,7 +63,35 @@ const nextConfig = {
   async headers() {
     return [
       {
-        source: '/imgs/:path*',
+        source: '/:path*',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value: contentSecurityPolicy,
+          },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          {
+            key: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=(), payment=()',
+          },
+          {
+            key: 'Cross-Origin-Opener-Policy',
+            value: 'same-origin-allow-popups',
+          },
+          ...(process.env.NODE_ENV === 'production'
+            ? [
+                {
+                  key: 'Strict-Transport-Security',
+                  value: 'max-age=63072000; includeSubDomains; preload',
+                },
+              ]
+            : []),
+        ],
+      },
+      {
+        source: '/:asset(imgs|monaco|pyodide)/:path*',
         headers: [
           {
             key: 'Cache-Control',

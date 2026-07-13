@@ -394,14 +394,6 @@ export async function getSettings() {
       tab: 'auth',
     },
     {
-      name: 'google_one_tap_enabled',
-      title: 'OneTap Enabled',
-      type: 'switch',
-      value: 'false',
-      group: 'google_auth',
-      tab: 'auth',
-    },
-    {
       name: 'google_client_id',
       title: 'Google Client ID',
       type: 'text',
@@ -939,8 +931,6 @@ export const publicSettingNames = [
   'email_auth_enabled',
   'email_verification_enabled',
   'google_auth_enabled',
-  'google_one_tap_enabled',
-  'google_client_id',
   'github_auth_enabled',
   'select_payment_enabled',
   'default_payment_provider',

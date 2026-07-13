@@ -1,6 +1,7 @@
 'use client';
 
 import { ReactNode, useMemo } from 'react';
+import { LoaderCircle } from 'lucide-react';
 import { useLocale } from 'next-intl';
 
 import { useSession } from '@/core/auth/client';
@@ -162,11 +163,29 @@ export function CoachShell({ children }: { children: ReactNode }) {
               <SignUser userNav={userNav} callbackUrl={pathname} />
             </div>
           </header>
-          <main className="min-w-0 flex-1">{children}</main>
+          <main className="min-w-0 flex-1">
+            <HydratedCoachContent>{children}</HydratedCoachContent>
+          </main>
         </div>
       </DashboardLayout>
     </CoachProvider>
   );
+}
+
+function HydratedCoachContent({ children }: { children: ReactNode }) {
+  const { hydrated } = useCoachStore();
+  if (!hydrated) {
+    return (
+      <div
+        className="text-muted-foreground flex min-h-[70svh] items-center justify-center"
+        role="status"
+        aria-label="Loading learning data"
+      >
+        <LoaderCircle className="size-5 animate-spin" />
+      </div>
+    );
+  }
+  return children;
 }
 
 function CoachSyncBadge({

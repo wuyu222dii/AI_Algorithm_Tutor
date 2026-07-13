@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { TOCItems, TOCProvider } from 'fumadocs-ui/components/layout/toc';
 import { CalendarIcon, ListIcon } from 'lucide-react';
 import { useTranslations } from 'next-intl';
@@ -103,10 +104,13 @@ export function BlogDetail({ post }: { post: PostType }) {
                       <div className="text-center">
                         {post.author_image && (
                           <div className="ring-foreground/10 mx-auto mb-4 aspect-square size-20 overflow-hidden rounded-xl border border-transparent shadow-md ring-1 shadow-black/15">
-                            <img
+                            <Image
                               src={post.author_image}
-                              alt={post.author_name}
+                              alt={post.author_name || 'Author'}
                               className="h-full w-full object-cover"
+                              height={80}
+                              unoptimized
+                              width={80}
                             />
                           </div>
                         )}

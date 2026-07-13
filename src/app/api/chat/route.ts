@@ -3,14 +3,9 @@ import {
   convertToModelMessages,
   createIdGenerator,
   generateId,
-  stepCountIs,
   streamText,
-  TextUIPart,
-  tool,
   UIMessage,
-  validateUIMessages,
 } from 'ai';
-import { z } from 'zod';
 
 import {
   legacyFeatureDisabledResponse,

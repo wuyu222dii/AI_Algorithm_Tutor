@@ -1,10 +1,6 @@
 import { getTranslations, setRequestLocale } from 'next-intl/server';
 
-import {
-  PERMISSIONS,
-  requireAllPermissions,
-  requirePermission,
-} from '@/core/rbac';
+import { PERMISSIONS, requireAllPermissions } from '@/core/rbac';
 import { Empty } from '@/shared/blocks/common';
 import { Header, Main, MainHeader } from '@/shared/blocks/dashboard';
 import { FormCard } from '@/shared/blocks/form';
@@ -96,7 +92,7 @@ export default async function UserEditRolesPage({
         if (typeof roles === 'string') {
           try {
             roles = JSON.parse(roles);
-          } catch (error) {
+          } catch {
             throw new Error('invalid roles');
           }
         }

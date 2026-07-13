@@ -1,6 +1,5 @@
 'use client';
 
-import { isArray } from 'util';
 import { useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Loader } from 'lucide-react';
@@ -20,7 +19,6 @@ import {
   FormLabel,
   FormMessage,
 } from '@/shared/components/ui/form';
-import { Label } from '@/shared/components/ui/label';
 import { Textarea } from '@/shared/components/ui/textarea';
 import {
   FormField as FormFieldType,
@@ -327,8 +325,10 @@ export function Form({
         onSubmit={form.handleSubmit(onSubmit)}
         className="w-full space-y-0 pb-2 md:max-w-xl"
       >
-        {/* {title && <h2 className="text-lg font-bold">{title}</h2>}
-        {description && <p className="text-muted-foreground">{description}</p>} */}
+        {title && <h2 className="text-lg font-bold">{title}</h2>}
+        {description && (
+          <p className="text-muted-foreground text-sm">{description}</p>
+        )}
         <div className="mb-6 space-y-6">
           {fields.map((item, index) => {
             return (

@@ -1,4 +1,5 @@
 FROM node:22-alpine AS base
+ENV NEXT_TELEMETRY_DISABLED=1
 
 # Install dependencies only when needed
 FROM base AS deps
@@ -46,6 +47,10 @@ EXPOSE 3000
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+ENV COACH_DEMO_FALLBACK_ENABLED=false
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/api/health/live').then((response) => { if (!response.ok) process.exit(1) }).catch(() => process.exit(1))"]
 
 # server.js is created by next build from the standalone output
 CMD ["node", "server.js"]

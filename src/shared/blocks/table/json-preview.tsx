@@ -1,7 +1,6 @@
 export function JsonPreview({
   value,
   placeholder,
-  metadata,
   className,
 }: {
   value: string;
@@ -24,7 +23,7 @@ export function JsonPreview({
   try {
     const json = JSON.parse(value);
     return <pre className={className}>{JSON.stringify(json, null, 2)}</pre>;
-  } catch (error) {
+  } catch {
     return <div className={className}>{value}</div>;
   }
 }

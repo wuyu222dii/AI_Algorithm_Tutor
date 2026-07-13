@@ -1,5 +1,3 @@
-import { nanoid } from 'nanoid';
-
 import { getUuid } from '@/shared/lib/hash';
 
 import { saveFiles } from '.';

@@ -201,6 +201,8 @@ export interface LearningArtifact {
 
 export interface AssessmentResult {
   id: string;
+  version?: string;
+  verificationToken?: string;
   problemSlugs: string[];
   startedAt: string;
   completedAt: string;
@@ -230,6 +232,34 @@ export interface CoachState {
   code: Record<string, Partial<Record<Language, string>>>;
   runs: CodeRunResult[];
   completedProblemIds: string[];
+}
+
+/**
+ * A field-level learning-data change. Collections contain only records that
+ * changed locally; the server merges them by their stable key.
+ */
+export interface CoachSyncMutation {
+  id: string;
+  baseRevision: number;
+  createdAt: string;
+  changes: {
+    profile?: LearningProfile | null;
+    sessions?: Record<string, PracticeSession>;
+    artifacts?: LearningArtifact[];
+    events?: ProductEvent[];
+    activeAssessment?: AssessmentState | null;
+    assessments?: AssessmentResult[];
+    code?: Record<string, Partial<Record<Language, string>>>;
+    runs?: CodeRunResult[];
+    completedProblemIds?: string[];
+  };
+  importedProblem?: Problem | null;
+}
+
+export interface CoachSyncResult {
+  revision: number;
+  appliedMutationIds: string[];
+  replayedMutationIds: string[];
 }
 
 export type ProductEventName =
@@ -301,7 +331,7 @@ export interface CoachRequest {
 
 export interface CoachResponse {
   artifact: LearningArtifact;
-  mode: 'live';
+  mode: 'live' | 'local';
   model: string;
   promptVersion: string;
   latencyMs: number;

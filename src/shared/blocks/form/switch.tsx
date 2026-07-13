@@ -5,9 +5,7 @@ import { Switch as SwitchComponent } from '@/shared/components/ui/switch';
 import { FormField } from '@/shared/types/blocks/form';
 
 export function Switch({
-  field,
   formField,
-  data,
 }: {
   field: FormField;
   formField: ControllerRenderProps<Record<string, unknown>, string>;

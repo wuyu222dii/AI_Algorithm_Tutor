@@ -1,10 +1,9 @@
 'use client';
 
-import { ChangeEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { IconHistory } from '@tabler/icons-react';
 import moment from 'moment';
-import { useLocale, useTranslations } from 'next-intl';
+import { useTranslations } from 'next-intl';
 
 import { Link, usePathname, useRouter } from '@/core/i18n/navigation';
 import { LocaleSelector, Pagination } from '@/shared/blocks/common';
@@ -32,28 +31,8 @@ type ChatListResponse = {
   hasMore: boolean;
 };
 
-function formatDate(value: string | Date | null | undefined, locale: string) {
-  if (!value) {
-    return '';
-  }
-
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return '';
-  }
-
-  return new Intl.DateTimeFormat(locale, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
-}
-
 export function ChatHistory() {
   const t = useTranslations('ai.chat.history');
-  const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -71,7 +50,6 @@ export function ChatHistory() {
 
   const [chats, setChats] = useState<ChatListItem[]>([]);
   const [total, setTotal] = useState<number>(0);
-  const [hasMore, setHasMore] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -101,19 +79,6 @@ export function ChatHistory() {
       router.push(target);
     },
     [limit, page, pathname, router, searchParams, totalPages]
-  );
-
-  const handleLimitChange = useCallback(
-    (nextLimit: number) => {
-      const safeLimit = Math.max(nextLimit, 1);
-      const params = new URLSearchParams(searchParams.toString());
-      params.set('limit', String(safeLimit));
-      params.delete('page');
-      const queryString = params.toString();
-      const target = queryString ? `${pathname}?${queryString}` : pathname;
-      router.push(target);
-    },
-    [pathname, router, searchParams]
   );
 
   const fetchChats = useCallback(async () => {
@@ -149,7 +114,6 @@ export function ChatHistory() {
 
       setChats(json.data.list || []);
       setTotal(json.data.total || 0);
-      setHasMore(Boolean(json.data.hasMore));
     } catch (err) {
       console.error('fetch chat history failed:', err);
       setError(t('error'));
@@ -180,27 +144,6 @@ export function ChatHistory() {
   const handleRetry = () => {
     fetchChats();
   };
-
-  const handleLimitSelect = (event: ChangeEvent<HTMLSelectElement>) => {
-    const nextLimit = Number(event.target.value);
-    if (!Number.isNaN(nextLimit)) {
-      handleLimitChange(nextLimit);
-    }
-  };
-
-  const from = useMemo(() => {
-    if (total === 0) {
-      return 0;
-    }
-    return (page - 1) * limit + 1;
-  }, [limit, page, total]);
-
-  const to = useMemo(() => {
-    if (total === 0) {
-      return 0;
-    }
-    return Math.min(page * limit, total);
-  }, [limit, page, total]);
 
   const renderContent = () => {
     if (isCheckSign) {
@@ -275,8 +218,6 @@ export function ChatHistory() {
       </ul>
     );
   };
-
-  const showFooter = user && !loading && chats.length > 0;
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">

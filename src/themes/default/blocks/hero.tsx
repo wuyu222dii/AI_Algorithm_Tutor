@@ -127,7 +127,7 @@ export function Hero({
                     section.image_invert.height || section.image?.height || 630
                   }
                   sizes="(max-width: 768px) 100vw, 1200px"
-                  loading="lazy"
+                  loading="eager"
                   fetchPriority="high"
                   quality={75}
                   unoptimized={section.image_invert.src.startsWith('http')}
@@ -145,7 +145,7 @@ export function Hero({
                     section.image.height || section.image_invert?.height || 630
                   }
                   sizes="(max-width: 768px) 100vw, 1200px"
-                  loading="lazy"
+                  loading="eager"
                   fetchPriority="high"
                   quality={75}
                   unoptimized={section.image.src.startsWith('http')}
@@ -164,7 +164,7 @@ export function Hero({
             alt={section.background_image.alt || ''}
             className="object-cover opacity-60 blur-[0px]"
             fill
-            loading="lazy"
+            loading="eager"
             sizes="(max-width: 768px) 0vw, 100vw"
             quality={70}
             unoptimized={section.background_image.src.startsWith('http')}

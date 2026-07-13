@@ -6,6 +6,7 @@ import {
   mysqlTable,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
 } from 'drizzle-orm/mysql-core';
 
@@ -81,9 +82,11 @@ export const account = table(
   (table) => [
     // Query all linked accounts for a user
     index('idx_account_user_id').on(table.userId),
-    // Composite: OAuth login (most critical)
-    // Can also be used for: WHERE providerId = ? (left-prefix)
-    index('idx_account_provider_account').on(table.providerId, table.accountId),
+    // A provider account must never be linked to more than one local user.
+    uniqueIndex('uq_account_provider_account').on(
+      table.providerId,
+      table.accountId
+    ),
   ]
 );
 

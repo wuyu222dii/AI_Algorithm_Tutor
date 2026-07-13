@@ -1,8 +1,11 @@
+import { canUseCoachDemoFallback } from '@/features/algorithm-coach/demo-fallback';
+import { createDemoArtifact } from '@/features/algorithm-coach/fixtures';
 import {
   CoachHttpError,
   errorResponse,
   readJsonBody,
 } from '@/features/algorithm-coach/http';
+import { enforceCoachRateLimits } from '@/features/algorithm-coach/rate-limit.server';
 import {
   coachRequestSchema,
   normalizeCoachRequest,
@@ -15,7 +18,7 @@ import {
 } from '@/features/algorithm-coach/server';
 import { CoachResponse } from '@/features/algorithm-coach/types';
 
-import { enforceMinIntervalRateLimit } from '@/shared/lib/rate-limit';
+import { recordOperationalEvent } from '@/shared/lib/observability';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,11 +38,7 @@ export async function POST(request: Request) {
     }
 
     const coachRequest = normalizeCoachRequest(parsed.data);
-    const limited = enforceMinIntervalRateLimit(request, {
-      intervalMs: 500,
-      keyPrefix: 'algorithm-coach',
-      extraKey: coachRequest.action,
-    });
+    const limited = await enforceCoachRateLimits(request, 'artifact');
     if (limited) {
       limited.headers.set('x-coach-trace-id', traceId);
       return limited;
@@ -47,6 +46,41 @@ export async function POST(request: Request) {
 
     const config = await getCoachRuntimeConfig(coachRequest.model);
     if (!config.apiKey) {
+      if (canUseCoachDemoFallback(coachRequest)) {
+        const artifact = {
+          ...createDemoArtifact(coachRequest),
+          generationMode: 'local' as const,
+          model: 'deterministic-demo',
+          promptVersion: COACH_PROMPT_VERSION,
+          traceId,
+          latencyMs: Math.round(performance.now() - startedAt),
+        };
+        const response: CoachResponse = {
+          artifact,
+          mode: 'local',
+          model: 'deterministic-demo',
+          promptVersion: COACH_PROMPT_VERSION,
+          latencyMs: artifact.latencyMs,
+          traceId,
+        };
+        void recordOperationalEvent({
+          event: 'coach_artifact_generated',
+          traceId,
+          properties: {
+            action: coachRequest.action,
+            mode: 'local',
+            model: response.model,
+            latencyMs: response.latencyMs,
+          },
+        });
+        return Response.json(response, {
+          headers: {
+            'cache-control': 'no-store',
+            'x-coach-mode': 'local',
+            'x-coach-trace-id': traceId,
+          },
+        });
+      }
       throw new CoachHttpError(
         503,
         'ai_not_configured',
@@ -65,6 +99,16 @@ export async function POST(request: Request) {
       latencyMs: Math.round(performance.now() - startedAt),
       traceId,
     };
+    void recordOperationalEvent({
+      event: 'coach_artifact_generated',
+      traceId,
+      properties: {
+        action: coachRequest.action,
+        mode,
+        model: response.model,
+        latencyMs: response.latencyMs,
+      },
+    });
 
     return Response.json(response, {
       headers: {
@@ -77,7 +121,12 @@ export async function POST(request: Request) {
     if (error instanceof CoachHttpError) return errorResponse(error, traceId);
     if (error instanceof CoachModelError) {
       if (error.code === 'provider_failed') {
-        console.error(`[coach:${traceId}] provider failure`, error.message);
+        void recordOperationalEvent({
+          event: 'coach_provider_failed',
+          level: 'error',
+          traceId,
+          error,
+        });
       }
       return errorResponse(
         new CoachHttpError(
@@ -92,7 +141,12 @@ export async function POST(request: Request) {
       );
     }
 
-    console.error(`[coach:${traceId}] unexpected failure`, error);
+    void recordOperationalEvent({
+      event: 'coach_request_failed',
+      level: 'error',
+      traceId,
+      error,
+    });
     return errorResponse(
       new CoachHttpError(
         500,

@@ -4,7 +4,7 @@ import { PERMISSIONS, requirePermission } from '@/core/rbac';
 import { Header, Main, MainHeader } from '@/shared/blocks/dashboard';
 import { TableCard } from '@/shared/blocks/table';
 import { getChats, getChatsCount } from '@/shared/models/chat';
-import { Button, Crumb, Tab } from '@/shared/types/blocks/common';
+import { Button, Crumb } from '@/shared/types/blocks/common';
 import { type Table } from '@/shared/types/blocks/table';
 
 export default async function ChatsPage({

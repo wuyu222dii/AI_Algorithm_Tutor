@@ -1,0 +1,40 @@
+name: AlgoCoach Live AI Eval
+
+on:
+  schedule:
+    - cron: '23 16 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: coach-live-eval
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_VERSION: '22.13.0'
+      PNPM_VERSION: '11.7.0'
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
+      ALGO_COACH_MODEL: ${{ vars.ALGO_COACH_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run limited live evaluation
+        if: env.OPENROUTER_API_KEY != ''
+        run: pnpm eval:coach:live
+      - name: Explain skipped evaluation
+        if: env.OPENROUTER_API_KEY == ''
+        run: echo "OPENROUTER_API_KEY is not configured; live evaluation was skipped."

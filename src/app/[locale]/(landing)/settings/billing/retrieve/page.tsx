@@ -10,13 +10,11 @@ import { getUserInfo } from '@/shared/models/user';
 import { getPaymentService } from '@/shared/services/payment';
 
 export default async function RetrieveBillingPage({
-  params,
   searchParams,
 }: {
   params: Promise<{ locale: string }>;
   searchParams: Promise<{ subscription_no: string }>;
 }) {
-  const { locale } = await params;
   const { subscription_no } = await searchParams;
 
   if (!subscription_no) {

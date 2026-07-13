@@ -13,7 +13,6 @@ import { FormField } from '@/shared/types/blocks/form';
 export function Select({
   field,
   formField,
-  data,
 }: {
   field: FormField;
   formField: ControllerRenderProps<Record<string, unknown>, string>;

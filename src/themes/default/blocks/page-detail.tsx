@@ -1,4 +1,4 @@
-import { CalendarIcon, TimerIcon } from 'lucide-react';
+import { CalendarIcon } from 'lucide-react';
 
 import { MarkdownPreview } from '@/shared/blocks/common';
 import { type Post as PostType } from '@/shared/types/blocks/blog';

@@ -269,7 +269,6 @@ export async function requireAdminAccess({
  */
 export async function getCurrentUserWithPermission({
   code,
-  locale,
 }: {
   code: string;
   locale?: string;
@@ -289,7 +288,6 @@ export async function getCurrentUserWithPermission({
  */
 export async function checkPageAccess({
   codes,
-  locale,
 }: {
   codes: string[];
   locale?: string;

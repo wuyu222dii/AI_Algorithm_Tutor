@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   CheckCircle,
   Clock,
@@ -41,22 +41,6 @@ import { Textarea } from '@/shared/components/ui/textarea';
 import { useAppContext } from '@/shared/contexts/app';
 import { cn } from '@/shared/lib/utils';
 
-interface SongData {
-  id: string;
-  audioUrl: string;
-  sourceAudioUrl: string;
-  streamAudioUrl: string;
-  sourceStreamAudioUrl: string;
-  imageUrl: string;
-  sourceImageUrl: string;
-  prompt: string;
-  modelName: string;
-  title: string;
-  tags: string;
-  createTime: number;
-  duration: number;
-}
-
 interface GeneratedSong {
   id: string;
   title: string;
@@ -80,7 +64,7 @@ export function MusicGenerator({ className, srOnlyTitle }: SongGeneratorProps) {
     useAppContext();
 
   // Form state
-  const [provider, setProvider] = useState('kie');
+  const provider = 'kie';
   const [model, setModel] = useState('V5');
   const [customMode, setCustomMode] = useState(false);
   const [title, setTitle] = useState('');
@@ -116,119 +100,122 @@ export function MusicGenerator({ className, srOnlyTitle }: SongGeneratorProps) {
   }, []);
 
   // Task polling
-  const pollTaskStatus = async (taskId: string) => {
-    try {
-      // Check timeout (3 minutes = 180000ms)
-      if (generationStartTime) {
-        const elapsedTime = Date.now() - generationStartTime;
-        if (elapsedTime > 180000) {
+  const pollTaskStatus = useCallback(
+    async (taskId: string) => {
+      try {
+        // Check timeout (3 minutes = 180000ms)
+        if (generationStartTime) {
+          const elapsedTime = Date.now() - generationStartTime;
+          if (elapsedTime > 180000) {
+            setProgress(0);
+            setIsGenerating(false);
+            setGenerationStartTime(null);
+            toast.error('Generate music timed out. Please try again.');
+            return true; // Stop polling
+          }
+        }
+
+        // request api to query task
+        const resp = await fetch('/api/ai/query', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ taskId }),
+        });
+
+        if (!resp.ok) {
+          throw new Error(`request failed with status: ${resp.status}`);
+        }
+
+        const { code, message, data } = await resp.json();
+        if (code !== 0) {
+          throw new Error(message);
+        }
+
+        const { status, taskInfo } = data;
+        if (!status || !taskInfo) {
+          throw new Error('Query task info failed');
+        }
+
+        const task = JSON.parse(taskInfo);
+        const { errorCode, errorMessage, songs } = task;
+        if (errorCode || errorMessage) {
+          throw new Error(errorMessage);
+        }
+
+        // handle task status
+
+        // task pending
+        if (status === AITaskStatus.PENDING) {
+          setProgress(10);
+          return false;
+        }
+
+        // task processing
+        if (status === AITaskStatus.PROCESSING) {
+          setProgress(20);
+
+          const isTextSuccess = songs.some((song: AISong) => song.imageUrl);
+          const isFirstSuccess = songs.some((song: AISong) => song.audioUrl);
+
+          // text success
+          if (isTextSuccess) {
+            setProgress(60);
+            setGeneratedSongs(songs);
+            return false;
+          }
+
+          // first success
+          if (isFirstSuccess) {
+            setProgress(85);
+            setGeneratedSongs(songs);
+            return false;
+          }
+
+          // final success
+          return false;
+        }
+
+        // task failed, final status
+        if (status === AITaskStatus.FAILED) {
           setProgress(0);
           setIsGenerating(false);
           setGenerationStartTime(null);
-          toast.error('Generate music timed out. Please try again.');
-          return true; // Stop polling
+          toast.error('Generate music failed: ' + errorMessage);
+
+          fetchUserCredits();
+
+          return true;
         }
-      }
 
-      // request api to query task
-      const resp = await fetch('/api/ai/query', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ taskId }),
-      });
-
-      if (!resp.ok) {
-        throw new Error(`request failed with status: ${resp.status}`);
-      }
-
-      const { code, message, data } = await resp.json();
-      if (code !== 0) {
-        throw new Error(message);
-      }
-
-      const { status, taskInfo } = data;
-      if (!status || !taskInfo) {
-        throw new Error('Query task info failed');
-      }
-
-      const task = JSON.parse(taskInfo);
-      const { errorCode, errorMessage, songs } = task;
-      if (errorCode || errorMessage) {
-        throw new Error(errorMessage);
-      }
-
-      // handle task status
-
-      // task pending
-      if (status === AITaskStatus.PENDING) {
-        setProgress(10);
-        return false;
-      }
-
-      // task processing
-      if (status === AITaskStatus.PROCESSING) {
-        setProgress(20);
-
-        const isTextSuccess = songs.some((song: AISong) => song.imageUrl);
-        const isFirstSuccess = songs.some((song: AISong) => song.audioUrl);
-
-        // text success
-        if (isTextSuccess) {
-          setProgress(60);
+        // task success, final status
+        if (status === AITaskStatus.SUCCESS) {
           setGeneratedSongs(songs);
-          return false;
+
+          setProgress(100);
+          setIsGenerating(false);
+          setGenerationStartTime(null);
+          return true;
         }
 
-        // first success
-        if (isFirstSuccess) {
-          setProgress(85);
-          setGeneratedSongs(songs);
-          return false;
-        }
-
-        // final success
+        // Still processing - update progress
+        setProgress((prev) => Math.min(prev + 3, 80));
         return false;
-      }
-
-      // task failed, final status
-      if (status === AITaskStatus.FAILED) {
-        setProgress(0);
+      } catch (error: any) {
+        console.error('Error polling task:', error);
         setIsGenerating(false);
+        setProgress(0);
         setGenerationStartTime(null);
-        toast.error('Generate music failed: ' + errorMessage);
+        toast.error('Create song failed: ' + error.message);
 
         fetchUserCredits();
 
-        return true;
+        return true; // Stop polling on error
       }
-
-      // task success, final status
-      if (status === AITaskStatus.SUCCESS) {
-        setGeneratedSongs(songs);
-
-        setProgress(100);
-        setIsGenerating(false);
-        setGenerationStartTime(null);
-        return true;
-      }
-
-      // Still processing - update progress
-      setProgress((prev) => Math.min(prev + 3, 80));
-      return false;
-    } catch (error: any) {
-      console.error('Error polling task:', error);
-      setIsGenerating(false);
-      setProgress(0);
-      setGenerationStartTime(null);
-      toast.error('Create song failed: ' + error.message);
-
-      fetchUserCredits();
-
-      return true; // Stop polling on error
-    }
-  };
+    },
+    [fetchUserCredits, generationStartTime]
+  );
 
   // Start task polling
   useEffect(() => {
@@ -242,7 +229,7 @@ export function MusicGenerator({ className, srOnlyTitle }: SongGeneratorProps) {
 
       return () => clearInterval(interval);
     }
-  }, [taskId, isGenerating, generationStartTime]);
+  }, [isGenerating, pollTaskStatus, taskId]);
 
   const handleGenerate = async () => {
     if (!user) {

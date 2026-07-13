@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode, useState } from 'react';
+import { ReactNode } from 'react';
 
 import { Link, usePathname } from '@/core/i18n/navigation';
 import { SmartIcon } from '@/shared/blocks/common/smart-icon';
@@ -30,10 +30,7 @@ export function ConsoleLayout({
   children: ReactNode;
 }) {
   const pathname = usePathname();
-  const [searchQuery, setSearchQuery] = useState('');
-  const filteredItems = nav?.items.filter((item) =>
-    item.title?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredItems = nav?.items;
 
   const renderNavItems = () => (
     <nav className="space-y-1">
@@ -103,9 +100,16 @@ export function ConsoleLayout({
               </SheetContent>
             </Sheet>
 
-            <h1 className="text-foreground text-2xl font-semibold md:text-3xl">
-              {title}
-            </h1>
+            <div>
+              <h1 className="text-foreground text-2xl font-semibold md:text-3xl">
+                {title}
+              </h1>
+              {description && (
+                <p className="text-muted-foreground mt-1 text-sm">
+                  {description}
+                </p>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -115,22 +119,6 @@ export function ConsoleLayout({
         <div className="flex flex-wrap gap-8 py-8">
           {/* Left Sidebar (Desktop) */}
           <div className="hidden w-64 flex-shrink-0 md:block">
-            {/* Search Box */}
-            {/* <div className="relative mb-6">
-              <SmartIcon
-                name="Search"
-                size={16}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-              />
-              <input
-                type="text"
-                placeholder="Search..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 text-sm bg-background border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
-              />
-            </div> */}
-
             {/* Navigation Menu */}
             {renderNavItems()}
           </div>

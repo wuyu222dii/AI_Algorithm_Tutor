@@ -5,6 +5,8 @@ import { i18n } from '@/core/docs/source';
 import { envConfigs } from '@/config';
 
 export function baseOptions(locale: string): BaseLayoutProps {
+  void locale;
+
   return {
     links: [],
     nav: {

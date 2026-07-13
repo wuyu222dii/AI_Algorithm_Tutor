@@ -1,6 +1,7 @@
 import {
   AssessmentResult,
   CoachState,
+  CoachSyncMutation,
   LearningArtifact,
   LearningProfile,
   PracticeSession,
@@ -15,6 +16,7 @@ export const COACH_SESSION_KEY = 'algocoach:session-id';
 export const COACH_EXPERIMENT_KEY = 'algocoach:hint-copy-variant';
 export const COACH_IMPORTED_PROBLEM_KEY = 'algocoach.imported-problem.v1';
 export const COACH_REVISION_KEY = 'algocoach:revision:v1';
+export const COACH_SYNC_QUEUE_KEY = 'algocoach:sync-queue:v1';
 export const COACH_GUEST_CLAIM_KEY = 'algocoach:guest-claimed-by:v1';
 export const GUEST_COACH_STORAGE_SCOPE = 'guest';
 export type CoachStorageScope = 'guest' | `user:${string}`;
@@ -345,6 +347,64 @@ export function saveCoachRevision(
     );
   } catch {
     // Revision metadata is best-effort when browser storage is unavailable.
+  }
+}
+
+function isStoredMutation(value: unknown): value is CoachSyncMutation {
+  if (!isRecord(value) || !isRecord(value.changes)) return false;
+  return Boolean(
+    typeof value.id === 'string' &&
+      value.id &&
+      Number.isInteger(value.baseRevision) &&
+      Number(value.baseRevision) >= 0 &&
+      typeof value.createdAt === 'string'
+  );
+}
+
+export function loadCoachSyncQueue(
+  storage?: Storage,
+  scope: CoachStorageScope = GUEST_COACH_STORAGE_SCOPE
+): CoachSyncMutation[] {
+  const target = getStorage(storage);
+  if (!target) return [];
+  try {
+    const raw = target.getItem(
+      getScopedStorageKey(COACH_SYNC_QUEUE_KEY, scope)
+    );
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(isStoredMutation) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveCoachSyncQueue(
+  queue: CoachSyncMutation[],
+  storage?: Storage,
+  scope: CoachStorageScope = GUEST_COACH_STORAGE_SCOPE
+): void {
+  const target = getStorage(storage);
+  if (!target) return;
+  try {
+    const key = getScopedStorageKey(COACH_SYNC_QUEUE_KEY, scope);
+    if (!queue.length) target.removeItem(key);
+    else target.setItem(key, JSON.stringify(queue));
+  } catch {
+    // The in-memory queue still retries while this page remains open.
+  }
+}
+
+export function clearCoachSyncQueue(
+  storage?: Storage,
+  scope: CoachStorageScope = GUEST_COACH_STORAGE_SCOPE
+): void {
+  const target = getStorage(storage);
+  if (!target) return;
+  try {
+    target.removeItem(getScopedStorageKey(COACH_SYNC_QUEUE_KEY, scope));
+  } catch {
+    // Reset remains best-effort when browser storage is restricted.
   }
 }
 

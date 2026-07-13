@@ -96,7 +96,7 @@ export function ChatGenerator() {
 
   useEffect(() => {
     setChat(null);
-  }, []);
+  }, [setChat]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">

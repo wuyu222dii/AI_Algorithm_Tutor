@@ -84,21 +84,20 @@ export function getMDXComponents(components?: MDXComponents): MDXComponents {
     ...defaultMdxComponents,
     a: CustomLink,
     img: (props: React.ComponentProps<'img'>) => {
-      const { src } = props;
+      const { alt = '', src } = props;
       // If src is an object (imported image), use its src property
       const imageSrc =
         typeof src === 'object' && src !== null && 'src' in src
           ? (src as any).src
           : src;
 
-      return (
-        <img
-          {...props}
-          src={imageSrc}
-          className={cn('rounded-lg border', props.className)}
-          style={{ maxWidth: '100%', height: 'auto' }}
-        />
-      );
+      return React.createElement('img', {
+        ...props,
+        alt,
+        src: imageSrc,
+        className: cn('rounded-lg border', props.className),
+        style: { maxWidth: '100%', height: 'auto' },
+      });
     },
     Video: ({ className, ...props }: React.ComponentProps<'video'>) => (
       <video

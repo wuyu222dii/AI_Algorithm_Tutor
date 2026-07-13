@@ -21,21 +21,32 @@ import { calculateProductMetrics } from './metrics';
 import {
   claimGuestCoachData,
   clearCoachState,
+  clearCoachSyncQueue,
   clearImportedProblem,
   CoachStorageScope,
   createInitialCoachState,
   GUEST_COACH_STORAGE_SCOPE,
   loadCoachRevision,
   loadCoachState,
+  loadCoachSyncQueue,
   loadImportedProblem,
   mergeCoachStates,
   saveImportedProblem as persistImportedProblem,
   saveCoachRevision,
   saveCoachState,
+  saveCoachSyncQueue,
 } from './storage';
+import {
+  applyCoachSyncMutations,
+  CoachSyncDocument,
+  coachSyncRetryDelay,
+  createCoachSyncMutation,
+} from './sync';
 import {
   AssessmentResult,
   CoachState,
+  CoachSyncMutation,
+  CoachSyncResult,
   CodeRunResult,
   JsonValue,
   Language,
@@ -142,14 +153,11 @@ export function CoachProvider({
   const remoteRevisionRef = useRef(0);
   const remoteSyncGenerationRef = useRef(0);
   const remoteSyncInFlightRef = useRef(false);
-  const remoteSyncBlockedRef = useRef(false);
   const remoteSyncAbortRef = useRef<AbortController | null>(null);
+  const remoteSyncRetryRef = useRef(0);
   const resettingRef = useRef(false);
-  const pendingRemoteSyncRef = useRef<{
-    scope: CoachStorageScope;
-    state: CoachState;
-    importedProblem: Problem | null;
-  } | null>(null);
+  const remoteSyncQueueRef = useRef<CoachSyncMutation[]>([]);
+  const observedDocumentRef = useRef<CoachSyncDocument | null>(null);
   const [syncStatus, setSyncStatus] = useState<
     'local' | 'syncing' | 'synced' | 'error'
   >('local');
@@ -161,62 +169,142 @@ export function CoachProvider({
   );
 
   const flushRemoteSync = useCallback(async function flushRemoteSync() {
-    if (
-      remoteSyncInFlightRef.current ||
-      remoteSyncBlockedRef.current ||
-      resettingRef.current
-    ) {
+    if (remoteSyncInFlightRef.current || resettingRef.current) {
       return;
     }
-    const pending = pendingRemoteSyncRef.current;
-    if (!pending || activeScopeRef.current !== pending.scope) return;
+    const scope = activeScopeRef.current;
+    if (!scope || !scope.startsWith('user:')) return;
+    const batch = remoteSyncQueueRef.current.slice(0, 50);
+    if (!batch.length) return;
     const generation = remoteSyncGenerationRef.current;
 
-    pendingRemoteSyncRef.current = null;
     remoteSyncInFlightRef.current = true;
     const controller = new AbortController();
     remoteSyncAbortRef.current = controller;
     setSyncStatus('syncing');
+    let retryScheduled = false;
 
     try {
       const response = await fetch('/api/coach/state', {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           revision: remoteRevisionRef.current,
-          state: pending.state,
-          importedProblem: pending.importedProblem,
+          mutations: batch,
         }),
         signal: controller.signal,
       });
       if (
         generation !== remoteSyncGenerationRef.current ||
-        activeScopeRef.current !== pending.scope
+        activeScopeRef.current !== scope
       ) {
         return;
       }
       if (response.status === 409) {
-        remoteSyncBlockedRef.current = true;
-        setSyncStatus('error');
+        const latestResponse = await fetch('/api/coach/state', {
+          headers: { accept: 'application/json' },
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        if (!latestResponse.ok) {
+          throw new Error(
+            `Conflict recovery failed with ${latestResponse.status}`
+          );
+        }
+        const latestPayload = (await latestResponse.json()) as {
+          data?: {
+            state?: CoachState;
+            importedProblem?: Problem | null;
+            revision?: number;
+          };
+        };
+        const latestState = latestPayload.data?.state;
+        const latestRevision = Number(latestPayload.data?.revision);
+        if (
+          !latestState ||
+          !Number.isInteger(latestRevision) ||
+          latestRevision < 0
+        ) {
+          throw new Error('Conflict recovery returned invalid learning data');
+        }
+        const remoteDocument: CoachSyncDocument = {
+          state: latestState,
+          importedProblem: latestPayload.data?.importedProblem ?? null,
+        };
+        const merged = applyCoachSyncMutations(
+          remoteDocument,
+          remoteSyncQueueRef.current
+        );
+        const recoveryMutation = createCoachSyncMutation(
+          remoteDocument,
+          merged,
+          latestRevision
+        );
+
+        remoteRevisionRef.current = latestRevision;
+        saveCoachRevision(latestRevision, undefined, scope);
+        remoteSyncQueueRef.current = recoveryMutation ? [recoveryMutation] : [];
+        saveCoachSyncQueue(remoteSyncQueueRef.current, undefined, scope);
+        observedDocumentRef.current = merged;
+        stateRef.current = merged.state;
+        importedProblemRef.current = merged.importedProblem;
+        saveCoachState(merged.state, undefined, scope);
+        if (merged.importedProblem) {
+          persistImportedProblem(merged.importedProblem, undefined, scope);
+        } else {
+          clearImportedProblem(undefined, scope);
+        }
+        setState(merged.state);
+        setImportedProblem(merged.importedProblem);
+        remoteSyncRetryRef.current = 0;
+        if (recoveryMutation) {
+          retryScheduled = true;
+          remoteSyncTimerRef.current = window.setTimeout(() => {
+            remoteSyncTimerRef.current = null;
+            void flushRemoteSync();
+          }, 0);
+        } else {
+          setSyncStatus('synced');
+        }
         return;
       }
       if (!response.ok) throw new Error(`Sync failed with ${response.status}`);
       const payload = (await response.json()) as {
-        data?: { revision?: number };
+        data?: Partial<CoachSyncResult>;
       };
       const revision = payload.data?.revision;
       if (!Number.isInteger(revision) || Number(revision) < 0) {
         throw new Error('Sync response did not include a valid revision');
       }
+      const acknowledged = new Set([
+        ...(payload.data?.appliedMutationIds ?? []),
+        ...(payload.data?.replayedMutationIds ?? []),
+      ]);
+      // Compatibility with an early incremental endpoint implementation.
+      if (!acknowledged.size) {
+        for (const mutation of batch) acknowledged.add(mutation.id);
+      }
+      remoteSyncQueueRef.current = remoteSyncQueueRef.current.filter(
+        (mutation) => !acknowledged.has(mutation.id)
+      );
+      saveCoachSyncQueue(remoteSyncQueueRef.current, undefined, scope);
       remoteRevisionRef.current = Number(revision);
-      saveCoachRevision(Number(revision), undefined, pending.scope);
-      setSyncStatus('synced');
+      saveCoachRevision(Number(revision), undefined, scope);
+      remoteSyncRetryRef.current = 0;
+      setSyncStatus(remoteSyncQueueRef.current.length ? 'syncing' : 'synced');
     } catch (error) {
       if (
         generation === remoteSyncGenerationRef.current &&
         !(error instanceof DOMException && error.name === 'AbortError')
       ) {
         setSyncStatus('error');
+        const attempt = remoteSyncRetryRef.current++;
+        const delay = coachSyncRetryDelay(attempt);
+        retryScheduled = true;
+        remoteSyncTimerRef.current = window.setTimeout(() => {
+          remoteSyncTimerRef.current = null;
+          void flushRemoteSync();
+        }, delay);
       }
     } finally {
       if (remoteSyncAbortRef.current === controller) {
@@ -224,8 +312,8 @@ export function CoachProvider({
         remoteSyncAbortRef.current = null;
         if (
           generation === remoteSyncGenerationRef.current &&
-          pendingRemoteSyncRef.current &&
-          !remoteSyncBlockedRef.current &&
+          remoteSyncQueueRef.current.length &&
+          !retryScheduled &&
           !resettingRef.current
         ) {
           void flushRemoteSync();
@@ -239,9 +327,10 @@ export function CoachProvider({
     remoteSyncGenerationRef.current += 1;
     remoteSyncAbortRef.current?.abort();
     remoteSyncAbortRef.current = null;
-    pendingRemoteSyncRef.current = null;
     remoteSyncInFlightRef.current = false;
-    remoteSyncBlockedRef.current = false;
+    remoteSyncRetryRef.current = 0;
+    remoteSyncQueueRef.current = [];
+    observedDocumentRef.current = null;
     resettingRef.current = false;
     remoteRevisionRef.current = 0;
     activeScopeRef.current = null;
@@ -262,6 +351,9 @@ export function CoachProvider({
         let nextState = loadCoachState(undefined, storageScope);
         let nextImportedProblem = loadImportedProblem(undefined, storageScope);
         const localRevision = loadCoachRevision(undefined, storageScope);
+        const queuedMutations = loadCoachSyncQueue(undefined, storageScope);
+        remoteSyncQueueRef.current = queuedMutations;
+        remoteRevisionRef.current = localRevision;
 
         if (cloudSyncEnabled && storageScope.startsWith('user:')) {
           try {
@@ -288,22 +380,57 @@ export function CoachProvider({
               Number.isInteger(remoteRevision) &&
               remoteRevision >= 0
             ) {
+              const remoteDocument: CoachSyncDocument = {
+                state: remoteState,
+                importedProblem: payload.data?.importedProblem ?? null,
+              };
               remoteRevisionRef.current = remoteRevision;
               saveCoachRevision(remoteRevision, undefined, storageScope);
-              if (claimedGuest) {
+              const shouldPreserveLocal =
+                claimedGuest || remoteRevision <= localRevision;
+              if (queuedMutations.length && !claimedGuest) {
+                const replayed = applyCoachSyncMutations(
+                  remoteDocument,
+                  queuedMutations
+                );
+                nextState = replayed.state;
+                nextImportedProblem = replayed.importedProblem;
+              } else if (shouldPreserveLocal) {
                 nextState = mergeCoachStates(nextState, remoteState);
                 nextImportedProblem =
                   nextImportedProblem ?? payload.data?.importedProblem ?? null;
-              } else if (remoteRevision > localRevision) {
+              } else {
                 nextState = remoteState;
                 nextImportedProblem = payload.data?.importedProblem ?? null;
-              } else {
-                nextState = mergeCoachStates(nextState, remoteState);
-                nextImportedProblem =
-                  nextImportedProblem ?? payload.data?.importedProblem ?? null;
+              }
+
+              if (
+                (shouldPreserveLocal || claimedGuest) &&
+                (!queuedMutations.length || claimedGuest)
+              ) {
+                const initialMutation = createCoachSyncMutation(
+                  remoteDocument,
+                  {
+                    state: nextState,
+                    importedProblem: nextImportedProblem,
+                  },
+                  remoteRevision
+                );
+                if (initialMutation) {
+                  remoteSyncQueueRef.current = [initialMutation];
+                  saveCoachSyncQueue(
+                    remoteSyncQueueRef.current,
+                    undefined,
+                    storageScope
+                  );
+                }
               }
             }
-            if (!cancelled) setSyncStatus('synced');
+            if (!cancelled) {
+              setSyncStatus(
+                remoteSyncQueueRef.current.length ? 'syncing' : 'synced'
+              );
+            }
           } catch {
             // The local cache keeps the learning workflow usable while offline.
             if (!cancelled) setSyncStatus('error');
@@ -314,10 +441,24 @@ export function CoachProvider({
         activeScopeRef.current = storageScope;
         stateRef.current = nextState;
         importedProblemRef.current = nextImportedProblem;
+        observedDocumentRef.current = {
+          state: nextState,
+          importedProblem: nextImportedProblem,
+        };
         setProductAnalyticsScope(storageScope);
         setState(nextState);
         setImportedProblem(nextImportedProblem);
         setHydratedScope(storageScope);
+        if (
+          cloudSyncEnabled &&
+          storageScope.startsWith('user:') &&
+          remoteSyncQueueRef.current.length
+        ) {
+          remoteSyncTimerRef.current = window.setTimeout(() => {
+            remoteSyncTimerRef.current = null;
+            void flushRemoteSync();
+          }, 0);
+        }
       })();
     }, 0);
 
@@ -331,15 +472,16 @@ export function CoachProvider({
       }
       remoteSyncAbortRef.current?.abort();
       remoteSyncAbortRef.current = null;
-      pendingRemoteSyncRef.current = null;
       if (activeScopeRef.current === storageScope) {
         activeScopeRef.current = null;
         setProductAnalyticsScope(null);
       }
     };
-  }, [storageScope]);
+  }, [flushRemoteSync, storageScope]);
 
   useEffect(() => {
+    const nextDocument: CoachSyncDocument = { state, importedProblem };
+    const previousDocument = observedDocumentRef.current;
     stateRef.current = state;
     importedProblemRef.current = importedProblem;
     const activeScope = activeScopeRef.current;
@@ -355,21 +497,34 @@ export function CoachProvider({
         cloudSyncEnabled &&
         activeScope.startsWith('user:') &&
         !resettingRef.current &&
-        !remoteSyncBlockedRef.current
+        previousDocument
       ) {
-        pendingRemoteSyncRef.current = {
-          scope: activeScope,
-          state,
-          importedProblem,
-        };
-        if (remoteSyncTimerRef.current !== null) {
-          window.clearTimeout(remoteSyncTimerRef.current);
+        const mutation = createCoachSyncMutation(
+          previousDocument,
+          nextDocument,
+          remoteRevisionRef.current
+        );
+        if (mutation) {
+          remoteSyncQueueRef.current = [
+            ...remoteSyncQueueRef.current,
+            mutation,
+          ];
+          saveCoachSyncQueue(
+            remoteSyncQueueRef.current,
+            undefined,
+            activeScope
+          );
+          setSyncStatus('syncing');
+          if (remoteSyncTimerRef.current !== null) {
+            window.clearTimeout(remoteSyncTimerRef.current);
+          }
+          remoteSyncTimerRef.current = window.setTimeout(() => {
+            remoteSyncTimerRef.current = null;
+            void flushRemoteSync();
+          }, 1500);
         }
-        remoteSyncTimerRef.current = window.setTimeout(() => {
-          remoteSyncTimerRef.current = null;
-          void flushRemoteSync();
-        }, 1500);
       }
+      observedDocumentRef.current = nextDocument;
     }
   }, [flushRemoteSync, hydratedScope, importedProblem, state]);
 
@@ -387,6 +542,22 @@ export function CoachProvider({
     window.addEventListener('pagehide', flush);
     return () => window.removeEventListener('pagehide', flush);
   }, []);
+
+  useEffect(() => {
+    const retryWhenOnline = () => {
+      if (!remoteSyncQueueRef.current.length) return;
+      remoteSyncRetryRef.current = 0;
+      if (remoteSyncTimerRef.current !== null) {
+        window.clearTimeout(remoteSyncTimerRef.current);
+      }
+      remoteSyncTimerRef.current = window.setTimeout(() => {
+        remoteSyncTimerRef.current = null;
+        void flushRemoteSync();
+      }, 0);
+    };
+    window.addEventListener('online', retryWhenOnline);
+    return () => window.removeEventListener('online', retryWhenOnline);
+  }, [flushRemoteSync]);
 
   const completeOnboarding = useCallback((input: OnboardingInput) => {
     const requestedTarget = input.weeklyTarget ?? input.weeklyGoal ?? 5;
@@ -692,8 +863,9 @@ export function CoachProvider({
       window.clearTimeout(remoteSyncTimerRef.current);
       remoteSyncTimerRef.current = null;
     }
-    pendingRemoteSyncRef.current = null;
-    remoteSyncBlockedRef.current = false;
+    remoteSyncQueueRef.current = [];
+    remoteSyncRetryRef.current = 0;
+    clearCoachSyncQueue(undefined, activeScope);
     resettingRef.current = true;
     remoteSyncGenerationRef.current += 1;
     remoteSyncAbortRef.current?.abort();
@@ -706,6 +878,10 @@ export function CoachProvider({
     clearImportedProblem(undefined, activeScope);
     stateRef.current = emptyState;
     importedProblemRef.current = null;
+    observedDocumentRef.current = {
+      state: emptyState,
+      importedProblem: null,
+    };
     setState(emptyState);
     setImportedProblem(null);
 

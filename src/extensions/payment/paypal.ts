@@ -578,7 +578,7 @@ export class PayPalProvider implements PaymentProvider {
             : undefined,
           currency: capture.amount?.currency_code,
         };
-      } catch (captureError: any) {
+      } catch {
         // If not a capture (subscription sale), just return the activity URL
         return {
           invoiceId: invoiceId,
@@ -593,13 +593,7 @@ export class PayPalProvider implements PaymentProvider {
   /**
    * Get payment billing (subscription management URL)
    */
-  async getPaymentBilling({
-    customerId: _customerId,
-    returnUrl: _returnUrl,
-  }: {
-    customerId: string;
-    returnUrl?: string;
-  }): Promise<PaymentBilling> {
+  async getPaymentBilling(): Promise<PaymentBilling> {
     try {
       // PayPal doesn't have a direct billing portal like Stripe
       // We return the PayPal subscription management URL

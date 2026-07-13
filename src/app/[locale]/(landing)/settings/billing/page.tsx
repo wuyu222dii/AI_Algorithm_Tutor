@@ -4,12 +4,10 @@ import { getTranslations } from 'next-intl/server';
 import { Empty } from '@/shared/blocks/common';
 import { PanelCard } from '@/shared/blocks/panel';
 import { TableCard } from '@/shared/blocks/table';
-import { Button } from '@/shared/components/ui/button';
 import {
   getCurrentSubscription,
   getSubscriptions,
   getSubscriptionsCount,
-  Subscription,
   SubscriptionStatus,
 } from '@/shared/models/subscription';
 import { getUserInfo } from '@/shared/models/user';

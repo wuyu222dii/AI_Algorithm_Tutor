@@ -309,22 +309,15 @@ export async function getPostsAndCategories({
   categoryPrefix?: string;
 }) {
   let posts: BlogPostType[] = [];
-  let categories: BlogCategoryType[] = [];
 
   // merge posts from both locale and remote, remove duplicates by slug
   // remote posts have higher priority
   const postsMap = new Map<string, BlogPostType>();
 
   // 1. get local posts
-  const {
-    posts: localPosts,
-    postsCount: localPostsCount,
-    categories: localCategories,
-    categoriesCount: localCategoriesCount,
-  } = await getLocalPostsAndCategories({
+  const { posts: localPosts } = await getLocalPostsAndCategories({
     locale,
     postPrefix,
-    categoryPrefix,
   });
 
   // add local posts to postsMap
@@ -337,7 +330,6 @@ export async function getPostsAndCategories({
   // 2. get remote posts
   const {
     posts: remotePosts,
-    postsCount: remotePostsCount,
     categories: remoteCategories,
     categoriesCount: remoteCategoriesCount,
   } = await getRemotePostsAndCategories({
@@ -453,7 +445,6 @@ export async function getRemotePostsAndCategories({
 export async function getLocalPostsAndCategories({
   locale,
   postPrefix = '/blog/',
-  categoryPrefix = '/blog/category/',
   type = PostType.ARTICLE,
 }: {
   locale: string;

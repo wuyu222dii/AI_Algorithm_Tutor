@@ -3,20 +3,17 @@ import { redirect } from 'next/navigation';
 import { Empty } from '@/shared/blocks/common';
 import {
   findOrderByOrderNo,
-  Order,
   updateOrderByOrderNo,
 } from '@/shared/models/order';
 import { getUserInfo } from '@/shared/models/user';
 import { getPaymentService } from '@/shared/services/payment';
 
 export default async function RetrieveInvoicePage({
-  params,
   searchParams,
 }: {
   params: Promise<{ locale: string }>;
   searchParams: Promise<{ order_no: string }>;
 }) {
-  const { locale } = await params;
   const { order_no } = await searchParams;
 
   if (!order_no) {

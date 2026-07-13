@@ -3,13 +3,18 @@ import {
   errorResponse,
   readJsonBody,
 } from '@/features/algorithm-coach/http';
-import { coachSyncRequestSchema } from '@/features/algorithm-coach/persistence-schema';
 import {
+  coachMutationSyncRequestSchema,
+  coachSyncRequestSchema,
+} from '@/features/algorithm-coach/persistence-schema';
+import {
+  applyCoachDataMutations,
   CoachPersistenceConflict,
   deleteCoachData,
   loadCoachData,
   saveCoachData,
 } from '@/features/algorithm-coach/persistence.server';
+import { enforceCoachRateLimits } from '@/features/algorithm-coach/rate-limit.server';
 
 import { getAuth } from '@/core/auth';
 
@@ -36,6 +41,8 @@ async function handle(
   const traceId = crypto.randomUUID();
   try {
     const userId = await authenticatedUserId(request);
+    const limited = await enforceCoachRateLimits(request, 'state', userId);
+    if (limited) return limited;
     return await operation(userId);
   } catch (error) {
     if (error instanceof CoachHttpError) return errorResponse(error, traceId);
@@ -89,6 +96,30 @@ export async function PUT(request: Request) {
     );
     return Response.json(
       { data: { saved: true, revision } },
+      { headers: { 'cache-control': 'no-store' } }
+    );
+  });
+}
+
+export async function PATCH(request: Request) {
+  return handle(request, async (userId) => {
+    const body = await readJsonBody(request, 1_500_000);
+    const parsed = coachMutationSyncRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new CoachHttpError(
+        400,
+        'invalid_mutations',
+        'Learning data mutations failed validation.',
+        parsed.error.flatten()
+      );
+    }
+    const result = await applyCoachDataMutations(
+      userId,
+      parsed.data.revision,
+      parsed.data.mutations
+    );
+    return Response.json(
+      { data: result },
       { headers: { 'cache-control': 'no-store' } }
     );
   });

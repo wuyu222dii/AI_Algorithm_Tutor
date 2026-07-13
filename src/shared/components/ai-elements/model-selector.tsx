@@ -15,6 +15,7 @@ import {
   DialogTrigger,
 } from "@/shared/components/ui/dialog";
 import { cn } from "@/shared/lib/utils";
+import Image from "next/image";
 import type { ComponentProps } from "react";
 
 export type ModelSelectorProps = ComponentProps<typeof Dialog>;
@@ -97,7 +98,7 @@ export const ModelSelectorSeparator = (props: ModelSelectorSeparatorProps) => (
 );
 
 export type ModelSelectorLogoProps = Omit<
-  ComponentProps<"img">,
+  ComponentProps<typeof Image>,
   "src" | "alt"
 > & {
   provider:
@@ -165,12 +166,13 @@ export const ModelSelectorLogo = ({
   className,
   ...props
 }: ModelSelectorLogoProps) => (
-  <img
+  <Image
     {...props}
     alt={`${provider} logo`}
     className={cn("size-3", className)}
     height={12}
     src={`https://models.dev/logos/${provider}.svg`}
+    unoptimized
     width={12}
   />
 );

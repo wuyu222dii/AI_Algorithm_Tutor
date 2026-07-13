@@ -6,12 +6,15 @@ import type { CoachRequest } from '../../src/features/algorithm-coach/types';
 async function completeOnboarding(page: import('@playwright/test').Page) {
   await page.goto('/learn');
   const start = page.getByRole('button', { name: '开始学习' });
+  const learningHub = page.getByRole('heading', {
+    name: '今天，从一道好题开始',
+  });
+  await expect(start.or(learningHub)).toBeVisible();
   if (await start.isVisible()) {
+    await expect(start).toBeEnabled();
     await start.click();
   }
-  await expect(
-    page.getByRole('heading', { name: '今天，从一道好题开始' })
-  ).toBeVisible();
+  await expect(learningHub).toBeVisible();
 }
 
 async function setEditorCode(
@@ -208,8 +211,8 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
 
   await page.goto('/progress');
   await expect(page.getByRole('heading', { name: '学习进度' })).toBeVisible();
-  await expect(page.getByText('13%', { exact: true })).toBeVisible();
-  await expect(page.getByText('1 共 8 已完成', { exact: true })).toBeVisible();
+  await expect(page.getByText('3%', { exact: true })).toBeVisible();
+  await expect(page.getByText('1 共 30 已完成', { exact: true })).toBeVisible();
 });
 
 test('runs Python in an isolated browser worker', async ({
@@ -225,7 +228,8 @@ test('runs Python in an isolated browser worker', async ({
   const languageSelect = page.locator('[role="combobox"]:visible');
   await expect(languageSelect).toHaveCount(1);
   await languageSelect.click();
-  await page.getByRole('option', { name: 'Python' }).click();
+  await page.getByRole('option', { name: 'Python' }).click({ force: true });
+  await expect(languageSelect).toContainText('Python');
   await setEditorCode(
     page,
     `def first_unique_position(values):

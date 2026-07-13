@@ -38,13 +38,6 @@ export async function POST(req: Request) {
     const chatId = generateId().toLowerCase();
     const currentTime = new Date();
 
-    const parts = [
-      {
-        type: 'text',
-        text: message.text,
-      },
-    ];
-
     const chat: NewChat = {
       id: chatId,
       userId: user.id,

@@ -31,7 +31,7 @@ import {
 } from '@/shared/components/ui/select';
 import { cn } from '@/shared/lib/utils';
 
-import { problems } from '../data/problems';
+import { getProblemRecommendations } from '../recommendations';
 import { useCoachStore } from '../store';
 import type { Language, LearningGoal } from '../types';
 import { CoachPage, Metric, Panel, PanelHeading } from './coach-ui';
@@ -79,6 +79,11 @@ const copy = {
     assessmentTitle: '想知道当前水平？',
     assessmentDescription: '完成 20 分钟测评，获得知识点分析与下一步建议。',
     assessmentAction: '开始测评',
+    reasonRetry: '优先纠错',
+    reasonReviewDue: '复习到期',
+    reasonWeakTopic: '补强薄弱点',
+    reasonGoalFit: '匹配学习目标',
+    reasonContinue: '继续学习路径',
     minutes: '分钟',
     javascript: 'JavaScript',
     python: 'Python',
@@ -118,6 +123,11 @@ const copy = {
     assessmentDescription:
       'Take a 20-minute assessment for topic analysis and a focused next step.',
     assessmentAction: 'Start assessment',
+    reasonRetry: 'Retry priority',
+    reasonReviewDue: 'Review due',
+    reasonWeakTopic: 'Strengthen weak topic',
+    reasonGoalFit: 'Matches your goal',
+    reasonContinue: 'Continue your path',
     minutes: 'min',
     javascript: 'JavaScript',
     python: 'Python',
@@ -164,13 +174,18 @@ export function LearnPage() {
   const completedCount = completedIds.size;
   const onboarded = isOnboarded(state) && !editing;
 
-  const todaysProblems = useMemo(() => {
-    const unfinished = problems.filter(
-      (problem) =>
-        !completedIds.has(problem.id) && !completedIds.has(problem.slug)
-    );
-    return [...unfinished, ...problems].slice(0, 3);
-  }, [completedIds]);
+  const todaysProblems = useMemo(
+    () => getProblemRecommendations(state, { limit: 3 }),
+    [state]
+  );
+
+  const recommendationReason = {
+    retry: t.reasonRetry,
+    'review-due': t.reasonReviewDue,
+    'weak-topic': t.reasonWeakTopic,
+    'goal-fit': t.reasonGoalFit,
+    continue: t.reasonContinue,
+  } as const;
 
   const weeklyTarget = Number(
     profile?.weeklyTarget ?? profile?.weeklyGoal ?? weeklyGoal ?? 5
@@ -343,7 +358,7 @@ export function LearnPage() {
             }
           />
           <div className="divide-y">
-            {todaysProblems.map((problem, index) => {
+            {todaysProblems.map(({ problem, reason }, index) => {
               const localized = localizedProblem(problem, locale);
               const completed =
                 completedIds.has(problem.id) || completedIds.has(problem.slug);
@@ -369,7 +384,7 @@ export function LearnPage() {
                           variant="secondary"
                           className="rounded-md text-[11px]"
                         >
-                          {problem.topics[0]}
+                          {recommendationReason[reason]}
                         </Badge>
                       </div>
                       <p className="text-muted-foreground mt-1 line-clamp-2 text-sm leading-5">

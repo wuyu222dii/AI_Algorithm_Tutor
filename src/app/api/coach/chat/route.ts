@@ -1,8 +1,11 @@
+import { canUseCoachDemoFallback } from '@/features/algorithm-coach/demo-fallback';
+import { createDemoChatResponse } from '@/features/algorithm-coach/fixtures';
 import {
   CoachHttpError,
   errorResponse,
   readJsonBody,
 } from '@/features/algorithm-coach/http';
+import { enforceCoachRateLimits } from '@/features/algorithm-coach/rate-limit.server';
 import {
   coachChatRequestSchema,
   normalizeCoachChatRequest,
@@ -14,16 +17,13 @@ import {
   streamLiveCoachChat,
 } from '@/features/algorithm-coach/server';
 
-import { enforceMinIntervalRateLimit } from '@/shared/lib/rate-limit';
+import { recordOperationalEvent } from '@/shared/lib/observability';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
   const traceId = crypto.randomUUID();
-  const limited = enforceMinIntervalRateLimit(request, {
-    intervalMs: 700,
-    keyPrefix: 'algorithm-coach-chat',
-  });
+  const limited = await enforceCoachRateLimits(request, 'chat');
   if (limited) {
     limited.headers.set('x-coach-trace-id', traceId);
     return limited;
@@ -44,6 +44,27 @@ export async function POST(request: Request) {
     const chatRequest = normalizeCoachChatRequest(parsed.data);
     const config = await getCoachRuntimeConfig(chatRequest.model);
     if (!config.apiKey) {
+      const fallbackRequest = {
+        action: 'hint' as const,
+        ...chatRequest,
+      };
+      if (canUseCoachDemoFallback(fallbackRequest)) {
+        void recordOperationalEvent({
+          event: 'coach_chat_started',
+          traceId,
+          properties: { mode: 'local', model: 'deterministic-demo' },
+        });
+        return new Response(createDemoChatResponse(chatRequest), {
+          headers: {
+            'cache-control': 'no-store',
+            'content-type': 'text/plain; charset=utf-8',
+            'x-coach-model': 'deterministic-demo',
+            'x-coach-mode': 'local',
+            'x-coach-prompt-version': COACH_PROMPT_VERSION,
+            'x-coach-trace-id': traceId,
+          },
+        });
+      }
       throw new CoachHttpError(
         503,
         'ai_not_configured',
@@ -60,6 +81,12 @@ export async function POST(request: Request) {
       'x-coach-trace-id': traceId,
     };
 
+    void recordOperationalEvent({
+      event: 'coach_chat_started',
+      traceId,
+      properties: { mode: 'live', model: config.model },
+    });
+
     return new Response(await streamLiveCoachChat(chatRequest, config), {
       headers,
     });
@@ -67,10 +94,12 @@ export async function POST(request: Request) {
     if (error instanceof CoachHttpError) return errorResponse(error, traceId);
     if (error instanceof CoachModelError) {
       if (error.code === 'provider_failed') {
-        console.error(
-          `[coach-chat:${traceId}] provider failure`,
-          error.message
-        );
+        void recordOperationalEvent({
+          event: 'coach_chat_provider_failed',
+          level: 'error',
+          traceId,
+          error,
+        });
       }
       return errorResponse(
         new CoachHttpError(
@@ -84,7 +113,12 @@ export async function POST(request: Request) {
         traceId
       );
     }
-    console.error(`[coach-chat:${traceId}] unexpected failure`, error);
+    void recordOperationalEvent({
+      event: 'coach_chat_failed',
+      level: 'error',
+      traceId,
+      error,
+    });
     return errorResponse(
       new CoachHttpError(
         500,

@@ -4,7 +4,6 @@ import {
   TableBody,
   TableCell,
   Table as TableComponent,
-  TableFooter,
   TableHead,
   TableHeader,
   TableRow,
@@ -24,7 +23,6 @@ export function Table({
   columns,
   data,
   emptyMessage,
-  pagination,
 }: {
   columns?: TableColumn[];
   data?: any[];
@@ -66,6 +64,7 @@ export function Table({
                   if (column.type === 'image') {
                     cellContent = (
                       <Image
+                        alt={column.title || column.placeholder || ''}
                         placeholder={column.placeholder}
                         value={value}
                         metadata={column.metadata}

@@ -10,7 +10,7 @@ import { useAppContext } from '@/shared/contexts/app';
 import { cn } from '@/shared/lib/utils';
 import { Button as ButtonType } from '@/shared/types/blocks/common';
 
-import { getLocalizedCallback } from './auth-form-utils';
+import { getLocalizedCallback, getOAuthErrorCallback } from './auth-form-utils';
 
 export function SocialProviders({
   configs,
@@ -28,6 +28,7 @@ export function SocialProviders({
 
   const { setIsShowSignModal } = useAppContext();
   const localizedCallbackUrl = getLocalizedCallback(callbackUrl, locale);
+  const errorCallbackUrl = getOAuthErrorCallback(callbackUrl, locale);
 
   const handleSignIn = async ({ provider }: { provider: string }) => {
     try {
@@ -35,6 +36,7 @@ export function SocialProviders({
         {
           provider,
           callbackURL: localizedCallbackUrl,
+          errorCallbackURL: errorCallbackUrl,
         },
         {
           onRequest: () => setLoading(true),

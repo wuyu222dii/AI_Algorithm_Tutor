@@ -54,7 +54,6 @@ export function SignUser({
 
   // get app context values
   const {
-    configs,
     fetchConfigs,
     setIsShowSignModal,
     isCheckSign,
@@ -62,7 +61,6 @@ export function SignUser({
     user,
     setUser,
     fetchUserInfo,
-    showOneTap,
   } = useAppContext();
 
   // get session
@@ -73,9 +71,6 @@ export function SignUser({
   // In dev (React StrictMode) effects can run twice; ensure we don't spam getSession().
   const didFallbackSyncRef = useRef(false);
 
-  // one tap initialized
-  const oneTapInitialized = useRef(false);
-
   useEffect(() => {
     fetchConfigs();
   }, [fetchConfigs]);
@@ -84,21 +79,6 @@ export function SignUser({
   useEffect(() => {
     setIsCheckSign(isPending);
   }, [isPending, setIsCheckSign]);
-
-  // show one tap if not initialized
-  useEffect(() => {
-    if (
-      configs &&
-      configs.google_client_id &&
-      configs.google_one_tap_enabled === 'true' &&
-      !session &&
-      !isPending &&
-      !oneTapInitialized.current
-    ) {
-      oneTapInitialized.current = true;
-      showOneTap(configs);
-    }
-  }, [configs, session, isPending, showOneTap]);
 
   // set user
   useEffect(() => {

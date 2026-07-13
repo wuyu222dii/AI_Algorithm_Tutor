@@ -47,8 +47,8 @@ describe('algorithm coach domain', () => {
     }
   });
 
-  it('ships eight bilingual problems with verified tests and three hint levels', () => {
-    expect(problems).toHaveLength(8);
+  it('ships thirty bilingual problems with verified tests and three hint levels', () => {
+    expect(problems).toHaveLength(30);
     for (const problem of problems) {
       expect(problem.title.zh).toBeTruthy();
       expect(problem.title.en).toBeTruthy();
@@ -177,14 +177,16 @@ describe('algorithm coach domain', () => {
     expect(normalized.problem?.title).toBe('依赖关系是否成环');
   });
 
-  it('passes all twenty deterministic offline evaluation samples', () => {
+  it('passes bilingual deterministic safety and quality evaluations', () => {
     const summary = runOfflineCoachEval();
-    expect(summary.sampleCount).toBe(20);
+    expect(summary.sampleCount).toBe(26);
     expect(summary.failures).toEqual([]);
     expect(summary.structuredOutputRate).toBe(1);
     expect(summary.diagnosisAccuracy).toBe(1);
     expect(summary.hintLeakageRate).toBe(0);
     expect(summary.counterexampleExecutableRate).toBe(1);
     expect(summary.parseNoHiddenTestsRate).toBe(1);
+    expect(summary.promptInjectionPassRate).toBe(1);
+    expect(summary.answerLeakageRate).toBe(0);
   });
 });

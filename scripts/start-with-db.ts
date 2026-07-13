@@ -5,11 +5,14 @@ import { migrateDatabase } from './migrate-database';
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (command !== 'dev' && command !== 'start') {
-    throw new Error('Expected Next command "dev" or "start"');
+  if (command !== 'dev') {
+    throw new Error('Expected Next command "dev"');
   }
 
-  await migrateDatabase();
+  await migrateDatabase({
+    allowApplicationDatabaseUrl: true,
+    respectAutoMigrateFlag: true,
+  });
 
   const child = spawn('next', [command, ...args], {
     cwd: process.cwd(),

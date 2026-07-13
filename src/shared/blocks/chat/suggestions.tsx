@@ -2,7 +2,6 @@ import {
   Suggestion,
   Suggestions,
 } from '@/shared/components/ai-elements/suggestion';
-import { useChatContext } from '@/shared/contexts/chat';
 
 export function ChatSuggestions() {
   const suggestions = [
@@ -16,19 +15,10 @@ export function ChatSuggestions() {
     'Explain cloud computing basics',
   ];
 
-  const handleSuggestionClick = (suggestion: string) => {
-    // setStatus('submitted');
-    // addUserMessage(suggestion);
-  };
-
   return (
     <Suggestions className="px-4">
       {suggestions.map((suggestion) => (
-        <Suggestion
-          key={suggestion}
-          onClick={() => handleSuggestionClick(suggestion)}
-          suggestion={suggestion}
-        />
+        <Suggestion key={suggestion} suggestion={suggestion} />
       ))}
     </Suggestions>
   );

@@ -2,7 +2,7 @@ import { respData, respErr } from '@/shared/lib/resp';
 import { getRemainingCredits } from '@/shared/models/credit';
 import { getUserInfo } from '@/shared/models/user';
 
-export async function POST(req: Request) {
+export async function POST() {
   try {
     const user = await getUserInfo();
     if (!user) {

@@ -135,8 +135,7 @@ export function AudioPlayer({ src, title, className }: AudioPlayerProps) {
         </div>
       </div>
 
-      {/* Volume Control */}
-      {/* <div className="hidden sm:flex items-center gap-2">
+      <div className="hidden items-center gap-2 sm:flex">
         <button
           onClick={toggleMute}
           className="text-muted-foreground hover:text-foreground transition-colors"
@@ -155,9 +154,10 @@ export function AudioPlayer({ src, title, className }: AudioPlayerProps) {
           step={0.01}
           value={isMuted ? 0 : volume}
           onChange={handleVolumeChange}
-          className="w-20 h-1 bg-secondary rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-0"
+          aria-label="Volume"
+          className="bg-secondary [&::-webkit-slider-thumb]:bg-primary [&::-moz-range-thumb]:bg-primary h-1 w-20 cursor-pointer appearance-none rounded-lg [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full"
         />
-      </div> */}
+      </div>
     </div>
   );
 }

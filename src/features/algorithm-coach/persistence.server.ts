@@ -12,13 +12,17 @@ import {
   coachPracticeSession,
   coachProblem,
   coachProductEvent,
+  coachSyncMutation as coachSyncMutationTable,
   coachSyncState,
   coachTestCase,
 } from '@/config/db/schema.postgres';
 
 import { createInitialCoachState } from './storage';
+import { applyCoachSyncMutations } from './sync';
 import {
   CoachState,
+  CoachSyncMutation,
+  CoachSyncResult,
   CodeRunResult,
   LearningArtifact,
   LearningProfile,
@@ -217,16 +221,42 @@ async function syncImportedProblem(
   }
 }
 
-export async function saveCoachData(
+async function persistCoachData(
   userId: string,
   state: CoachState,
   importedProblem: Problem | null,
-  expectedRevision: number
-): Promise<number> {
+  expectedRevision: number,
+  requestedMutationIds: string[] = []
+): Promise<CoachSyncResult> {
   const database = dbPostgres();
   return database.transaction(async (tx) => {
     const timestamp = new Date();
     const currentRevision = await lockSyncState(tx, userId);
+    const mutationIds = Array.from(new Set(requestedMutationIds));
+    const existingMutations = mutationIds.length
+      ? await tx
+          .select({ mutationId: coachSyncMutationTable.mutationId })
+          .from(coachSyncMutationTable)
+          .where(
+            and(
+              eq(coachSyncMutationTable.userId, userId),
+              inArray(coachSyncMutationTable.mutationId, mutationIds)
+            )
+          )
+      : [];
+    const replayedMutationIds = existingMutations.map(
+      (mutation) => mutation.mutationId
+    );
+    const replayed = new Set(replayedMutationIds);
+    const appliedMutationIds = mutationIds.filter((id) => !replayed.has(id));
+
+    if (mutationIds.length > 0 && appliedMutationIds.length === 0) {
+      return {
+        revision: currentRevision,
+        appliedMutationIds: [],
+        replayedMutationIds,
+      };
+    }
     if (currentRevision !== expectedRevision) {
       throw new CoachPersistenceConflict(currentRevision);
     }
@@ -498,6 +528,8 @@ export async function saveCoachData(
           totalCount: assessment.totalCount,
           weakTopics: assessment.weakTopics,
           recommendation: assessment.recommendation,
+          assessmentVersion: assessment.version,
+          verificationToken: assessment.verificationToken,
           createdAt: asDate(assessment.startedAt),
           updatedAt: asDate(assessment.completedAt),
         })
@@ -512,6 +544,8 @@ export async function saveCoachData(
             totalCount: assessment.totalCount,
             weakTopics: assessment.weakTopics,
             recommendation: assessment.recommendation,
+            assessmentVersion: assessment.version,
+            verificationToken: assessment.verificationToken,
             updatedAt: asDate(assessment.completedAt),
           },
         });
@@ -551,8 +585,61 @@ export async function saveCoachData(
       .update(coachSyncState)
       .set({ revision: nextRevision, updatedAt: timestamp })
       .where(eq(coachSyncState.userId, userId));
-    return nextRevision;
+    if (appliedMutationIds.length) {
+      await tx
+        .insert(coachSyncMutationTable)
+        .values(
+          appliedMutationIds.map((mutationId) => ({
+            userId,
+            mutationId,
+            resultRevision: nextRevision,
+            createdAt: timestamp,
+          }))
+        )
+        .onConflictDoNothing({
+          target: [
+            coachSyncMutationTable.userId,
+            coachSyncMutationTable.mutationId,
+          ],
+        });
+    }
+    return {
+      revision: nextRevision,
+      appliedMutationIds,
+      replayedMutationIds,
+    };
   });
+}
+
+export async function saveCoachData(
+  userId: string,
+  state: CoachState,
+  importedProblem: Problem | null,
+  expectedRevision: number
+): Promise<number> {
+  const result = await persistCoachData(
+    userId,
+    state,
+    importedProblem,
+    expectedRevision
+  );
+  return result.revision;
+}
+
+export async function applyCoachDataMutations(
+  userId: string,
+  expectedRevision: number,
+  mutations: CoachSyncMutation[]
+): Promise<CoachSyncResult> {
+  const current = await loadCoachData(userId);
+  const next = applyCoachSyncMutations(current, mutations);
+  return persistCoachData(
+    userId,
+    next.state,
+    next.importedProblem,
+    expectedRevision,
+    mutations.map((mutation) => mutation.id)
+  );
 }
 
 export async function loadCoachData(
@@ -757,6 +844,8 @@ export async function loadCoachData(
         weakTopics:
           row.weakTopics as CoachState['assessments'][number]['weakTopics'],
         recommendation: row.recommendation,
+        version: row.assessmentVersion ?? undefined,
+        verificationToken: row.verificationToken ?? undefined,
       }))
       .slice(0, 20)
       .reverse();

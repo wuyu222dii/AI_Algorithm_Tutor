@@ -15,7 +15,6 @@ import {
 
 type PaginatorProps = {
   total?: number;
-  perPage?: number;
   currentPage: number;
   totalPages: number;
   onPageChange: (pageNumber: number) => void;
@@ -25,7 +24,6 @@ type PaginatorProps = {
 
 function Paginator({
   total,
-  perPage,
   currentPage,
   totalPages,
   onPageChange,
@@ -160,7 +158,7 @@ export function Pagination({
   const handlePageChange = (page: number) => {
     const params = new URLSearchParams(searchParams);
     params.set('page', page.toString());
-    router.push(`${pathname}?${params.toString()}`);
+    router.push(`${url || pathname}?${params.toString()}`);
   };
 
   if (totalPages <= 1) {
@@ -170,7 +168,6 @@ export function Pagination({
   return (
     <Paginator
       total={Number(total)}
-      perPage={Number(limit)}
       currentPage={Number(page)}
       totalPages={Number(totalPages)}
       onPageChange={handlePageChange}

@@ -1,6 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { enforceWindowRateLimit } from './rate-limit';
+import {
+  enforceDistributedWindowRateLimit,
+  enforceWindowRateLimit,
+} from './rate-limit';
 
 function createRequest(ip = '203.0.113.10') {
   return new Request('https://algocoach.test/api/auth/sign-in/email', {
@@ -12,6 +15,13 @@ function createRequest(ip = '203.0.113.10') {
 describe('window rate limiting', () => {
   beforeEach(() => {
     globalThis.__windowRateLimitStore = new Map();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.REDIS_URL;
+    delete process.env.REDIS_TOKEN;
+    delete process.env.TRUSTED_PROXY_HEADERS;
   });
 
   it('allows consecutive requests within the configured threshold', () => {
@@ -75,5 +85,72 @@ describe('window rate limiting', () => {
         extraKey: 'second@example.test',
       })
     ).toBeNull();
+  });
+
+  it('uses the shared Redis counter when REST credentials are configured', async () => {
+    process.env.REDIS_URL = 'https://redis.example.test';
+    process.env.REDIS_TOKEN = 'test-token';
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ result: [3, 45_000] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await enforceDistributedWindowRateLimit(createRequest(), {
+      windowMs: 60_000,
+      max: 2,
+      keyPrefix: 'shared-test',
+      identity: 'source',
+    });
+
+    expect(response?.status).toBe(429);
+    expect(response?.headers.get('retry-after')).toBe('45');
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(String(init.body)).not.toContain('203.0.113.10');
+  });
+
+  it('ignores forwarded addresses in production until a trusted header is configured', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const options = {
+      windowMs: 60_000,
+      max: 1,
+      keyPrefix: 'trusted-proxy-test',
+      identity: 'source' as const,
+    };
+
+    expect(
+      enforceWindowRateLimit(createRequest('198.51.100.1'), options)
+    ).toBeNull();
+    expect(
+      enforceWindowRateLimit(createRequest('198.51.100.2'), options)?.status
+    ).toBe(429);
+
+    process.env.TRUSTED_PROXY_HEADERS = 'x-forwarded-for';
+    globalThis.__windowRateLimitStore = new Map();
+    expect(
+      enforceWindowRateLimit(createRequest('198.51.100.1'), options)
+    ).toBeNull();
+    expect(
+      enforceWindowRateLimit(createRequest('198.51.100.2'), options)
+    ).toBeNull();
+  });
+
+  it('fails closed when the configured Redis backend is unavailable', async () => {
+    process.env.REDIS_URL = 'https://redis.example.test';
+    process.env.REDIS_TOKEN = 'test-token';
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+
+    const response = await enforceDistributedWindowRateLimit(createRequest(), {
+      windowMs: 60_000,
+      max: 2,
+      keyPrefix: 'shared-test',
+      identity: 'source',
+      failClosed: true,
+    });
+
+    expect(response?.status).toBe(503);
   });
 });

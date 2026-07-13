@@ -97,9 +97,11 @@ export const account = table(
   (table) => [
     // Query all linked accounts for a user
     index('idx_account_user_id').on(table.userId),
-    // Composite: OAuth login (most critical)
-    // Can also be used for: WHERE providerId = ? (left-prefix)
-    index('idx_account_provider_account').on(table.providerId, table.accountId),
+    // A provider account must never be linked to more than one local user.
+    uniqueIndex('uq_account_provider_account').on(
+      table.providerId,
+      table.accountId
+    ),
   ]
 );
 
@@ -740,6 +742,34 @@ export const coachSyncState = table(
   ]
 );
 
+export const coachSyncMutation = table(
+  'coach_sync_mutation',
+  {
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    mutationId: text('mutation_id').notNull(),
+    resultRevision: integer('result_revision').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_coach_sync_mutation_user_id').on(
+      table.userId,
+      table.mutationId
+    ),
+    index('idx_coach_sync_mutation_user_created').on(
+      table.userId,
+      table.createdAt.desc()
+    ),
+    check(
+      'chk_coach_sync_mutation_result_revision',
+      sql`${table.resultRevision} >= 0`
+    ),
+  ]
+);
+
 export const coachPracticeSession = table(
   'coach_practice_session',
   {
@@ -961,6 +991,8 @@ export const coachAssessment = table(
       .notNull()
       .default(sql`ARRAY[]::text[]`),
     recommendation: text('recommendation').notNull().default(''),
+    assessmentVersion: text('assessment_version'),
+    verificationToken: text('verification_token'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
       .notNull(),

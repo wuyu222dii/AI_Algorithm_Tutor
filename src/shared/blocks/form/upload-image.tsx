@@ -19,7 +19,6 @@ interface UploadImageProps {
 export function UploadImage({
   field,
   formField,
-  data,
   metadata,
   uploadUrl = '/api/storage/upload-image',
   onUpload,
@@ -65,6 +64,8 @@ export function UploadImage({
       maxSizeMB={maxSizeMB}
       emptyHint={field.placeholder}
       defaultPreviews={previews}
+      uploadUrl={uploadUrl}
+      onUpload={onUpload}
       onChange={handleChange}
     />
   );

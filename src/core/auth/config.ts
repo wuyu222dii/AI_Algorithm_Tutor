@@ -1,5 +1,5 @@
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
-import { oneTap } from 'better-auth/plugins';
+import { eq } from 'drizzle-orm';
 import { getLocale } from 'next-intl/server';
 
 import { db } from '@/core/db';
@@ -14,9 +14,13 @@ import {
 } from '@/shared/lib/cookie';
 import { getUuid } from '@/shared/lib/hash';
 import { getClientIp } from '@/shared/lib/ip';
+import { recordOperationalEvent } from '@/shared/lib/observability';
 import { grantCreditsForNewUser } from '@/shared/models/credit';
 import { getEmailService } from '@/shared/services/email';
 import { grantRoleForNewUser } from '@/shared/services/rbac';
+
+import { getGoogleOAuthMockOptions } from './google-oauth-mock';
+import { AUTH_ACCOUNT_SECURITY } from './security';
 
 // Best-effort dedupe to prevent sending verification emails too frequently.
 // This is especially helpful in dev/hot reload, transient network conditions,
@@ -65,6 +69,11 @@ const authOptions = {
   baseURL: envConfigs.auth_url,
   secret: envConfigs.auth_secret,
   trustedOrigins: envConfigs.app_url ? [envConfigs.app_url] : [],
+  onAPIError: {
+    // Provider callbacks that fail before OAuth state can be parsed still land
+    // on an application-owned, localized error surface.
+    errorURL: `${envConfigs.app_url.replace(/\/$/, '')}/auth-error`,
+  },
   user: {
     // Allow persisting custom columns on user table.
     // Without this, better-auth may ignore extra properties during create/update.
@@ -90,6 +99,7 @@ const authOptions = {
       },
     },
   },
+  account: AUTH_ACCOUNT_SECURITY,
   advanced: {
     database: {
       generateId: () => getUuid(),
@@ -129,6 +139,36 @@ export async function getAuthOptions(configs: Record<string, string>) {
         })
       : null,
     databaseHooks: {
+      account: {
+        create: {
+          after: async (account: any) => {
+            if (account.providerId !== 'google' || !account.userId) return;
+            try {
+              const linkedAccounts = await db()
+                .select({ id: schema.account.id })
+                .from(schema.account)
+                .where(eq(schema.account.userId, account.userId))
+                .limit(2);
+              if (linkedAccounts.length > 1) {
+                void recordOperationalEvent({
+                  event: 'auth_account_linked',
+                  properties: {
+                    provider: 'google',
+                    outcome: 'linked',
+                  },
+                });
+              }
+            } catch (error) {
+              void recordOperationalEvent({
+                event: 'auth_account_link_audit_failed',
+                level: 'warn',
+                error,
+                properties: { provider: 'google' },
+              });
+            }
+          },
+        },
+      },
       user: {
         create: {
           before: async (user: any, ctx: any) => {
@@ -277,12 +317,9 @@ export async function getAuthOptions(configs: Record<string, string>) {
         }
       : {}),
     socialProviders: await getSocialProviders(configs),
-    plugins:
-      configs.google_auth_enabled === 'true' &&
-      configs.google_client_id &&
-      configs.google_one_tap_enabled === 'true'
-        ? [oneTap()]
-        : [],
+    // AlgoCoach uses the explicit Google button flow. One Tap is intentionally
+    // not registered so it cannot be enabled accidentally through configuration.
+    plugins: [],
   };
 }
 
@@ -299,6 +336,7 @@ export async function getSocialProviders(configs: Record<string, string>) {
     providers.google = {
       clientId: configs.google_client_id,
       clientSecret: configs.google_client_secret,
+      ...getGoogleOAuthMockOptions(),
     };
   }
 

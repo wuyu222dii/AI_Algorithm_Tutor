@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import { Avatar, AvatarFallback, AvatarImage } from '@radix-ui/react-avatar';
 import { Calendar } from 'lucide-react';
 import { useTranslations } from 'next-intl';
@@ -75,10 +76,14 @@ export function Blog({
                 <div className="border-border flex flex-col overflow-clip rounded-xl border">
                   {item.image && (
                     <div>
-                      <img
+                      <Image
                         src={item.image}
                         alt={item.title || ''}
-                        className="aspect-16/9 h-full w-full object-cover object-center"
+                        className="aspect-16/9 h-auto w-full object-cover object-center"
+                        height={360}
+                        sizes="(min-width: 768px) 33vw, 100vw"
+                        unoptimized
+                        width={640}
                       />
                     </div>
                   )}

@@ -19,11 +19,17 @@ export function MarkdownEditor({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const editorRef = useRef<OverType>(null);
+  const initialValueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   useEffect(() => {
     const [instance] = OverType.init(ref.current, {
-      value,
-      onChange,
+      value: initialValueRef.current,
+      onChange: (nextValue: string) => onChangeRef.current(nextValue),
       placeholder,
       minHeight,
       showToolbar,
@@ -31,7 +37,7 @@ export function MarkdownEditor({
     editorRef.current = instance;
 
     return () => editorRef.current?.destroy();
-  }, []);
+  }, [minHeight, placeholder, showToolbar]);
 
   useEffect(() => {
     if (editorRef.current && value !== editorRef.current.getValue()) {

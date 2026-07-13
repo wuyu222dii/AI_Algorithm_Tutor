@@ -7,7 +7,6 @@ import { FormField } from '@/shared/types/blocks/form';
 export function Checkbox({
   field,
   formField,
-  data,
 }: {
   field: FormField;
   formField: ControllerRenderProps<Record<string, unknown>, string>;

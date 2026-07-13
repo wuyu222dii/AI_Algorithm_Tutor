@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { ChevronsUpDown, Loader2, LogOut, User } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
@@ -42,9 +42,7 @@ export function SidebarUser({ user }: { user: SidebarUserType }) {
 
   // get session (MUST be called unconditionally to keep hook order stable)
   const { data: session, isPending } = useSession();
-
-  // one tap initialized
-  const oneTapInitialized = useRef(false);
+  const sessionUser = session?.user;
 
   // This state will ensure rendering only happens after client hydration
   const [hasMounted, setHasMounted] = useState(false);
@@ -59,7 +57,6 @@ export function SidebarUser({ user }: { user: SidebarUserType }) {
 
   // get app context values
   const {
-    configs,
     fetchConfigs,
     setIsShowSignModal,
     isCheckSign,
@@ -67,12 +64,11 @@ export function SidebarUser({ user }: { user: SidebarUserType }) {
     user: authUser,
     setUser,
     fetchUserInfo,
-    showOneTap,
   } = useAppContext();
 
   useEffect(() => {
     fetchConfigs();
-  }, []);
+  }, [fetchConfigs]);
 
   // set is check sign
   useEffect(() => {
@@ -83,32 +79,12 @@ export function SidebarUser({ user }: { user: SidebarUserType }) {
     setIsCheckSign(isPending);
   }, [hasMounted, isPending, setIsCheckSign]);
 
-  // show one tap if not initialized
-  useEffect(() => {
-    if (!hasMounted) {
-      return;
-    }
-
-    if (
-      configs &&
-      configs.google_client_id &&
-      configs.google_one_tap_enabled === 'true' &&
-      !session &&
-      !isPending &&
-      !oneTapInitialized.current
-    ) {
-      oneTapInitialized.current = true;
-      showOneTap(configs);
-    }
-  }, [hasMounted, configs, session, isPending, showOneTap]);
-
   // set user
   useEffect(() => {
     if (!hasMounted) {
       return;
     }
 
-    const sessionUser = session?.user;
     const currentUserId = authUser?.id;
     const sessionUserId = sessionUser?.id;
 
@@ -118,7 +94,7 @@ export function SidebarUser({ user }: { user: SidebarUserType }) {
     } else if (!sessionUser && currentUserId) {
       setUser(null);
     }
-  }, [hasMounted, session?.user?.id, authUser?.id, setUser, fetchUserInfo]);
+  }, [hasMounted, sessionUser, authUser?.id, setUser, fetchUserInfo]);
 
   // If not mounted, render placeholder to avoid hydration mismatch
   if (!hasMounted) {

@@ -1,5 +1,11 @@
 import { sql } from 'drizzle-orm';
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import {
+  index,
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core';
 
 // SQLite has no schema concept like Postgres. Keep a `table` alias to minimize diff with pg schema.
 const table = sqliteTable;
@@ -94,9 +100,11 @@ export const account = table(
   (table) => [
     // Query all linked accounts for a user
     index('idx_account_user_id').on(table.userId),
-    // Composite: OAuth login (most critical)
-    // Can also be used for: WHERE providerId = ? (left-prefix)
-    index('idx_account_provider_account').on(table.providerId, table.accountId),
+    // A provider account must never be linked to more than one local user.
+    uniqueIndex('uq_account_provider_account').on(
+      table.providerId,
+      table.accountId
+    ),
   ]
 );
 

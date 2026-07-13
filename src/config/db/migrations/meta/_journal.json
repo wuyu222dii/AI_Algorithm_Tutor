@@ -22,6 +22,34 @@
       "when": 1783852529147,
       "tag": "0002_great_susan_delgado",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783919507955,
+      "tag": "0003_secure_google_account_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783920000000,
+      "tag": "0004_coach_sync_mutations",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783921000000,
+      "tag": "0005_seed_extended_coach_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783921248522,
+      "tag": "0006_odd_silver_samurai",
+      "breakpoints": true
     }
   ]
 }

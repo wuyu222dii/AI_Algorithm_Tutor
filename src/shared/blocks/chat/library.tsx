@@ -1,41 +1,22 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import {
-  IconDots,
-  IconFolder,
-  IconMessageCircle,
-  IconPencil,
-  IconShare3,
-  IconTrash,
-  type Icon,
-} from '@tabler/icons-react';
+import { IconDots, IconMessageCircle } from '@tabler/icons-react';
 import { useTranslations } from 'next-intl';
 
 import { Link } from '@/core/i18n/navigation';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/shared/components/ui/dropdown-menu';
-import {
   SidebarGroup,
   SidebarGroupLabel,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
-  useSidebar,
 } from '@/shared/components/ui/sidebar';
 import { useAppContext } from '@/shared/contexts/app';
 import { useChatContext } from '@/shared/contexts/chat';
 
-export function ChatLibrary({}) {
-  const { isMobile } = useSidebar();
-
+export function ChatLibrary() {
   const t = useTranslations('ai.chat.library');
   const params = useParams();
 
@@ -44,16 +25,10 @@ export function ChatLibrary({}) {
   const { chats, setChats } = useChatContext();
   const [hasMore, setHasMore] = useState(false);
 
-  const [page, setPage] = useState(1);
-  const [limit, setLimit] = useState(10);
+  const page = 1;
+  const limit = 10;
 
-  const fetchChats = async ({
-    page,
-    limit,
-  }: {
-    page: number;
-    limit: number;
-  }) => {
+  const fetchChats = useCallback(async () => {
     try {
       const resp = await fetch('/api/chat/list', {
         method: 'POST',
@@ -73,15 +48,15 @@ export function ChatLibrary({}) {
       setHasMore(hasMore);
     } catch (e: any) {
       console.log('fetch chats failed:', e);
-      return [];
+      return;
     }
-  };
+  }, [limit, page, setChats]);
 
   useEffect(() => {
     if (user) {
-      fetchChats({ page, limit });
+      fetchChats();
     }
-  }, [user]);
+  }, [fetchChats, user]);
 
   return (
     <SidebarGroup className="group-data-[collapsible=icon]:hidden">
@@ -103,36 +78,6 @@ export function ChatLibrary({}) {
                   <span>{chat.title}</span>
                 </Link>
               </SidebarMenuButton>
-              {/* <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <SidebarMenuAction
-                    showOnHover
-                    className="data-[state=open]:bg-accent rounded-sm"
-                  >
-                    <IconDots />
-                    <span className="sr-only">{t('more')}</span>
-                  </SidebarMenuAction>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  className="w-24 rounded-lg"
-                  side={isMobile ? 'bottom' : 'right'}
-                  align={isMobile ? 'end' : 'start'}
-                >
-                  <DropdownMenuItem>
-                    <IconPencil />
-                    <span>{t('actions.edit_title')}</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem>
-                    <IconShare3 />
-                    <span>{t('actions.share')}</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive">
-                    <IconTrash />
-                    <span>{t('actions.delete')}</span>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu> */}
             </SidebarMenuItem>
           ))}
 

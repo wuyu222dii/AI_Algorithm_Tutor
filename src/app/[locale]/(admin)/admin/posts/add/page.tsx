@@ -106,7 +106,7 @@ export default async function PostAddPage({
       button: {
         title: t('add.buttons.submit'),
       },
-      handler: async (data, passby) => {
+      handler: async (data) => {
         'use server';
 
         const user = await getUserInfo();

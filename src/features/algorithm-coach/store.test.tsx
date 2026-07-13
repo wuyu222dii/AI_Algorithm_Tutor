@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   claimGuestCoachData,
@@ -7,6 +7,7 @@ import {
   COACH_EXPERIMENT_KEY,
   COACH_GUEST_CLAIM_KEY,
   COACH_STORAGE_KEY,
+  COACH_SYNC_QUEUE_KEY,
   createCoachStorageScope,
   createInitialCoachState,
   getScopedStorageKey,
@@ -95,6 +96,10 @@ describe('CoachProvider persistence', () => {
     });
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('persists an added review card artifact to versioned localStorage', async () => {
     const { result } = renderHook(() => useCoachStore(), {
       wrapper: CoachProvider,
@@ -178,5 +183,84 @@ describe('CoachProvider persistence', () => {
     expect(loadCoachState(storage, accountB).profile).toBeNull();
     expect(loadCoachState(storage, accountA).profile?.goal).toBe('interview');
     expect(loadCoachState(storage).profile?.goal).toBe('contest');
+  });
+
+  it('recovers a revision conflict and replays the persisted mutation queue', async () => {
+    const scope = createCoachStorageScope('conflict-account');
+    const firstRemote = createInitialCoachState();
+    firstRemote.artifacts = [{ ...reviewCard, id: 'remote-before' }];
+    const latestRemote = createInitialCoachState();
+    latestRemote.artifacts = [{ ...reviewCard, id: 'remote-concurrent' }];
+    let getCount = 0;
+    let patchCount = 0;
+
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'PATCH') {
+          patchCount += 1;
+          if (patchCount === 1) {
+            return Response.json(
+              {
+                error: {
+                  code: 'revision_conflict',
+                  details: { currentRevision: 2 },
+                },
+              },
+              { status: 409 }
+            );
+          }
+          const body = JSON.parse(String(init.body)) as {
+            mutations: Array<{ id: string }>;
+          };
+          return Response.json({
+            data: {
+              revision: 3,
+              appliedMutationIds: body.mutations.map((item) => item.id),
+              replayedMutationIds: [],
+            },
+          });
+        }
+
+        getCount += 1;
+        return Response.json({
+          data: {
+            state: getCount === 1 ? firstRemote : latestRemote,
+            importedProblem: null,
+            hasData: true,
+            revision: getCount === 1 ? 1 : 2,
+          },
+        });
+      }
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result, unmount } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider storageScope={scope}>{children}</CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+
+    act(() =>
+      result.current.addArtifact({ ...reviewCard, id: 'local-offline' })
+    );
+
+    await waitFor(
+      () => {
+        expect(patchCount).toBe(2);
+        expect(result.current.syncStatus).toBe('synced');
+      },
+      { timeout: 4_000 }
+    );
+
+    expect(result.current.state.artifacts.map((item) => item.id)).toEqual(
+      expect.arrayContaining(['remote-concurrent', 'local-offline'])
+    );
+    expect(
+      window.localStorage.getItem(
+        getScopedStorageKey(COACH_SYNC_QUEUE_KEY, scope)
+      )
+    ).toBeNull();
+    unmount();
   });
 });

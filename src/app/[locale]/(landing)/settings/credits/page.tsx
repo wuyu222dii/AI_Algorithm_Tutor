@@ -4,7 +4,6 @@ import { Empty } from '@/shared/blocks/common';
 import { PanelCard } from '@/shared/blocks/panel';
 import { TableCard } from '@/shared/blocks/table';
 import {
-  Credit,
   CreditStatus,
   CreditTransactionType,
   getCredits,

@@ -5,8 +5,6 @@ import { createFromSource } from 'fumadocs-core/search/server';
 import { loader } from 'fumadocs-core/source';
 import { icons } from 'lucide-react';
 
-import { source as originalSource } from '@/core/docs/source';
-
 // Create a modified i18n config that maps 'zh' to 'en' for Orama
 const searchI18n: I18nConfig = {
   defaultLanguage: 'en',

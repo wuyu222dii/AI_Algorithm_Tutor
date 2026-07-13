@@ -18,14 +18,14 @@ export async function loadMessages(
       `@/config/locale/messages/${locale}/${path}.json`
     );
     return messages.default;
-  } catch (e) {
+  } catch {
     try {
       // try to load default locale messages
       const messages = await import(
         `@/config/locale/messages/${defaultLocale}/${path}.json`
       );
       return messages.default;
-    } catch (err) {
+    } catch {
       // if default locale is not found, return empty object
       return {};
     }
@@ -71,7 +71,7 @@ export default getRequestConfig(async ({ requestLocale }) => {
       locale,
       messages,
     };
-  } catch (e) {
+  } catch {
     return {
       locale: defaultLocale,
       messages: await loadMessages(localeMessagesRootPath, defaultLocale),

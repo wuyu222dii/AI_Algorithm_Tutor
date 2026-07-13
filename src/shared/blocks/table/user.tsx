@@ -1,5 +1,3 @@
-import moment from 'moment';
-
 import { Link } from '@/core/i18n/navigation';
 import {
   Avatar,
@@ -12,7 +10,6 @@ import { User as UserType } from '@/shared/models/user';
 export function User({
   value,
   placeholder,
-  metadata,
   className,
 }: {
   value: UserType;

@@ -88,13 +88,8 @@ export function Pricing({
   const locale = useLocale();
   const t = useTranslations('pages.pricing.messages');
 
-  const {
-    user,
-    isShowPaymentModal,
-    setIsShowSignModal,
-    setIsShowPaymentModal,
-    configs,
-  } = useAppContext();
+  const { user, setIsShowSignModal, setIsShowPaymentModal, configs } =
+    useAppContext();
 
   const [group, setGroup] = useState(() => {
     // find current pricing item

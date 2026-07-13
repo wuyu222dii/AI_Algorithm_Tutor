@@ -10,7 +10,6 @@ import {
   AIImage,
   AIMediaType,
   AIProvider,
-  AISong,
   AITaskResult,
   AITaskStatus,
   AIVideo,
@@ -52,7 +51,7 @@ export class ReplicateProvider implements AIProvider {
   }: {
     params: AIGenerateParams;
   }): Promise<AITaskResult> {
-    const { mediaType, model, prompt, options, async, callbackUrl } = params;
+    const { mediaType, model, prompt, options, callbackUrl } = params;
 
     if (!mediaType) {
       throw new Error('mediaType is required');
@@ -68,7 +67,6 @@ export class ReplicateProvider implements AIProvider {
 
     // build request params
     const input: any = this.formatInput({
-      mediaType,
       model,
       prompt,
       options,
@@ -247,12 +245,10 @@ export class ReplicateProvider implements AIProvider {
   }
 
   private formatInput({
-    mediaType,
     model,
     prompt,
     options,
   }: {
-    mediaType: AIMediaType;
     model: string;
     prompt: string;
     options: any;

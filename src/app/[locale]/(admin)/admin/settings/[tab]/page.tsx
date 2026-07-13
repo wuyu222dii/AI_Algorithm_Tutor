@@ -42,7 +42,7 @@ export default async function SettingsPage({
 
   const tabs = await getSettingTabs(tab ?? 'auth');
 
-  const handleSubmit = async (data: FormData, passby: any) => {
+  const handleSubmit = async (data: FormData) => {
     'use server';
 
     const user = await getUserInfo();

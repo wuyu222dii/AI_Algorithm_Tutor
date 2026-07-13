@@ -7,7 +7,6 @@ import { toast } from 'sonner';
 
 export function Copy({
   value,
-  placeholder,
   metadata,
   className,
   children,

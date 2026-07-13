@@ -8,6 +8,7 @@ export default defineConfig([
   globalIgnores([
     '.next/**',
     '.source/**',
+    '.test/**',
     'coverage/**',
     'playwright-report/**',
     'public/monaco/**',

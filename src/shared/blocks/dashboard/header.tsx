@@ -9,7 +9,6 @@ import {
 import {
   Breadcrumb,
   BreadcrumbItem,
-  BreadcrumbLink,
   BreadcrumbList,
   BreadcrumbPage,
   BreadcrumbSeparator,
@@ -41,6 +40,9 @@ export function Header({
             orientation="vertical"
             className="mr-2 data-[orientation=vertical]:h-4"
           />
+        )}
+        {title && (!crumbs || crumbs.length === 0) && (
+          <span className="text-sm font-medium">{title}</span>
         )}
         {crumbs && crumbs.length > 0 && (
           <Breadcrumb>

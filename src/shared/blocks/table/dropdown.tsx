@@ -15,9 +15,6 @@ import { NavItem } from '@/shared/types/blocks/common';
 
 export function Dropdown({
   value,
-  placeholder,
-  metadata,
-  className,
 }: {
   value: NavItem[];
   placeholder?: string;

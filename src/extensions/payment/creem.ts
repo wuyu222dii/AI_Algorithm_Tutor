@@ -197,7 +197,6 @@ export class CreemProvider implements PaymentProvider {
 
   async getPaymentBilling({
     customerId,
-    returnUrl,
   }: {
     customerId: string;
     returnUrl?: string;
@@ -336,7 +335,6 @@ export class CreemProvider implements PaymentProvider {
     session: any
   ): Promise<PaymentSession> {
     let subscription: any | undefined = undefined;
-    let billingUrl = '';
 
     if (session.subscription) {
       subscription = session.subscription;

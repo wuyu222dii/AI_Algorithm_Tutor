@@ -99,7 +99,7 @@ export default async function RoleEditPermissionsPage({
         if (typeof permissions === 'string') {
           try {
             permissions = JSON.parse(permissions);
-          } catch (error) {
+          } catch {
             throw new Error('invalid permissions');
           }
         }

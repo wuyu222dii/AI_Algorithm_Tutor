@@ -436,7 +436,7 @@ export function VideoGenerator({
         return true;
       }
     },
-    [generationStartTime, resetTaskState]
+    [fetchUserCredits, generationStartTime, resetTaskState]
   );
 
   useEffect(() => {

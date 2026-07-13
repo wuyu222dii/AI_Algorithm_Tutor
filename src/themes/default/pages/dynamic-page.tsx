@@ -2,7 +2,6 @@ import { getThemeBlock } from '@/core/theme';
 import type { DynamicPage as DynamicPageType } from '@/shared/types/blocks/landing';
 
 export default async function DynamicPage({
-  locale,
   page,
   data,
 }: {
@@ -44,7 +43,7 @@ export default async function DynamicPage({
                     {...(data || section.data || {})}
                   />
                 );
-              } catch (error) {
+              } catch {
                 return null;
               }
           }

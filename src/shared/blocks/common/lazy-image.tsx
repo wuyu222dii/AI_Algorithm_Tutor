@@ -2,6 +2,8 @@
 
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 
+import { cn } from '@/shared/lib/utils';
+
 import 'react-lazy-load-image-component/src/effects/blur.css';
 
 export function LazyImage({
@@ -31,11 +33,15 @@ export function LazyImage({
     <LazyLoadImage
       src={src}
       alt={alt}
-      width={width}
-      height={height}
-      effect="blur" // 支持 blur、opacity 等
-      placeholderSrc={placeholderSrc} // 可选
-      className={className}
+      title={title}
+      sizes={sizes}
+      width={fill ? undefined : width}
+      height={fill ? undefined : height}
+      effect={priority ? undefined : 'blur'}
+      visibleByDefault={priority}
+      placeholderSrc={placeholderSrc}
+      wrapperClassName={fill ? 'absolute inset-0 h-full w-full' : undefined}
+      className={cn(fill && 'h-full w-full', className)}
     />
   );
 }

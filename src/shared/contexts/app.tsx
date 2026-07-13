@@ -11,7 +11,6 @@ import {
   useState,
 } from 'react';
 
-import { getAuthClient } from '@/core/auth/client';
 import { envConfigs } from '@/config';
 import { User } from '@/shared/models/user';
 
@@ -28,7 +27,6 @@ export interface ContextValue {
   fetchConfigs: () => Promise<void>;
   fetchUserCredits: () => Promise<void>;
   fetchUserInfo: () => Promise<void>;
-  showOneTap: (configs: Record<string, string>) => Promise<void>;
 }
 
 const AppContext = createContext({} as ContextValue);
@@ -118,31 +116,6 @@ export const AppContextProvider = ({ children }: { children: ReactNode }) => {
     }
   }, []);
 
-  const showOneTap = useCallback(async (configs: Record<string, string>) => {
-    try {
-      const authClient = getAuthClient(configs);
-      await authClient.oneTap({
-        callbackURL: '/',
-        onPromptNotification: (notification: any) => {
-          // Handle prompt dismissal silently
-          // This callback is triggered when the prompt is dismissed or skipped
-          if (process.env.NODE_ENV !== 'production') {
-            console.log('One Tap prompt notification:', notification);
-          }
-        },
-        // fetchOptions: {
-        //   onSuccess: () => {
-        //     router.push('/');
-        //   },
-        // },
-      });
-    } catch (error) {
-      // Silently handle One Tap cancellation errors
-      // These errors occur when users close the prompt or decline to sign in
-      // Common errors: FedCM NetworkError, AbortError, etc.
-    }
-  }, []);
-
   useEffect(() => {
     userRef.current = user;
   }, [user]);
@@ -161,7 +134,6 @@ export const AppContextProvider = ({ children }: { children: ReactNode }) => {
       fetchConfigs,
       fetchUserCredits,
       fetchUserInfo,
-      showOneTap,
     }),
     [
       user,
@@ -172,7 +144,6 @@ export const AppContextProvider = ({ children }: { children: ReactNode }) => {
       fetchConfigs,
       fetchUserCredits,
       fetchUserInfo,
-      showOneTap,
     ]
   );
 

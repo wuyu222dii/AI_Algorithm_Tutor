@@ -18,15 +18,15 @@ export function getLocaleLessCallback(
   callbackUrl: string | undefined,
   locale: string
 ) {
-  const safeCallback = getSafeInternalCallback(callbackUrl, '/');
+  const safeCallback = getSafeInternalCallback(callbackUrl, '/learn');
 
-  if (safeCallback === `/${locale}`) return '/';
+  if (safeCallback === `/${locale}`) return '/learn';
   if (safeCallback.startsWith(`/${locale}/`)) {
-    const stripped = safeCallback.slice(locale.length + 1) || '/';
-    return getSafeInternalCallback(stripped, '/');
+    const stripped = safeCallback.slice(locale.length + 1) || '/learn';
+    return getSafeInternalCallback(stripped, '/learn');
   }
 
-  return getSafeInternalCallback(safeCallback, '/');
+  return getSafeInternalCallback(safeCallback, '/learn');
 }
 
 export function getLocalizedCallback(
@@ -37,6 +37,17 @@ export function getLocalizedCallback(
 
   if (locale === defaultLocale) return safeCallback;
   return `/${locale}${safeCallback === '/' ? '' : safeCallback}`;
+}
+
+export function getOAuthErrorCallback(
+  callbackUrl: string | undefined,
+  locale: string
+) {
+  const safeCallback = getLocaleLessCallback(callbackUrl, locale);
+  const pathname =
+    locale === defaultLocale ? '/auth-error' : `/${locale}/auth-error`;
+  const query = new URLSearchParams({ callbackUrl: safeCallback });
+  return `${pathname}?${query.toString()}`;
 }
 
 export function buildAuthHref(

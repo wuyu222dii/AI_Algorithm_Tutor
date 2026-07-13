@@ -3,11 +3,13 @@ import { cn } from '@/shared/lib/utils';
 
 export function Image({
   value,
+  alt,
   metadata,
   placeholder,
   className,
 }: {
   value: string;
+  alt?: string;
   metadata?: Record<string, any>;
   placeholder?: string;
   className?: string;
@@ -26,7 +28,7 @@ export function Image({
   return (
     <LazyImage
       src={value}
-      alt={value}
+      alt={alt || ''}
       width={width}
       height={height}
       className={cn('shrink-0 rounded-md object-cover', className)}

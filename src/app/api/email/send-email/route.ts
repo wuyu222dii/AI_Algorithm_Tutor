@@ -1,24 +1,8 @@
-import { VerificationCode } from '@/shared/blocks/email/verification-code';
-import { respData, respErr } from '@/shared/lib/resp';
-import { getEmailService } from '@/shared/services/email';
-
-export async function POST(req: Request) {
-  try {
-    const { emails, subject } = await req.json();
-
-    const emailService = await getEmailService();
-
-    const result = await emailService.sendEmail({
-      to: emails,
-      subject: subject,
-      react: VerificationCode({ code: '123455' }),
-    });
-
-    console.log('send email result', result);
-
-    return respData(result);
-  } catch (e) {
-    console.log('send email failed:', e);
-    return respErr('send email failed');
-  }
+/**
+ * This legacy endpoint intentionally stays as a 404 tombstone so probes do not
+ * fall through to the dynamic page router. Authentication emails are sent only
+ * from Better Auth server callbacks.
+ */
+export function POST() {
+  return Response.json({ error: 'not_found' }, { status: 404 });
 }

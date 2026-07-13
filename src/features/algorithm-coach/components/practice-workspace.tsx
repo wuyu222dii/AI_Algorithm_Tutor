@@ -192,7 +192,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
     slug === 'imported-draft'
       ? coach.importedProblem
       : (getProblemBySlug(slug) ?? null);
-  const loaded = slug !== 'imported-draft' || coach.hydrated;
+  const loaded = coach.hydrated;
   const [language, setLanguage] = useState<Language>(
     getPreferredLanguage(state)
   );
