@@ -16,10 +16,37 @@ import {
   getCoachRuntimeConfig,
   streamLiveCoachChat,
 } from '@/features/algorithm-coach/server';
+import { CoachChatRequest } from '@/features/algorithm-coach/types';
 
 import { recordOperationalEvent } from '@/shared/lib/observability';
 
 export const dynamic = 'force-dynamic';
+
+function localCoachChatResponse(
+  chatRequest: CoachChatRequest,
+  traceId: string,
+  reason: 'not_configured' | 'provider_failed'
+) {
+  void recordOperationalEvent({
+    event: 'coach_chat_started',
+    traceId,
+    properties: {
+      mode: 'local',
+      model: 'deterministic-demo',
+      reason,
+    },
+  });
+  return new Response(createDemoChatResponse(chatRequest), {
+    headers: {
+      'cache-control': 'no-store',
+      'content-type': 'text/plain; charset=utf-8',
+      'x-coach-model': 'deterministic-demo',
+      'x-coach-mode': 'local',
+      'x-coach-prompt-version': COACH_PROMPT_VERSION,
+      'x-coach-trace-id': traceId,
+    },
+  });
+}
 
 export async function POST(request: Request) {
   const traceId = crypto.randomUUID();
@@ -49,21 +76,7 @@ export async function POST(request: Request) {
         ...chatRequest,
       };
       if (canUseCoachDemoFallback(fallbackRequest)) {
-        void recordOperationalEvent({
-          event: 'coach_chat_started',
-          traceId,
-          properties: { mode: 'local', model: 'deterministic-demo' },
-        });
-        return new Response(createDemoChatResponse(chatRequest), {
-          headers: {
-            'cache-control': 'no-store',
-            'content-type': 'text/plain; charset=utf-8',
-            'x-coach-model': 'deterministic-demo',
-            'x-coach-mode': 'local',
-            'x-coach-prompt-version': COACH_PROMPT_VERSION,
-            'x-coach-trace-id': traceId,
-          },
-        });
+        return localCoachChatResponse(chatRequest, traceId, 'not_configured');
       }
       throw new CoachHttpError(
         503,
@@ -81,13 +94,38 @@ export async function POST(request: Request) {
       'x-coach-trace-id': traceId,
     };
 
+    let stream;
+    try {
+      stream = await streamLiveCoachChat(chatRequest, config);
+    } catch (error) {
+      const fallbackRequest = {
+        action: 'hint' as const,
+        ...chatRequest,
+      };
+      if (
+        error instanceof CoachModelError &&
+        error.code === 'provider_failed' &&
+        canUseCoachDemoFallback(fallbackRequest)
+      ) {
+        void recordOperationalEvent({
+          event: 'coach_chat_provider_fallback',
+          level: 'warn',
+          traceId,
+          properties: { model: config.model },
+          error,
+        });
+        return localCoachChatResponse(chatRequest, traceId, 'provider_failed');
+      }
+      throw error;
+    }
+
     void recordOperationalEvent({
       event: 'coach_chat_started',
       traceId,
       properties: { mode: 'live', model: config.model },
     });
 
-    return new Response(await streamLiveCoachChat(chatRequest, config), {
+    return new Response(stream, {
       headers,
     });
   } catch (error) {

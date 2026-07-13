@@ -78,6 +78,49 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test('about header exposes sign-in on desktop and mobile', async ({
+  page,
+}, testInfo) => {
+  await page.goto('/about');
+  await page.evaluate(() => {
+    window.sessionStorage.setItem('algocoach:visitor-welcome:v1', 'seen');
+  });
+  await page.reload();
+
+  if (testInfo.project.name.startsWith('mobile')) {
+    await page.getByRole('button', { name: 'Open Menu' }).click();
+  }
+
+  const signIn = page.getByRole('button', { name: '登录', exact: true });
+  await expect(signIn).toBeVisible();
+  const signInBox = await signIn.boundingBox();
+  const viewport = page.viewportSize();
+  expect(signInBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(signInBox!.y).toBeGreaterThanOrEqual(0);
+  expect(signInBox!.y + signInBox!.height).toBeLessThanOrEqual(
+    viewport!.height
+  );
+  await page.screenshot({
+    path: testInfo.outputPath('about-header.png'),
+    fullPage: false,
+  });
+  await signIn.click();
+  await expect(
+    page.getByRole('dialog').getByRole('heading', {
+      name: '登录',
+      exact: true,
+    })
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth + 1
+      )
+    )
+    .toBe(true);
+});
+
 test('onboarding, problem filtering, and imported draft flow', async ({
   page,
 }) => {

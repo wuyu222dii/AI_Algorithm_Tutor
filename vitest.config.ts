@@ -10,6 +10,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(rootDir, 'src'),
+      'server-only': path.resolve(rootDir, 'vitest.server-only.ts'),
     },
   },
   test: {

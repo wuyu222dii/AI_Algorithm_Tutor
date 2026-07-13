@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ComponentProps } from 'react';
 import { Fragment } from 'react/jsx-runtime';
 import { Coins, LayoutDashboard, Loader2, LogOut, User } from 'lucide-react';
 import { useTranslations } from 'next-intl';
@@ -36,11 +36,13 @@ function extractSessionUser(data: any): UserType | null {
 export function SignUser({
   isScrolled,
   signButtonSize = 'sm',
+  signButtonVariant = 'default',
   userNav,
   callbackUrl = '/',
 }: {
   isScrolled?: boolean;
   signButtonSize?: 'default' | 'sm' | 'lg' | 'icon';
+  signButtonVariant?: ComponentProps<typeof Button>['variant'];
   userNav?: UserNav;
   callbackUrl?: string;
 }) {
@@ -236,6 +238,7 @@ export function SignUser({
           <Button
             type="button"
             size={signButtonSize}
+            variant={signButtonVariant}
             className={cn(
               'border-foreground/10 cursor-pointer ring-0',
               isScrolled && 'lg:hidden'

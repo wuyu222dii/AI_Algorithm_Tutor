@@ -28,12 +28,12 @@
       }
     ],
     "user_nav": {
-      "show_name": false,
+      "show_name": true,
       "show_credits": false,
-      "show_sign_out": false,
+      "show_sign_out": true,
       "items": []
     },
-    "show_sign": false,
+    "show_sign": true,
     "show_theme": true,
     "show_locale": true
   },

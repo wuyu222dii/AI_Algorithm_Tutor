@@ -34,6 +34,7 @@ const env = {
   GOOGLE_OAUTH_MOCK_SECRET: 'algocoach-e2e-google-oauth-mock-secret-2026',
   NEXT_PUBLIC_COACH_CLOUD_SYNC_ENABLED: 'false',
   OPENROUTER_API_KEY: '',
+  ALGO_COACH_MODEL: 'google/gemini-2.5-flash',
   COACH_DEMO_FALLBACK_ENABLED: 'true',
   COACH_RATE_LIMIT_PER_MINUTE: '20',
   COACH_RATE_LIMIT_PER_10_SECONDS: '5',

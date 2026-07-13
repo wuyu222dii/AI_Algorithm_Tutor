@@ -111,6 +111,7 @@ const copy = {
     notFound: '没有找到这道题',
     notFoundDetail: '题目可能已被移除，或导入草稿已从浏览器中清除。',
     live: '在线 AI',
+    local: '本地演示',
     reviewCard: '复习卡片',
     javascript: 'JavaScript',
     python: 'Python',
@@ -165,6 +166,7 @@ const copy = {
     notFoundDetail:
       'It may have been removed, or the imported draft was cleared from this browser.',
     live: 'Live AI',
+    local: 'Local demo',
     reviewCard: 'Review card',
     javascript: 'JavaScript',
     python: 'Python',
@@ -978,7 +980,7 @@ function CoachPanel({
                     variant="outline"
                     className="ml-auto rounded-md px-1.5 py-0 text-[10px] font-normal"
                   >
-                    {t.live}
+                    {artifact.mode === 'local' ? t.local : t.live}
                   </Badge>
                 </div>
                 <p className="text-muted-foreground mt-2 text-xs leading-6 whitespace-pre-wrap">

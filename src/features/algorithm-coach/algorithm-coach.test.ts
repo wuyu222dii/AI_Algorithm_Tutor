@@ -4,7 +4,11 @@ import { getProblemBySlug, problems } from './data/problems';
 import { runOfflineCoachEval } from './eval';
 import { createDemoArtifact } from './fixtures';
 import { calculateProductMetrics } from './metrics';
-import { DEFAULT_COACH_MODEL, resolveCoachModel } from './model';
+import {
+  COACH_MODEL_WHITELIST,
+  DEFAULT_COACH_MODEL,
+  resolveCoachModel,
+} from './model';
 import { parseProblemDraft } from './parser';
 import { coachRequestSchema, normalizeCoachRequest } from './schemas';
 import {
@@ -45,6 +49,15 @@ describe('algorithm coach domain', () => {
       if (previous === undefined) delete process.env.ALGO_COACH_MODEL;
       else process.env.ALGO_COACH_MODEL = previous;
     }
+  });
+
+  it('accepts only explicit model identifiers from the coach whitelist', () => {
+    for (const model of COACH_MODEL_WHITELIST) {
+      expect(resolveCoachModel(model)).toBe(model);
+    }
+    expect(() => resolveCoachModel('gpt-5.5-unavailable')).toThrow(
+      'is not allowed'
+    );
   });
 
   it('ships thirty bilingual problems with verified tests and three hint levels', () => {

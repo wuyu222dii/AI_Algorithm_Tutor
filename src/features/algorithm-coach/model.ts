@@ -1,6 +1,7 @@
-export const COACH_PROMPT_VERSION = 'coach-v1.0';
+export const COACH_PROMPT_VERSION = 'coach-v1.1';
 export const COACH_MODEL_WHITELIST = [
   'google/gemini-2.5-flash',
+  'gpt-5.5',
   'openai/gpt-5.5',
   'anthropic/claude-4.5-sonnet',
 ] as const;

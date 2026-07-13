@@ -28,7 +28,7 @@ const liveArtifactSchema = z.object({
   summary: z.string().min(1).max(1200),
   details: z.array(z.string().max(800)).max(8).default([]),
   evidence: z.array(z.string().max(1000)).max(6).default([]),
-  nextAction: z.string().max(600).optional(),
+  nextAction: z.string().max(600).nullable(),
   diagnosisCategory: z
     .enum([
       'syntax',
@@ -38,30 +38,41 @@ const liveArtifactSchema = z.object({
       'edge-case',
       'unknown',
     ])
-    .optional(),
+    .nullable(),
   hint: z
     .object({
       level: z.union([z.literal(1), z.literal(2), z.literal(3)]),
       principle: z.string().max(1000),
-      direction: z.string().max(1000).optional(),
-      pseudocode: z.string().max(1800).optional(),
+      direction: z.string().max(1000).nullable(),
+      pseudocode: z.string().max(1800).nullable(),
     })
-    .optional(),
+    .nullable(),
   counterexample: z
     .object({
-      input: z.array(z.unknown()).max(20),
-      expected: z.unknown().optional(),
-      actual: z.unknown().optional(),
+      input: z
+        .string()
+        .max(6000)
+        .describe('A JSON-encoded array of function arguments.'),
+      expected: z
+        .string()
+        .max(4000)
+        .nullable()
+        .describe('The JSON-encoded expected result, when known.'),
+      actual: z
+        .string()
+        .max(4000)
+        .nullable()
+        .describe('The JSON-encoded observed result, when available.'),
       explanation: z.string().max(1200),
     })
-    .optional(),
+    .nullable(),
   reviewCard: z
     .object({
       front: z.string().max(500),
       back: z.string().max(1800),
       tags: z.array(z.string().max(80)).max(8),
     })
-    .optional(),
+    .nullable(),
   draft: z
     .object({
       title: z.string().max(200),
@@ -75,7 +86,7 @@ const liveArtifactSchema = z.object({
       }),
       warnings: z.array(z.string().max(500)).max(8),
     })
-    .optional(),
+    .nullable(),
 });
 
 export interface CoachRuntimeConfig {
@@ -220,6 +231,40 @@ function requireActionPayload(
   }
 }
 
+function parseCounterexampleJson(
+  value: string | null,
+  field: 'input' | 'expected' | 'actual'
+): JsonValue | undefined {
+  if (value === null) return undefined;
+  try {
+    return JSON.parse(value) as JsonValue;
+  } catch {
+    throw new CoachModelError(
+      `The provider returned invalid JSON for counterexample.${field}.`,
+      'provider_failed'
+    );
+  }
+}
+
+function normalizeCounterexample(
+  counterexample: z.infer<typeof liveArtifactSchema>['counterexample']
+): LearningArtifact['counterexample'] {
+  if (!counterexample) return undefined;
+  const input = parseCounterexampleJson(counterexample.input, 'input');
+  if (!Array.isArray(input) || input.length > 20) {
+    throw new CoachModelError(
+      'The provider counterexample input must encode at most 20 arguments.',
+      'provider_failed'
+    );
+  }
+  return {
+    input,
+    expected: parseCounterexampleJson(counterexample.expected, 'expected'),
+    actual: parseCounterexampleJson(counterexample.actual, 'actual'),
+    explanation: counterexample.explanation,
+  };
+}
+
 function normalizeLiveArtifact(
   request: CoachRequest,
   output: z.infer<typeof liveArtifactSchema>
@@ -234,18 +279,17 @@ function normalizeLiveArtifact(
     summary: output.summary,
     details: output.details,
     evidence: output.evidence,
-    nextAction: output.nextAction,
-    diagnosisCategory: output.diagnosisCategory,
-    hint: output.hint,
-    counterexample: output.counterexample
+    nextAction: output.nextAction ?? undefined,
+    diagnosisCategory: output.diagnosisCategory ?? undefined,
+    hint: output.hint
       ? {
-          ...output.counterexample,
-          input: output.counterexample.input as JsonValue[],
-          expected: output.counterexample.expected as JsonValue | undefined,
-          actual: output.counterexample.actual as JsonValue | undefined,
+          ...output.hint,
+          direction: output.hint.direction ?? undefined,
+          pseudocode: output.hint.pseudocode ?? undefined,
         }
       : undefined,
-    reviewCard: output.reviewCard,
+    counterexample: normalizeCounterexample(output.counterexample),
+    reviewCard: output.reviewCard ?? undefined,
     createdAt: new Date().toISOString(),
   };
 

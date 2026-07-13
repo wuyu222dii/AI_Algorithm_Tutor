@@ -16,11 +16,53 @@ import {
   generateLiveArtifact,
   getCoachRuntimeConfig,
 } from '@/features/algorithm-coach/server';
-import { CoachResponse } from '@/features/algorithm-coach/types';
+import { CoachRequest, CoachResponse } from '@/features/algorithm-coach/types';
 
 import { recordOperationalEvent } from '@/shared/lib/observability';
 
 export const dynamic = 'force-dynamic';
+
+function localCoachResponse(
+  coachRequest: CoachRequest,
+  traceId: string,
+  startedAt: number,
+  reason: 'not_configured' | 'provider_failed'
+) {
+  const artifact = {
+    ...createDemoArtifact(coachRequest),
+    generationMode: 'local' as const,
+    model: 'deterministic-demo',
+    promptVersion: COACH_PROMPT_VERSION,
+    traceId,
+    latencyMs: Math.round(performance.now() - startedAt),
+  };
+  const response: CoachResponse = {
+    artifact,
+    mode: 'local',
+    model: 'deterministic-demo',
+    promptVersion: COACH_PROMPT_VERSION,
+    latencyMs: artifact.latencyMs,
+    traceId,
+  };
+  void recordOperationalEvent({
+    event: 'coach_artifact_generated',
+    traceId,
+    properties: {
+      action: coachRequest.action,
+      mode: 'local',
+      model: response.model,
+      reason,
+      latencyMs: response.latencyMs,
+    },
+  });
+  return Response.json(response, {
+    headers: {
+      'cache-control': 'no-store',
+      'x-coach-mode': 'local',
+      'x-coach-trace-id': traceId,
+    },
+  });
+}
 
 export async function POST(request: Request) {
   const traceId = crypto.randomUUID();
@@ -47,39 +89,12 @@ export async function POST(request: Request) {
     const config = await getCoachRuntimeConfig(coachRequest.model);
     if (!config.apiKey) {
       if (canUseCoachDemoFallback(coachRequest)) {
-        const artifact = {
-          ...createDemoArtifact(coachRequest),
-          generationMode: 'local' as const,
-          model: 'deterministic-demo',
-          promptVersion: COACH_PROMPT_VERSION,
+        return localCoachResponse(
+          coachRequest,
           traceId,
-          latencyMs: Math.round(performance.now() - startedAt),
-        };
-        const response: CoachResponse = {
-          artifact,
-          mode: 'local',
-          model: 'deterministic-demo',
-          promptVersion: COACH_PROMPT_VERSION,
-          latencyMs: artifact.latencyMs,
-          traceId,
-        };
-        void recordOperationalEvent({
-          event: 'coach_artifact_generated',
-          traceId,
-          properties: {
-            action: coachRequest.action,
-            mode: 'local',
-            model: response.model,
-            latencyMs: response.latencyMs,
-          },
-        });
-        return Response.json(response, {
-          headers: {
-            'cache-control': 'no-store',
-            'x-coach-mode': 'local',
-            'x-coach-trace-id': traceId,
-          },
-        });
+          startedAt,
+          'not_configured'
+        );
       }
       throw new CoachHttpError(
         503,
@@ -88,7 +103,31 @@ export async function POST(request: Request) {
       );
     }
 
-    const artifact = await generateLiveArtifact(coachRequest, config);
+    let artifact;
+    try {
+      artifact = await generateLiveArtifact(coachRequest, config);
+    } catch (error) {
+      if (
+        error instanceof CoachModelError &&
+        error.code === 'provider_failed' &&
+        canUseCoachDemoFallback(coachRequest)
+      ) {
+        void recordOperationalEvent({
+          event: 'coach_provider_fallback',
+          level: 'warn',
+          traceId,
+          properties: { action: coachRequest.action, model: config.model },
+          error,
+        });
+        return localCoachResponse(
+          coachRequest,
+          traceId,
+          startedAt,
+          'provider_failed'
+        );
+      }
+      throw error;
+    }
     const mode: CoachResponse['mode'] = 'live';
 
     const response: CoachResponse = {
