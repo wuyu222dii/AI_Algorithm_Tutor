@@ -49,6 +49,7 @@ jobs:
       - run: pnpm lint:ci
       - run: pnpm test
       - run: pnpm eval:coach
+      - run: pnpm eval:coach:live:corpus
       - run: pnpm budget:editor
 
   postgres-integration:
@@ -125,7 +126,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
+      - name: Run three retry-free browser stability rounds
+        run: pnpm test:e2e --repeat-each=3 --retries=0
       - name: Upload Playwright diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -185,6 +187,8 @@ jobs:
           tags: algocoach:ci
           cache-from: type=gha,scope=docker-smoke
           cache-to: type=gha,scope=docker-smoke,mode=min,ignore-error=true
+      - name: Start Redis REST smoke dependency
+        run: node scripts/redis-rest-smoke.mjs > /tmp/redis-rest-smoke.log 2>&1 &
       - name: Start smoke container
         run: >-
           docker run --detach --rm --name algocoach-smoke
@@ -193,8 +197,13 @@ jobs:
           --env DATABASE_PROVIDER=postgresql
           --env DATABASE_APPLICATION_ROLE=algocoach_app
           --env DATABASE_URL=postgresql://algocoach_app:application-test-password@host.docker.internal:5432/algocoach_test
+          --env DB_AUTO_MIGRATE=false
+          --env AUTH_URL=http://localhost:3200
           --env AUTH_SECRET=ci-only-auth-secret-with-at-least-32-characters
           --env OPENROUTER_API_KEY=ci-only-openrouter-key
+          --env REDIS_URL=http://host.docker.internal:8079
+          --env REDIS_TOKEN=ci-redis-token
+          --env TRUSTED_PROXY_HEADERS=x-forwarded-for
           --env GOOGLE_AUTH_ENABLED=false
           --env GOOGLE_ONE_TAP_ENABLED=false
           algocoach:ci
@@ -235,12 +244,15 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: [quality, postgres-integration, build, e2e, docker-smoke]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     environment: ${{ inputs.environment }}
     env:
       DATABASE_PROVIDER: postgresql
       DATABASE_APPLICATION_ROLE: ${{ vars.DATABASE_APPLICATION_ROLE }}
       MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
+      ALGO_COACH_MODEL: ${{ vars.ALGO_COACH_MODEL }}
     steps:
       - name: Restrict production releases to main
         if: inputs.environment == 'production' && github.ref_name != 'main'
@@ -249,8 +261,8 @@ jobs:
           exit 1
       - name: Validate release database configuration
         run: |
-          if [ -z "$MIGRATION_DATABASE_URL" ] || [ -z "$DATABASE_APPLICATION_ROLE" ]; then
-            echo "Configure MIGRATION_DATABASE_URL secret and DATABASE_APPLICATION_ROLE variable in the selected GitHub Environment."
+          if [ -z "$MIGRATION_DATABASE_URL" ] || [ -z "$DATABASE_APPLICATION_ROLE" ] || [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "Configure MIGRATION_DATABASE_URL and OPENROUTER_API_KEY secrets plus DATABASE_APPLICATION_ROLE in the selected GitHub Environment."
             exit 1
           fi
       - uses: actions/checkout@v4
@@ -262,6 +274,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Enforce live AI quality gate
+        run: pnpm eval:coach:live
       - run: pnpm db:migrate:release
 
   publish:

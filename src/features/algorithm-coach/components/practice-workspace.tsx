@@ -18,6 +18,7 @@ import {
   RotateCcw,
   Send,
   Sparkles,
+  Square,
   Terminal,
   TriangleAlert,
   XCircle,
@@ -46,6 +47,9 @@ import { cn } from '@/shared/lib/utils';
 
 import { getExperimentVariant } from '../analytics';
 import { getProblemBySlug } from '../data/problems';
+import { isImportedDraftSlug } from '../imported-drafts';
+import { TOPIC_LABELS } from '../learning-progress';
+import { loadPracticeContext, savePracticeContext } from '../practice-context';
 import { runCode } from '../runner';
 import { useCoachStore } from '../store';
 import type { CoachResponse, CodeRunResult, Language, Problem } from '../types';
@@ -100,8 +104,13 @@ const copy = {
       '我会基于当前题目、代码和真实运行结果提供引导，不直接给出完整答案。',
     chatPlaceholder: '追问思路、复杂度或某个错误…',
     send: '发送',
+    stop: '停止生成',
+    retryChat: '重试上一条',
+    stopped: '回答已停止，可以重试上一条问题。',
     you: '你',
     unavailable: 'AI 服务暂时不可用，请稍后重试。',
+    quotaExceeded: '今日 AI 使用额度已用完，请稍后再试。',
+    requestTimeout: 'AI 响应超时，请重试。',
     error: '代码运行失败，请检查语法或稍后重试。',
     completed: '本题已完成。',
     imported: '导入题',
@@ -113,6 +122,10 @@ const copy = {
     live: '在线 AI',
     local: '本地演示',
     reviewCard: '复习卡片',
+    timeline: '纠错时间线',
+    runTimeline: '代码运行',
+    codeChanged: '相较上次运行已修改代码',
+    testsPassed: '个测试通过',
     javascript: 'JavaScript',
     python: 'Python',
   },
@@ -154,8 +167,13 @@ const copy = {
       'I use the current problem, code, and real run results to guide you without revealing a full solution.',
     chatPlaceholder: 'Ask about the approach, complexity, or an error…',
     send: 'Send',
+    stop: 'Stop generation',
+    retryChat: 'Retry last question',
+    stopped: 'The response was stopped. You can retry the last question.',
     you: 'You',
     unavailable: 'AI is temporarily unavailable. Please try again later.',
+    quotaExceeded: 'Your AI allowance is exhausted. Please try again later.',
+    requestTimeout: 'The AI response timed out. Please retry.',
     error: 'Code execution failed. Check the syntax or try again.',
     completed: 'Problem completed.',
     imported: 'Imported',
@@ -168,6 +186,10 @@ const copy = {
     live: 'Live AI',
     local: 'Local demo',
     reviewCard: 'Review card',
+    timeline: 'Correction timeline',
+    runTimeline: 'Code run',
+    codeChanged: 'Code changed since the previous run',
+    testsPassed: 'tests passed',
     javascript: 'JavaScript',
     python: 'Python',
   },
@@ -179,22 +201,55 @@ type CoachMessage = {
   content: string;
 };
 
+type ChatRetryReason = 'stopped' | 'quota' | 'timeout' | 'unavailable';
+
+type ChatRetryState = {
+  prompt: string;
+  reason: ChatRetryReason;
+};
+
 type ArtifactView = {
+  id: string;
   type: string;
   content: string;
   mode: CoachResponse['mode'];
+  runId?: string;
+  createdAt?: string;
+  status?: CodeRunResult['status'];
 };
+
+class ChatRequestError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code?: string
+  ) {
+    super(code ?? `Chat request failed with ${status}`);
+    this.name = 'ChatRequestError';
+  }
+}
 
 export function PracticeWorkspace({ slug }: { slug: string }) {
   const locale = localeKey(useLocale());
   const t = copy[locale];
   const coach = useCoachStore();
   const state = coach.state;
-  const problem: Problem | null =
-    slug === 'imported-draft'
-      ? coach.importedProblem
-      : (getProblemBySlug(slug) ?? null);
   const loaded = coach.hydrated;
+  const imported = isImportedDraftSlug(slug);
+  const problem: Problem | null = useMemo(() => {
+    if (!imported) return getProblemBySlug(slug) ?? null;
+    if (!coach.storageScope) return null;
+    const stored = coach.importedDrafts.find(
+      (record) => record.problem.slug === slug
+    )?.problem;
+    if (stored) return stored;
+    return slug === 'imported-draft' ? coach.importedProblem : null;
+  }, [
+    coach.importedDrafts,
+    coach.importedProblem,
+    coach.storageScope,
+    imported,
+    slug,
+  ]);
   const [language, setLanguage] = useState<Language>(
     getPreferredLanguage(state)
   );
@@ -202,15 +257,81 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
   const [result, setResult] = useState<CodeRunResult | null>(null);
   const [running, setRunning] = useState<'sample' | 'all' | null>(null);
   const [activeMobileTab, setActiveMobileTab] = useState('problem');
-  const [hintLevel, setHintLevel] = useState(0);
-  const [artifacts, setArtifacts] = useState<ArtifactView[]>([]);
+  const [hintLevel, setHintLevel] = useState<0 | 1 | 2 | 3>(0);
   const [aiLoading, setAiLoading] = useState<string | null>(null);
   const [messages, setMessages] = useState<CoachMessage[]>([
     { id: 'welcome', role: 'assistant', content: t.aiWelcome },
   ]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const [chatRetry, setChatRetry] = useState<ChatRetryState | null>(null);
   const codeInitializedFor = useRef('');
+  const contextInitializedFor = useRef('');
+  const chatAbortRef = useRef<AbortController | null>(null);
+  const artifacts = useMemo<ArtifactView[]>(() => {
+    if (!problem) return [];
+    const coachArtifacts = state.artifacts
+      .filter(
+        (artifact) =>
+          artifact.problemSlug === problem.slug && artifact.locale === locale
+      )
+      .map((artifact) => ({
+        id: artifact.id,
+        type: artifact.type,
+        content: artifactText(artifact, locale),
+        mode: artifact.generationMode ?? 'local',
+        runId: artifact.runId,
+        createdAt: artifact.createdAt,
+      }))
+      .filter((artifact) => artifact.content);
+
+    const uniqueRuns = new Map<string, CodeRunResult>();
+    const sessionRuns = state.sessions[problem.slug]?.runs ?? [];
+    for (const run of [...state.runs, ...sessionRuns]) {
+      if (run.problemSlug !== problem.slug) continue;
+      const key =
+        run.id ??
+        `${run.executedAt}:${run.language}:${run.testScope ?? 'unknown'}`;
+      uniqueRuns.set(key, run);
+    }
+    const chronologicalRuns = [...uniqueRuns.values()].sort(
+      (left, right) =>
+        Date.parse(left.executedAt) - Date.parse(right.executedAt)
+    );
+    const runArtifacts = chronologicalRuns.map((run, index) => {
+      const previousRun = chronologicalRuns[index - 1];
+      const codeChanged =
+        previousRun?.codeSnapshot !== undefined &&
+        run.codeSnapshot !== undefined &&
+        previousRun.codeSnapshot !== run.codeSnapshot;
+      return {
+        id: `run-${run.id ?? run.executedAt}`,
+        type: 'run',
+        content: `${run.passedTests}/${run.totalTests} ${t.testsPassed} · ${run.durationMs.toFixed(1)} ms${
+          codeChanged ? `\n${t.codeChanged}` : ''
+        }`,
+        mode: 'local' as const,
+        runId: run.id,
+        createdAt: run.executedAt,
+        status: run.status,
+      };
+    });
+
+    return [...coachArtifacts, ...runArtifacts]
+      .sort(
+        (left, right) =>
+          Date.parse(right.createdAt ?? '') - Date.parse(left.createdAt ?? '')
+      )
+      .slice(0, 16);
+  }, [
+    locale,
+    problem,
+    state.artifacts,
+    state.runs,
+    state.sessions,
+    t.codeChanged,
+    t.testsPassed,
+  ]);
 
   useEffect(() => {
     if (!problem) return;
@@ -237,6 +358,61 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
     );
     return () => window.clearTimeout(timeout);
   }, [coach.saveCode, code, language, problem]);
+
+  useEffect(() => {
+    if (!loaded || !problem || !coach.storageScope) return;
+    const contextKey = `${coach.storageScope}:${problem.slug}:${locale}`;
+    if (contextInitializedFor.current === contextKey) return;
+
+    const session = state.sessions[problem.slug];
+    setHintLevel(session?.hintLevel ?? 0);
+    setResult(session?.runs.at(-1) ?? null);
+    const saved = loadPracticeContext(
+      problem.slug,
+      undefined,
+      coach.storageScope
+    );
+    const restoredMessages = saved?.messages.length
+      ? saved.messages
+      : [{ id: 'welcome', role: 'assistant' as const, content: t.aiWelcome }];
+    setMessages(restoredMessages);
+    const lastMessage = restoredMessages.at(-1);
+    setChatRetry(
+      lastMessage?.role === 'user'
+        ? { prompt: lastMessage.content, reason: 'stopped' }
+        : null
+    );
+    contextInitializedFor.current = contextKey;
+  }, [
+    coach.storageScope,
+    loaded,
+    locale,
+    problem,
+    state.sessions,
+    t.aiWelcome,
+  ]);
+
+  useEffect(() => {
+    if (!problem || !coach.storageScope || !contextInitializedFor.current) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      savePracticeContext(
+        problem.slug,
+        messages,
+        undefined,
+        coach.storageScope ?? undefined
+      );
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [coach.storageScope, messages, problem]);
+
+  useEffect(
+    () => () => {
+      chatAbortRef.current?.abort();
+    },
+    []
+  );
 
   const text = useMemo(
     () => (problem ? localizedProblem(problem, locale) : null),
@@ -299,8 +475,9 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
       toast.info(t.needRun);
       return;
     }
-    const nextHintLevel =
-      action === 'hint' ? Math.min(3, hintLevel + 1) : hintLevel;
+    const nextHintLevel = (
+      action === 'hint' ? Math.min(3, hintLevel + 1) : hintLevel
+    ) as 0 | 1 | 2 | 3;
     setAiLoading(action);
     if (!silent) setActiveMobileTab('coach');
     try {
@@ -336,15 +513,6 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
       const content = artifactText(artifact, locale);
       if (!content) throw new Error('Empty coach response');
 
-      const view = {
-        type: action,
-        content,
-        mode: payload.mode,
-      };
-      setArtifacts((current) => [
-        view,
-        ...current.filter((item) => item.type !== action),
-      ]);
       coach.addArtifact({
         ...artifact,
         type: action,
@@ -368,6 +536,14 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
       if (action === 'hint') {
         setHintLevel(nextHintLevel);
         coach.revealHint(problem.slug);
+        coach.trackEvent('experiment_exposed', {
+          problemSlug: problem.slug,
+          properties: {
+            experiment: 'hint-copy',
+            variant: getExperimentVariant(problem.slug, coach.storageScope),
+            hintLevel: nextHintLevel,
+          },
+        });
       }
     } catch {
       if (!silent) toast.info(t.unavailable);
@@ -376,19 +552,29 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
     }
   }
 
-  async function sendChat(event: FormEvent) {
-    event.preventDefault();
-    const prompt = chatInput.trim();
+  async function requestChat(prompt: string, retry = false) {
     if (!prompt || !problem || chatLoading) return;
-    const userMessage: CoachMessage = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: prompt,
-    };
-    const nextMessages = [...messages, userMessage];
+    const lastMatchingUserIndex = messages.findLastIndex(
+      (message) => message.role === 'user' && message.content === prompt
+    );
+    const nextMessages =
+      retry && lastMatchingUserIndex >= 0
+        ? messages.slice(0, lastMatchingUserIndex + 1)
+        : [
+            ...messages,
+            {
+              id: `user-${Date.now()}`,
+              role: 'user' as const,
+              content: prompt,
+            },
+          ];
     setMessages(nextMessages);
-    setChatInput('');
+    setChatRetry(null);
     setChatLoading(true);
+    const controller = new AbortController();
+    let assistantId: string | null = null;
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = controller;
     try {
       const response = await fetch('/api/coach/chat', {
         method: 'POST',
@@ -413,32 +599,128 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
             content,
           })),
         }),
+        signal: controller.signal,
       });
-      if (!response.ok) throw new Error('Chat failed');
+      if (!response.ok) {
+        let code: string | undefined;
+        try {
+          const payload = (await response.json()) as {
+            error?: { code?: string };
+          };
+          code = payload.error?.code;
+        } catch {
+          // Status alone is enough to present a safe, localized error.
+        }
+        throw new ChatRequestError(response.status, code);
+      }
       const contentType = response.headers.get('content-type') ?? '';
       let content = '';
+      const responseAssistantId = `assistant-${Date.now()}`;
+      assistantId = responseAssistantId;
       if (contentType.includes('application/json')) {
         const payload = await response.json();
         content = String(
           payload.message ?? payload.content ?? payload.text ?? ''
         );
+        if (content) {
+          setMessages((current) => [
+            ...current,
+            { id: responseAssistantId, role: 'assistant', content },
+          ]);
+        }
       } else {
-        content = await response.text();
+        const reader = response.body?.getReader();
+        if (!reader) {
+          content = await response.text();
+          if (content) {
+            setMessages((current) => [
+              ...current,
+              { id: responseAssistantId, role: 'assistant', content },
+            ]);
+          }
+        } else {
+          const decoder = new TextDecoder();
+          setMessages((current) => [
+            ...current,
+            { id: responseAssistantId, role: 'assistant', content: '' },
+          ]);
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            content += decoder.decode(value, { stream: true });
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === responseAssistantId
+                  ? { ...message, content }
+                  : message
+              )
+            );
+          }
+          content += decoder.decode();
+        }
       }
       if (!content) throw new Error('Empty chat response');
-      setMessages((current) => [
-        ...current,
-        { id: `assistant-${Date.now()}`, role: 'assistant', content },
-      ]);
       coach.trackEvent('coach_chat_message', {
         problemSlug: problem.slug,
-        properties: { messageLength: prompt.length },
+        properties: {
+          messageLength: prompt.length,
+          responseLength: content.length,
+          outcome: 'completed',
+          retry,
+        },
       });
-    } catch {
-      toast.info(t.unavailable);
+    } catch (error) {
+      if (assistantId) {
+        setMessages((current) =>
+          current.filter((message) => message.id !== assistantId)
+        );
+      }
+      if (error instanceof Error && error.name === 'AbortError') {
+        setChatRetry({ prompt, reason: 'stopped' });
+        coach.trackEvent('coach_chat_message', {
+          problemSlug: problem.slug,
+          properties: {
+            messageLength: prompt.length,
+            outcome: 'cancelled',
+            retry,
+          },
+        });
+        return;
+      }
+      if (error instanceof ChatRequestError && error.status === 429) {
+        setChatRetry({ prompt, reason: 'quota' });
+        toast.info(t.quotaExceeded);
+      } else if (
+        error instanceof ChatRequestError &&
+        (error.status === 504 || error.code === 'provider_timeout')
+      ) {
+        setChatRetry({ prompt, reason: 'timeout' });
+        toast.info(t.requestTimeout);
+      } else {
+        setChatRetry({ prompt, reason: 'unavailable' });
+        toast.info(t.unavailable);
+      }
     } finally {
+      if (chatAbortRef.current === controller) chatAbortRef.current = null;
       setChatLoading(false);
     }
+  }
+
+  function sendChat(event: FormEvent) {
+    event.preventDefault();
+    const prompt = chatInput.trim();
+    if (!prompt || chatLoading) return;
+    setChatInput('');
+    void requestChat(prompt);
+  }
+
+  function retryChat() {
+    if (!chatRetry || chatLoading) return;
+    void requestChat(chatRetry.prompt, true);
+  }
+
+  function stopChat() {
+    chatAbortRef.current?.abort();
   }
 
   if (!loaded) {
@@ -469,7 +751,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
       problem={problem}
       locale={locale}
       copy={t}
-      imported={slug === 'imported-draft'}
+      imported={imported}
     />
   );
   const editorPanel = (
@@ -499,10 +781,13 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
       messages={messages}
       chatInput={chatInput}
       chatLoading={chatLoading}
+      chatRetry={chatRetry}
       hasResult={Boolean(result)}
       onArtifact={requestArtifact}
       onChatInput={setChatInput}
       onChatSubmit={sendChat}
+      onChatStop={stopChat}
+      onChatRetry={retryChat}
     />
   );
 
@@ -519,12 +804,16 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
             <h1 className="truncate text-sm font-semibold md:text-base">
               {text.titleText}
             </h1>
-            {slug === 'imported-draft' ? (
-              <Badge variant="outline">{t.imported}</Badge>
-            ) : null}
+            {imported ? <Badge variant="outline">{t.imported}</Badge> : null}
           </div>
           <p className="text-muted-foreground mt-0.5 truncate text-xs">
-            {problem.topics.join(' · ')}
+            {problem.topics
+              .map(
+                (topic) =>
+                  TOPIC_LABELS[topic as keyof typeof TOPIC_LABELS]?.[locale] ??
+                  topic
+              )
+              .join(' · ')}
           </p>
         </div>
         <Badge variant="secondary" className="rounded-md">
@@ -823,10 +1112,13 @@ function CoachPanel({
   messages,
   chatInput,
   chatLoading,
+  chatRetry,
   hasResult,
   onArtifact,
   onChatInput,
   onChatSubmit,
+  onChatStop,
+  onChatRetry,
 }: {
   copy: (typeof copy)['zh'] | (typeof copy)['en'];
   artifacts: ArtifactView[];
@@ -835,12 +1127,15 @@ function CoachPanel({
   messages: CoachMessage[];
   chatInput: string;
   chatLoading: boolean;
+  chatRetry: ChatRetryState | null;
   hasResult: boolean;
   onArtifact: (
     action: 'diagnose' | 'hint' | 'counterexample' | 'review_card'
   ) => void;
   onChatInput: (value: string) => void;
   onChatSubmit: (event: FormEvent) => void;
+  onChatStop: () => void;
+  onChatRetry: () => void;
 }) {
   const hintLabels = [t.hintConcept, t.hintDirection, t.hintPseudo];
 
@@ -957,9 +1252,13 @@ function CoachPanel({
 
         {artifacts.length ? (
           <div className="space-y-3 border-b p-4">
+            <div className="text-muted-foreground flex items-center gap-2 text-xs font-semibold">
+              <Clock3 className="size-3.5" />
+              {t.timeline}
+            </div>
             {artifacts.map((artifact) => (
               <div
-                key={artifact.type}
+                key={artifact.id}
                 className="bg-muted/30 rounded-lg border p-3"
               >
                 <div className="flex items-center gap-2 text-xs font-semibold">
@@ -974,6 +1273,13 @@ function CoachPanel({
                   ) : null}
                   {artifact.type === 'review_card' ? (
                     <Sparkles className="text-primary size-3.5" />
+                  ) : null}
+                  {artifact.type === 'run' ? (
+                    artifact.status === 'passed' ? (
+                      <CheckCircle2 className="size-3.5 text-emerald-600" />
+                    ) : (
+                      <XCircle className="size-3.5 text-red-600" />
+                    )
                   ) : null}
                   <span>{artifactTitle(artifact.type, t)}</span>
                   <Badge
@@ -1021,6 +1327,35 @@ function CoachPanel({
               {t.diagnosing}
             </div>
           ) : null}
+          {chatRetry && !chatLoading ? (
+            <div
+              className="rounded-md border border-amber-500/30 bg-amber-500/8 p-3"
+              role="status"
+            >
+              <div className="flex items-start gap-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
+                <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+                <span>
+                  {chatRetry.reason === 'stopped'
+                    ? t.stopped
+                    : chatRetry.reason === 'quota'
+                      ? t.quotaExceeded
+                      : chatRetry.reason === 'timeout'
+                        ? t.requestTimeout
+                        : t.unavailable}
+                </span>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2 h-7 bg-transparent text-xs"
+                onClick={onChatRetry}
+              >
+                <RotateCcw />
+                {t.retryChat}
+              </Button>
+            </div>
+          ) : null}
         </div>
       </div>
       <form onSubmit={onChatSubmit} className="shrink-0 border-t p-3">
@@ -1038,13 +1373,15 @@ function CoachPanel({
             }}
           />
           <Button
-            type="submit"
+            type={chatLoading ? 'button' : 'submit'}
             size="icon-sm"
             className="absolute right-2 bottom-2"
-            aria-label={t.send}
-            disabled={!chatInput.trim() || chatLoading}
+            aria-label={chatLoading ? t.stop : t.send}
+            title={chatLoading ? t.stop : t.send}
+            disabled={!chatLoading && !chatInput.trim()}
+            onClick={chatLoading ? onChatStop : undefined}
           >
-            <Send />
+            {chatLoading ? <Square /> : <Send />}
           </Button>
         </div>
       </form>
@@ -1079,6 +1416,7 @@ function artifactTitle(
   if (type === 'diagnose') return t.diagnosis;
   if (type === 'counterexample') return t.counterexample;
   if (type === 'review_card') return t.reviewCard;
+  if (type === 'run') return t.runTimeline;
   return t.hints;
 }
 

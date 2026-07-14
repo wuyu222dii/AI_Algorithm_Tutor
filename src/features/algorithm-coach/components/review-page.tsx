@@ -5,6 +5,7 @@ import {
   ArrowRight,
   BrainCircuit,
   Check,
+  Eye,
   FileQuestion,
   Lightbulb,
   NotebookTabs,
@@ -28,6 +29,11 @@ import {
 import { cn } from '@/shared/lib/utils';
 
 import { problems } from '../data/problems';
+import {
+  calculateTopicMasterySnapshots,
+  ReviewRating,
+  TOPIC_LABELS,
+} from '../learning-progress';
 import { useCoachStore } from '../store';
 import type { CodeRunResult } from '../types';
 import { CoachPage, EmptyState, Panel, PanelHeading } from './coach-ui';
@@ -55,6 +61,14 @@ const copy = {
     revisit: '重新练习',
     mark: '标记已掌握',
     mastered: '已掌握',
+    reviewDue: '复习到期',
+    rateAgain: '重来',
+    rateHard: '较难',
+    rateGood: '掌握',
+    rateEasy: '简单',
+    ratePrompt: '本次回忆效果',
+    showAnswer: '显示答案',
+    answer: '参考归纳',
     failures: '次未通过',
     latest: '最近错误',
     noWrong: '目前没有待复习的错题',
@@ -83,6 +97,14 @@ const copy = {
     revisit: 'Practice again',
     mark: 'Mark mastered',
     mastered: 'Mastered',
+    reviewDue: 'Review due',
+    rateAgain: 'Again',
+    rateHard: 'Hard',
+    rateGood: 'Good',
+    rateEasy: 'Easy',
+    ratePrompt: 'Recall quality',
+    showAnswer: 'Show answer',
+    answer: 'Reference summary',
     failures: 'failed runs',
     latest: 'Latest issue',
     noWrong: 'No problems need review yet',
@@ -105,9 +127,11 @@ export function ReviewPage() {
   const locale = localeKey(useLocale());
   const t = copy[locale];
   const coach = useCoachStore();
+  const [revealedCards, setRevealedCards] = useState<Set<string>>(
+    () => new Set()
+  );
   const runs = getRuns(coach.state);
   const artifacts = getArtifacts(coach.state);
-  const [mastered, setMastered] = useState<Set<string>>(new Set());
 
   const failedByProblem = useMemo(() => {
     const map = new Map<string, CodeRunResult[]>();
@@ -120,12 +144,20 @@ export function ReviewPage() {
     return map;
   }, [runs]);
 
-  const wrongProblems = problems
-    .filter(
-      (problem) =>
-        failedByProblem.has(problem.id) || failedByProblem.has(problem.slug)
-    )
-    .filter((problem) => !mastered.has(problem.id));
+  const dueProblemSlugs = new Set(
+    Object.values(coach.reviewItems)
+      .filter((item) => item.status === 'due')
+      .map((item) => item.problemSlug)
+  );
+  const wrongProblems = problems.filter(
+    (problem) =>
+      dueProblemSlugs.has(problem.id) || dueProblemSlugs.has(problem.slug)
+  );
+
+  const masterySnapshots = useMemo(
+    () => calculateTopicMasterySnapshots(coach.state, coach.reviewItems),
+    [coach.reviewItems, coach.state]
+  );
 
   const topicStats = useMemo(() => {
     const counts = new Map<string, number>();
@@ -134,8 +166,19 @@ export function ReviewPage() {
         counts.set(topic, (counts.get(topic) ?? 0) + 1)
       )
     );
-    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-  }, [wrongProblems]);
+    return Object.entries(masterySnapshots)
+      .filter(
+        ([, snapshot]) => snapshot.evidenceCount > 0 && snapshot.value < 70
+      )
+      .map(([topic, snapshot]) => ({
+        topic,
+        count: counts.get(topic) ?? 0,
+        value: snapshot.value,
+      }))
+      .sort(
+        (left, right) => left.value - right.value || right.count - left.count
+      );
+  }, [masterySnapshots, wrongProblems]);
 
   const reviewCards = artifacts.filter((artifact) => {
     const type = String(artifact.type ?? '');
@@ -143,10 +186,6 @@ export function ReviewPage() {
       type === 'review_card' || type === 'review-card' || type === 'review'
     );
   });
-
-  function markMastered(problemId: string) {
-    setMastered((current) => new Set([...current, problemId]));
-  }
 
   return (
     <CoachPage title={t.title} description={t.description}>
@@ -175,12 +214,15 @@ export function ReviewPage() {
         <Panel className="mt-6">
           <PanelHeading icon={<Target className="size-4" />} title={t.topics} />
           <div className="grid gap-4 p-4 sm:grid-cols-2 md:p-5 lg:grid-cols-3">
-            {topicStats.slice(0, 6).map(([topic, count], index) => {
-              const value = Math.max(18, 58 - count * 8 - index * 2);
+            {topicStats.slice(0, 6).map(({ topic, value }) => {
               return (
                 <div key={topic}>
                   <div className="flex items-center justify-between gap-3 text-sm">
-                    <span className="font-medium">{topic}</span>
+                    <span className="font-medium">
+                      {TOPIC_LABELS[topic as keyof typeof TOPIC_LABELS]?.[
+                        locale
+                      ] ?? topic}
+                    </span>
                     <span className="text-muted-foreground text-xs">
                       {value}%
                     </span>
@@ -236,7 +278,9 @@ export function ReviewPage() {
                               variant="outline"
                               className="rounded-md border-red-500/30 text-red-700 dark:text-red-300"
                             >
-                              {failedRuns.length} {t.failures}
+                              {failedRuns.length
+                                ? `${failedRuns.length} ${t.failures}`
+                                : t.reviewDue}
                             </Badge>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2">
@@ -246,7 +290,9 @@ export function ReviewPage() {
                                 variant="secondary"
                                 className="rounded-md font-normal"
                               >
-                                {topic}
+                                {TOPIC_LABELS[
+                                  topic as keyof typeof TOPIC_LABELS
+                                ]?.[locale] ?? topic}
                               </Badge>
                             ))}
                           </div>
@@ -263,7 +309,9 @@ export function ReviewPage() {
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => markMastered(problem.id)}
+                            onClick={() =>
+                              coach.markReviewMastered(problem.slug)
+                            }
                           >
                             <Check />
                             {t.mark}
@@ -298,6 +346,7 @@ export function ReviewPage() {
           {reviewCards.length ? (
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {reviewCards.map((artifact, index) => {
+                const cardId = artifact.id ?? `review-card-${index}`;
                 const problemId = String(artifact.problemSlug ?? '');
                 const problem = problems.find(
                   (item) => item.id === problemId || item.slug === problemId
@@ -305,9 +354,12 @@ export function ReviewPage() {
                 const title = problem
                   ? localizedProblem(problem, locale).titleText
                   : String(artifact.title ?? t.card);
+                const structuredCard = artifact.reviewCard;
+                const revealed =
+                  !structuredCard || revealedCards.has(String(cardId));
                 return (
                   <article
-                    key={artifact.id ?? index}
+                    key={cardId}
                     className="bg-card flex min-h-56 flex-col rounded-lg border p-5"
                   >
                     <div className="flex items-start gap-3">
@@ -321,15 +373,73 @@ export function ReviewPage() {
                         <h2 className="mt-1 font-semibold">{title}</h2>
                       </div>
                     </div>
-                    <p className="text-muted-foreground mt-4 text-sm leading-7 whitespace-pre-wrap">
-                      {artifactText(artifact, locale)}
+                    <p className="mt-4 text-sm leading-7 whitespace-pre-wrap">
+                      {structuredCard?.front ?? artifactText(artifact, locale)}
                     </p>
+                    {structuredCard && !revealed ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-4 self-start"
+                        onClick={() =>
+                          setRevealedCards((current) => {
+                            const next = new Set(current);
+                            next.add(String(cardId));
+                            return next;
+                          })
+                        }
+                      >
+                        <Eye />
+                        {t.showAnswer}
+                      </Button>
+                    ) : null}
+                    {structuredCard && revealed ? (
+                      <div className="bg-muted/40 mt-4 rounded-md border p-3">
+                        <p className="text-muted-foreground text-xs font-medium">
+                          {t.answer}
+                        </p>
+                        <p className="mt-2 text-sm leading-7 whitespace-pre-wrap">
+                          {structuredCard.back}
+                        </p>
+                      </div>
+                    ) : null}
+                    {problem && coach.reviewItems[problem.slug] && revealed ? (
+                      <div className="mt-4 border-t pt-4">
+                        <p className="text-muted-foreground mb-2 text-xs">
+                          {t.ratePrompt}
+                        </p>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {(
+                            [
+                              ['again', t.rateAgain],
+                              ['hard', t.rateHard],
+                              ['good', t.rateGood],
+                              ['easy', t.rateEasy],
+                            ] as Array<[ReviewRating, string]>
+                          ).map(([rating, label]) => (
+                            <Button
+                              key={rating}
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="min-w-0 px-1 text-xs"
+                              onClick={() =>
+                                coach.rateReview(problem.slug, rating)
+                              }
+                            >
+                              {label}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                     {problem ? (
                       <Button
                         asChild
                         variant="outline"
                         size="sm"
-                        className="mt-auto self-start"
+                        className="mt-4 self-start"
                       >
                         <Link href={`/practice/${problem.slug}`}>
                           {t.revisit}

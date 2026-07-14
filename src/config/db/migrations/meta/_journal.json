@@ -50,6 +50,48 @@
       "when": 1783921248522,
       "tag": "0006_odd_silver_samurai",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783985178294,
+      "tag": "0007_expand_product_event_funnel",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783986276788,
+      "tag": "0008_seed_hard_coach_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1783986388341,
+      "tag": "0009_harsh_ezekiel",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783988344265,
+      "tag": "0010_medical_zemo",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1783989905263,
+      "tag": "0011_green_proteus",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1783991456556,
+      "tag": "0012_nebulous_lucky_pierre",
+      "breakpoints": true
     }
   ]
 }

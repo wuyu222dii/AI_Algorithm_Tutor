@@ -148,6 +148,229 @@ async function verifyAuthAndLearningIsolation(
     ) {
       throw new Error('Learning data was not isolated by authenticated user');
     }
+
+    const reviewValues = [
+      firstUserId,
+      'dependency-cycle',
+      secondUserId,
+      'minimum-processing-rate',
+    ];
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_review_item" (user_id, problem_slug, status, source, due_at, interval_days, repetitions, ease_factor, updated_at) VALUES ($1, $2, 'due', 'mistake', now(), 1, 0, 2.5, now()), ($3, $4, 'due', 'completion', now(), 1, 0, 2.5, now())`,
+      reviewValues
+    );
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_review_item" (user_id, problem_slug, status, source, due_at, interval_days, repetitions, ease_factor, last_rating, updated_at) VALUES ($1, $2, 'resolved', 'mistake', now() + interval '3 days', 3, 1, 2.5, 'good', now()) ON CONFLICT (user_id, problem_slug) DO UPDATE SET status = excluded.status, due_at = excluded.due_at, interval_days = excluded.interval_days, repetitions = excluded.repetitions, last_rating = excluded.last_rating, updated_at = excluded.updated_at`,
+      reviewValues.slice(0, 2)
+    );
+    const firstReview = await app.unsafe<
+      { status: string; repetitions: number; last_rating: string | null }[]
+    >(
+      `SELECT status, repetitions, last_rating FROM "${applicationSchema}"."coach_review_item" WHERE user_id = $1 AND problem_slug = $2`,
+      reviewValues.slice(0, 2)
+    );
+    const secondReview = await app.unsafe<{ status: string }[]>(
+      `SELECT status FROM "${applicationSchema}"."coach_review_item" WHERE user_id = $1`,
+      [secondUserId]
+    );
+    if (
+      firstReview.length !== 1 ||
+      firstReview[0]?.status !== 'resolved' ||
+      firstReview[0]?.repetitions !== 1 ||
+      firstReview[0]?.last_rating !== 'good' ||
+      secondReview.length !== 1 ||
+      secondReview[0]?.status !== 'due'
+    ) {
+      throw new Error('Review persistence was not idempotent or user-isolated');
+    }
+
+    let invalidReviewRejected = false;
+    try {
+      await app.unsafe(
+        `INSERT INTO "${applicationSchema}"."coach_review_item" (user_id, problem_slug, status, source, due_at, interval_days, repetitions, ease_factor, updated_at) VALUES ($1, 'invalid-review', 'due', 'mistake', now(), 0, 0, 2.5, now())`,
+        [firstUserId]
+      );
+    } catch (error) {
+      invalidReviewRejected =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === '23514';
+    }
+    if (!invalidReviewRejected) {
+      throw new Error('Invalid review schedule bypassed database constraints');
+    }
+
+    const importedDraftValues = {
+      title: JSON.stringify({ zh: '私有草稿', en: 'Private draft' }),
+      description: JSON.stringify({ zh: '测试题面', en: 'Test statement' }),
+      templates: JSON.stringify({
+        javascript: 'function solve(input) { return input; }',
+        python: 'def solve(input):\n    return input',
+      }),
+      hints: JSON.stringify({ zh: ['', '', ''], en: ['', '', ''] }),
+    };
+    const insertImportedDraft = async (
+      id: string,
+      ownerUserId: string,
+      slug: string,
+      active: boolean
+    ) =>
+      app.unsafe(
+        `INSERT INTO "${applicationSchema}"."coach_problem" (id, slug, owner_user_id, source, title, description, difficulty, topics, entry_point, templates, hints, status, is_active) VALUES ($1, $2, $3, 'imported', $4::jsonb, $5::jsonb, 'medium', ARRAY['custom']::text[], 'solve', $6::jsonb, $7::jsonb, 'draft', $8)`,
+        [
+          id,
+          slug,
+          ownerUserId,
+          importedDraftValues.title,
+          importedDraftValues.description,
+          importedDraftValues.templates,
+          importedDraftValues.hints,
+          active,
+        ]
+      );
+
+    await insertImportedDraft(
+      `ci_draft_first_a_${nonce}`,
+      firstUserId,
+      'imported-draft',
+      true
+    );
+    await insertImportedDraft(
+      `ci_draft_first_b_${nonce}`,
+      firstUserId,
+      'imported-draft-second',
+      false
+    );
+    await insertImportedDraft(
+      `ci_draft_second_a_${nonce}`,
+      secondUserId,
+      'imported-draft',
+      true
+    );
+
+    let duplicateOwnerSlugRejected = false;
+    try {
+      await insertImportedDraft(
+        `ci_draft_duplicate_${nonce}`,
+        firstUserId,
+        'imported-draft',
+        false
+      );
+    } catch (error) {
+      duplicateOwnerSlugRejected =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === '23505';
+    }
+    if (!duplicateOwnerSlugRejected) {
+      throw new Error('Imported drafts were not unique by owner and slug');
+    }
+
+    let duplicateActiveDraftRejected = false;
+    try {
+      await insertImportedDraft(
+        `ci_draft_active_conflict_${nonce}`,
+        firstUserId,
+        'imported-draft-active-conflict',
+        true
+      );
+    } catch (error) {
+      duplicateActiveDraftRejected =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === '23505';
+    }
+    if (!duplicateActiveDraftRejected) {
+      throw new Error('More than one active imported draft was allowed');
+    }
+
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_problem" (id, slug, owner_user_id, source, title, description, difficulty, topics, entry_point, templates, hints, status, is_active) VALUES ($1, 'imported-draft-second', $2, 'imported', $3::jsonb, $4::jsonb, 'hard', ARRAY['custom']::text[], 'solve', $5::jsonb, $6::jsonb, 'draft', false) ON CONFLICT (owner_user_id, slug) WHERE owner_user_id IS NOT NULL DO UPDATE SET difficulty = excluded.difficulty, updated_at = now()`,
+      [
+        `ci_draft_idempotent_${nonce}`,
+        firstUserId,
+        importedDraftValues.title,
+        importedDraftValues.description,
+        importedDraftValues.templates,
+        importedDraftValues.hints,
+      ]
+    );
+    const idempotentDraft = await app.unsafe<
+      { count: number; difficulty: string }[]
+    >(
+      `SELECT count(*)::int AS count, max(difficulty) AS difficulty FROM "${applicationSchema}"."coach_problem" WHERE owner_user_id = $1 AND slug = 'imported-draft-second'`,
+      [firstUserId]
+    );
+    if (
+      idempotentDraft[0]?.count !== 1 ||
+      idempotentDraft[0]?.difficulty !== 'hard'
+    ) {
+      throw new Error('Imported draft upsert was not idempotent');
+    }
+
+    await app.unsafe(
+      `DELETE FROM "${applicationSchema}"."coach_problem" WHERE owner_user_id = $1`,
+      [firstUserId]
+    );
+    const [remainingImportedDrafts] = await app.unsafe<
+      {
+        first_count: number;
+        second_count: number;
+      }[]
+    >(
+      `SELECT count(*) FILTER (WHERE owner_user_id = $1)::int AS first_count, count(*) FILTER (WHERE owner_user_id = $2)::int AS second_count FROM "${applicationSchema}"."coach_problem" WHERE owner_user_id = ANY($3::text[])`,
+      [firstUserId, secondUserId, users]
+    );
+    if (
+      remainingImportedDrafts?.first_count !== 0 ||
+      remainingImportedDrafts.second_count !== 1
+    ) {
+      throw new Error('Imported draft deletion crossed user boundaries');
+    }
+
+    const funnelEventNames = [
+      'visitor_started',
+      'onboarding_started',
+      'first_code_run',
+      'first_problem_passed',
+      'review_completed',
+      'guest_data_claimed',
+      'sync_succeeded',
+      'sync_failed',
+      'experiment_exposed',
+      'imported_problem_saved',
+    ];
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_product_event" (id, user_id, session_id, name, properties, occurred_at) SELECT $1 || ordinal::text, $2, $3, name, '{}'::jsonb, now() FROM unnest($4::text[]) WITH ORDINALITY AS funnel(name, ordinal)`,
+      [`ci_funnel_${nonce}_`, firstUserId, `session_${nonce}`, funnelEventNames]
+    );
+    const [persistedFunnel] = await app.unsafe<{ count: number }[]>(
+      `SELECT count(*)::int AS count FROM "${applicationSchema}"."coach_product_event" WHERE user_id = $1 AND name = ANY($2::text[])`,
+      [firstUserId, funnelEventNames]
+    );
+    if (persistedFunnel?.count !== funnelEventNames.length) {
+      throw new Error('Expanded product funnel events were not persisted');
+    }
+
+    let invalidEventRejected = false;
+    try {
+      await app.unsafe(
+        `INSERT INTO "${applicationSchema}"."coach_product_event" (id, user_id, session_id, name, properties, occurred_at) VALUES ($1, $2, $3, 'not_a_product_event', '{}'::jsonb, now())`,
+        [`ci_invalid_event_${nonce}`, firstUserId, `session_${nonce}`]
+      );
+    } catch (error) {
+      invalidEventRejected =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === '23514';
+    }
+    if (!invalidEventRejected) {
+      throw new Error('Unknown product event bypassed the database constraint');
+    }
   } finally {
     await app.unsafe(
       `DELETE FROM "${applicationSchema}"."user" WHERE id = ANY($1::text[])`,
@@ -276,18 +499,28 @@ export async function runPostgresIntegrationTest(): Promise<void> {
         throw new Error('The application role unexpectedly has DDL permission');
       }
 
-      const readiness = await readyHealthStatus({
-        NODE_ENV: 'production',
-        DATABASE_PROVIDER: 'postgresql',
-        DATABASE_URL: applicationDatabaseUrl,
-        DATABASE_APPLICATION_ROLE: applicationRole,
-        DB_MIGRATIONS_SCHEMA: migrationSchema,
-        DB_MIGRATIONS_TABLE: migrationTable,
-        AUTH_SECRET: 'ci-only-auth-secret-with-at-least-32-characters',
-        OPENROUTER_API_KEY: 'ci-only-openrouter-key',
-        GOOGLE_AUTH_ENABLED: 'false',
-        GOOGLE_ONE_TAP_ENABLED: 'false',
-      });
+      const readiness = await readyHealthStatus(
+        {
+          NODE_ENV: 'production',
+          DATABASE_PROVIDER: 'postgresql',
+          DATABASE_URL: applicationDatabaseUrl,
+          DATABASE_APPLICATION_ROLE: applicationRole,
+          DB_MIGRATIONS_SCHEMA: migrationSchema,
+          DB_MIGRATIONS_TABLE: migrationTable,
+          AUTH_URL: 'https://algocoach.test',
+          AUTH_SECRET: 'ci-only-auth-secret-with-at-least-32-characters',
+          OPENROUTER_API_KEY: 'ci-only-openrouter-key',
+          REDIS_URL: 'https://redis.example.test',
+          REDIS_TOKEN: 'ci-only-redis-token',
+          TRUSTED_PROXY_HEADERS: 'x-forwarded-for',
+          GOOGLE_AUTH_ENABLED: 'false',
+          GOOGLE_ONE_TAP_ENABLED: 'false',
+        },
+        undefined,
+        {
+          fetch: async () => Response.json({ result: 'PONG' }),
+        }
+      );
       if (readiness.status !== 'ok') {
         throw new Error(
           `Readiness failed: ${JSON.stringify(readiness.checks)}`
@@ -298,7 +531,7 @@ export async function runPostgresIntegrationTest(): Promise<void> {
     }
 
     console.log(
-      `[database-test] ${expected.length} migrations are current; OAuth uniqueness/idempotency, user isolation, restricted DML/readiness, and DDL rejection passed`
+      `[database-test] ${expected.length} migrations are current; OAuth and imported-draft idempotency/isolation, restricted DML/readiness, and DDL rejection passed`
     );
   } finally {
     await admin.end({ timeout: 2 });

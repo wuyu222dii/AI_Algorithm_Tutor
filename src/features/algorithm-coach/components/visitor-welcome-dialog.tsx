@@ -26,7 +26,10 @@ import {
   DialogTitle,
 } from '@/shared/components/ui/dialog';
 
+import { trackProductEvent } from '../analytics';
+
 const VISITOR_WELCOME_KEY = 'algocoach:visitor-welcome:v1';
+const VISITOR_EVENT_KEY = 'algocoach:visitor-started:v1';
 
 const copy = {
   zh: {
@@ -124,8 +127,21 @@ export function VisitorWelcomeDialog({ locale }: { locale: 'zh' | 'en' }) {
           setOpen(false);
           return;
         }
-        if (seen) setHasSeen(true);
-        else setOpen(true);
+        if (seen) {
+          setHasSeen(true);
+        } else {
+          try {
+            if (!window.sessionStorage.getItem(VISITOR_EVENT_KEY)) {
+              trackProductEvent('visitor_started', {
+                properties: { source: 'about_welcome' },
+              });
+              window.sessionStorage.setItem(VISITOR_EVENT_KEY, 'tracked');
+            }
+          } catch {
+            // Analytics is best-effort when session storage is restricted.
+          }
+          setOpen(true);
+        }
       },
       seen || userId ? 0 : 350
     );

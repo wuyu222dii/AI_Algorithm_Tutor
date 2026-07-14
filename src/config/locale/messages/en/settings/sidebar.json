@@ -8,33 +8,18 @@
         "icon": "User"
       },
       {
-        "title": "Billing",
-        "url": "/settings/billing",
-        "icon": "CreditCard"
-      },
-      {
-        "title": "Payments",
-        "url": "/settings/payments",
-        "icon": "DollarSign"
-      },
-      {
-        "title": "Credits",
-        "url": "/settings/credits",
-        "icon": "Coins"
-      },
-      {
-        "title": "API Keys",
-        "url": "/settings/apikeys",
-        "icon": "RiKeyLine"
+        "title": "Security & data",
+        "url": "/settings/security",
+        "icon": "ShieldCheck"
       }
     ]
   },
   "top_nav": {
     "items": [
       {
-        "title": "Activity",
-        "url": "/activity",
-        "icon": "Activity"
+        "title": "Back to learning",
+        "url": "/learn",
+        "icon": "House"
       },
       {
         "title": "Settings",

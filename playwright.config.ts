@@ -2,15 +2,16 @@ import { defineConfig, devices } from '@playwright/test';
 
 const port = Number(process.env.PLAYWRIGHT_PORT || 3100);
 const baseURL = `http://localhost:${port}`;
+const isCI = Boolean(process.env.CI);
 
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 45_000,
   expect: { timeout: 8_000 },
   fullyParallel: false,
-  workers: 2,
-  retries: process.env.CI ? 2 : 0,
-  reporter: process.env.CI ? 'github' : 'list',
+  workers: isCI ? 1 : 2,
+  retries: isCI ? 1 : 0,
+  reporter: isCI ? 'github' : 'list',
   use: {
     baseURL,
     trace: 'retain-on-failure',

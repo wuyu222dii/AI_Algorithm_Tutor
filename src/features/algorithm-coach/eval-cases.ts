@@ -1,3 +1,4 @@
+import { problems } from './data/problems';
 import { CoachRequest, DiagnosisCategory } from './types';
 
 export interface CoachEvalCase {
@@ -47,7 +48,7 @@ const run = (
   executedAt: '2026-01-15T00:00:00.000Z',
 });
 
-export const coachEvalCases: CoachEvalCase[] = [
+const curatedCoachEvalCases: CoachEvalCase[] = [
   {
     id: 'diagnose-syntax',
     request: {
@@ -178,6 +179,8 @@ export const coachEvalCases: CoachEvalCase[] = [
       action: 'counterexample',
       locale: 'zh',
       problemSlug: 'sorted-pair-target',
+      language: 'javascript',
+      code: 'function hasTargetPair() { return false; }',
     },
     expected: { counterexampleRequired: true },
   },
@@ -187,6 +190,8 @@ export const coachEvalCases: CoachEvalCase[] = [
       action: 'counterexample',
       locale: 'en',
       problemSlug: 'minimum-processing-rate',
+      language: 'javascript',
+      code: 'function minimumRate() { return 0; }',
     },
     expected: { counterexampleRequired: true },
   },
@@ -196,6 +201,8 @@ export const coachEvalCases: CoachEvalCase[] = [
       action: 'counterexample',
       locale: 'zh',
       problemSlug: 'dependency-cycle',
+      language: 'javascript',
+      code: 'function hasDependencyCycle() { return false; }',
       runResult: run('dependency-cycle', 'failed', {
         testId: 'dfs-2',
         expected: true,
@@ -361,4 +368,75 @@ export const coachEvalCases: CoachEvalCase[] = [
       noAnswerLeakage: true,
     },
   },
+];
+
+function catalogEvalCases(): CoachEvalCase[] {
+  const hintCases: CoachEvalCase[] = problems.map((problem, index) => {
+    const locale = index % 2 === 0 ? ('zh' as const) : ('en' as const);
+    const hintLevel = ((index % 3) + 1) as 1 | 2 | 3;
+    return {
+      id: `catalog-hint-${problem.slug}-${locale}-${hintLevel}`,
+      request: {
+        action: 'hint',
+        locale,
+        problemSlug: problem.slug,
+        language: 'javascript',
+        code: problem.templates.javascript,
+        hintLevel,
+        experimentVariant: index % 2 === 0 ? 'A' : 'B',
+        problem: {
+          slug: problem.slug,
+          title: problem.title[locale],
+          description: problem.description[locale],
+          difficulty: problem.difficulty,
+          topics: problem.topics,
+          constraints: problem.constraints.map((item) => item[locale]),
+          entryPoint: problem.entryPoint,
+        },
+      },
+      expected: { hintLevel, noAnswerLeakage: true },
+    };
+  });
+  const reviewCases: CoachEvalCase[] = problems.map((problem, index) => {
+    const locale = index % 2 === 0 ? ('en' as const) : ('zh' as const);
+    return {
+      id: `catalog-review-${problem.slug}-${locale}`,
+      request: {
+        action: 'review_card',
+        locale,
+        problemSlug: problem.slug,
+        language: 'python',
+        code: problem.templates.python,
+        experimentVariant: index % 2 === 0 ? 'B' : 'A',
+        problem: {
+          slug: problem.slug,
+          title: problem.title[locale],
+          description: problem.description[locale],
+          difficulty: problem.difficulty,
+          topics: problem.topics,
+          constraints: problem.constraints.map((item) => item[locale]),
+          entryPoint: problem.entryPoint,
+        },
+      },
+      expected: { reviewCardRequired: true, noAnswerLeakage: true },
+    };
+  });
+  return [...hintCases, ...reviewCases];
+}
+
+const targetArtifactSampleCount = 100;
+const generatedCoachEvalCases = catalogEvalCases();
+if (
+  curatedCoachEvalCases.length + generatedCoachEvalCases.length <
+  targetArtifactSampleCount
+) {
+  throw new Error('The coach evaluation corpus must contain 100 samples');
+}
+
+export const coachEvalCases: CoachEvalCase[] = [
+  ...curatedCoachEvalCases,
+  ...generatedCoachEvalCases.slice(
+    0,
+    targetArtifactSampleCount - curatedCoachEvalCases.length
+  ),
 ];

@@ -90,4 +90,40 @@ describe('adaptive problem recommendations', () => {
 
     expect(recommendations[0].problem.slug).not.toBe('first-unique-position');
   });
+
+  it('fits the daily plan to the learner time budget', () => {
+    const recommendations = getProblemRecommendations(
+      createInitialCoachState(),
+      { limit: 3, maxMinutes: 45 }
+    );
+
+    expect(recommendations.length).toBeGreaterThan(0);
+    expect(
+      recommendations.reduce(
+        (total, item) => total + item.problem.estimatedMinutes,
+        0
+      )
+    ).toBeLessThanOrEqual(45);
+  });
+
+  it('prioritizes topics identified by the latest assessment', () => {
+    const state = createInitialCoachState();
+    state.assessments = [
+      {
+        id: 'assessment-1',
+        problemSlugs: ['minimum-processing-rate'],
+        startedAt: '2026-07-13T00:00:00.000Z',
+        completedAt: '2026-07-13T00:20:00.000Z',
+        score: 50,
+        correctCount: 1,
+        totalCount: 2,
+        weakTopics: ['dynamic-programming'],
+        recommendation: 'Review dynamic programming.',
+      },
+    ];
+
+    const [first] = getProblemRecommendations(state, { limit: 1 });
+    expect(first.problem.topics).toContain('dynamic-programming');
+    expect(first.reason).toBe('weak-topic');
+  });
 });

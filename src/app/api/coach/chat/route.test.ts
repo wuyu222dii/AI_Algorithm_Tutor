@@ -4,9 +4,12 @@ import { POST } from './route';
 
 const mocks = vi.hoisted(() => {
   class MockCoachModelError extends Error {
+    public readonly attempts = 1;
+
     constructor(
       message: string,
-      public readonly code: 'model_not_allowed' | 'provider_failed'
+      public readonly code: 'model_not_allowed' | 'provider_failed',
+      public readonly reason = 'unknown'
     ) {
       super(message);
       this.name = 'CoachModelError';
@@ -15,18 +18,27 @@ const mocks = vi.hoisted(() => {
 
   return {
     CoachModelError: MockCoachModelError,
+    acquireCoachCapacity: vi.fn(),
+    commitCoachFailedUsage: vi.fn(),
+    commitCoachUsage: vi.fn(),
     enforceCoachRateLimits: vi.fn(),
     getCoachRuntimeConfig: vi.fn(),
     recordOperationalEvent: vi.fn(),
     streamLiveCoachChat: vi.fn(),
+    releaseCoachCapacity: vi.fn(),
   };
 });
 
 vi.mock('@/features/algorithm-coach/rate-limit.server', () => ({
+  acquireCoachCapacity: mocks.acquireCoachCapacity,
+  commitCoachFailedUsage: mocks.commitCoachFailedUsage,
+  commitCoachUsage: mocks.commitCoachUsage,
   enforceCoachRateLimits: mocks.enforceCoachRateLimits,
+  releaseCoachCapacity: mocks.releaseCoachCapacity,
 }));
 
 vi.mock('@/features/algorithm-coach/server', () => ({
+  COACH_CHAT_MAX_OUTPUT_TOKENS: 500,
   COACH_PROMPT_VERSION: 'coach-test-v1',
   CoachModelError: mocks.CoachModelError,
   getCoachRuntimeConfig: mocks.getCoachRuntimeConfig,
@@ -56,6 +68,18 @@ describe('POST /api/coach/chat provider fallback', () => {
     vi.stubEnv('VERCEL_ENV', '');
     vi.stubEnv('COACH_DEMO_FALLBACK_ENABLED', 'true');
     mocks.enforceCoachRateLimits.mockResolvedValue(null);
+    mocks.acquireCoachCapacity.mockResolvedValue({
+      id: 'lease-1',
+      identity: 'guest:test',
+      backend: 'memory',
+      reservedTokens: 1000,
+      reservedCostMicroUsd: 1000,
+      expiresAt: Date.now() + 1000,
+      settled: false,
+    });
+    mocks.commitCoachFailedUsage.mockResolvedValue(undefined);
+    mocks.commitCoachUsage.mockResolvedValue(undefined);
+    mocks.releaseCoachCapacity.mockResolvedValue(undefined);
     mocks.getCoachRuntimeConfig.mockResolvedValue({
       apiKey: 'configured-test-key',
       baseURL: 'https://provider.example/v1',
@@ -64,7 +88,8 @@ describe('POST /api/coach/chat provider fallback', () => {
     mocks.streamLiveCoachChat.mockRejectedValue(
       new mocks.CoachModelError(
         'No available channel for the configured model',
-        'provider_failed'
+        'provider_failed',
+        'unavailable'
       )
     );
     mocks.recordOperationalEvent.mockResolvedValue(undefined);
@@ -89,6 +114,10 @@ describe('POST /api/coach/chat provider fallback', () => {
         level: 'warn',
       })
     );
+    expect(mocks.commitCoachFailedUsage).toHaveBeenCalledWith(
+      expect.anything(),
+      1
+    );
   });
 
   it('returns a sanitized 502 instead of local chat in production', async () => {
@@ -97,11 +126,11 @@ describe('POST /api/coach/chat provider fallback', () => {
     const response = await POST(chatRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(503);
     expect(response.headers.get('x-coach-mode')).toBeNull();
     expect(body.error).toMatchObject({
-      code: 'provider_failed',
-      message: 'The AI provider could not start a coach response.',
+      code: 'provider_unavailable',
+      message: 'The AI provider is temporarily unavailable.',
     });
     expect(JSON.stringify(body)).not.toContain('No available channel');
   });

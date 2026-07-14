@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { loadImportedDrafts } from './imported-drafts';
 import {
   claimGuestCoachData,
   COACH_ANALYTICS_KEY,
@@ -17,7 +18,13 @@ import {
   saveImportedProblem,
 } from './storage';
 import { CoachProvider, useCoachStore } from './store';
-import { LearningArtifact, Problem, ProductEvent } from './types';
+import {
+  CodeRunResult,
+  LearningArtifact,
+  Problem,
+  ProductEvent,
+  ReviewProgressState,
+} from './types';
 
 function createMemoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -84,6 +91,23 @@ const activationEvent: ProductEvent = {
   sessionId: 'session_guest',
 };
 
+const remoteReviewProgress: ReviewProgressState = {
+  version: 1,
+  items: {
+    'dependency-cycle': {
+      problemSlug: 'dependency-cycle',
+      status: 'due',
+      source: 'mistake',
+      dueAt: '2026-07-12T00:00:00.000Z',
+      intervalDays: 1,
+      repetitions: 0,
+      easeFactor: 2.5,
+      updatedAt: '2026-07-12T00:00:00.000Z',
+      lastFailureAt: '2026-07-12T00:00:00.000Z',
+    },
+  },
+};
+
 describe('CoachProvider persistence', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'localStorage', {
@@ -115,6 +139,61 @@ describe('CoachProvider persistence', () => {
       ) as { artifacts?: LearningArtifact[] };
       expect(stored.artifacts).toContainEqual(reviewCard);
     });
+  });
+
+  it('clears the active draft when the final private draft is deleted', async () => {
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: CoachProvider,
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+
+    act(() => result.current.saveImportedProblem(importedProblem));
+    await waitFor(() => expect(result.current.importedDrafts).toHaveLength(1));
+
+    act(() => result.current.deleteImportedProblem(importedProblem.slug));
+
+    expect(result.current.importedProblem).toBeNull();
+    expect(result.current.importedDrafts).toEqual([]);
+    await waitFor(() => expect(loadImportedDrafts()).toEqual([]));
+  });
+
+  it('clears persisted review mastery when learning data is reset', async () => {
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: CoachProvider,
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+
+    const failedRun: CodeRunResult = {
+      problemSlug: 'dependency-cycle',
+      language: 'javascript',
+      status: 'failed',
+      passedTests: 2,
+      totalTests: 4,
+      testResults: [],
+      console: [],
+      durationMs: 3,
+      executedAt: '2026-07-14T10:00:00.000Z',
+      testScope: 'full',
+      submitted: true,
+    };
+    act(() => result.current.recordRun('dependency-cycle', failedRun));
+    await waitFor(() =>
+      expect(result.current.reviewItems['dependency-cycle']?.status).toBe('due')
+    );
+    act(() => result.current.markReviewMastered('dependency-cycle'));
+    await waitFor(() =>
+      expect(result.current.reviewItems['dependency-cycle']?.status).toBe(
+        'mastered'
+      )
+    );
+
+    let reset = false;
+    await act(async () => {
+      reset = await result.current.resetData();
+    });
+
+    expect(reset).toBe(true);
+    expect(result.current.reviewItems).toEqual({});
   });
 
   it('keeps the original storage key for guest compatibility', () => {
@@ -193,11 +272,15 @@ describe('CoachProvider persistence', () => {
     latestRemote.artifacts = [{ ...reviewCard, id: 'remote-concurrent' }];
     let getCount = 0;
     let patchCount = 0;
+    const patchBodies: Array<{
+      mutations: Array<{ changes: { reviewItems?: unknown } }>;
+    }> = [];
 
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, init?: RequestInit) => {
         if (init?.method === 'PATCH') {
           patchCount += 1;
+          patchBodies.push(JSON.parse(String(init.body)));
           if (patchCount === 1) {
             return Response.json(
               {
@@ -226,6 +309,25 @@ describe('CoachProvider persistence', () => {
           data: {
             state: getCount === 1 ? firstRemote : latestRemote,
             importedProblem: null,
+            reviewProgress:
+              getCount === 1
+                ? remoteReviewProgress
+                : {
+                    ...remoteReviewProgress,
+                    items: {
+                      ...remoteReviewProgress.items,
+                      'minimum-processing-rate': {
+                        problemSlug: 'minimum-processing-rate',
+                        status: 'due',
+                        source: 'completion',
+                        dueAt: '2026-07-15T00:00:00.000Z',
+                        intervalDays: 1,
+                        repetitions: 0,
+                        easeFactor: 2.5,
+                        updatedAt: '2026-07-13T00:00:00.000Z',
+                      },
+                    },
+                  },
             hasData: true,
             revision: getCount === 1 ? 1 : 2,
           },
@@ -241,13 +343,14 @@ describe('CoachProvider persistence', () => {
     });
     await waitFor(() => expect(result.current.hydrated).toBe(true));
 
-    act(() =>
-      result.current.addArtifact({ ...reviewCard, id: 'local-offline' })
-    );
+    act(() => {
+      result.current.rateReview('dependency-cycle', 'good');
+      result.current.addArtifact({ ...reviewCard, id: 'local-offline' });
+    });
 
     await waitFor(
       () => {
-        expect(patchCount).toBe(2);
+        expect(patchCount).toBeGreaterThanOrEqual(2);
         expect(result.current.syncStatus).toBe('synced');
       },
       { timeout: 4_000 }
@@ -256,11 +359,91 @@ describe('CoachProvider persistence', () => {
     expect(result.current.state.artifacts.map((item) => item.id)).toEqual(
       expect.arrayContaining(['remote-concurrent', 'local-offline'])
     );
+    expect(result.current.reviewItems['dependency-cycle']).toMatchObject({
+      status: 'resolved',
+      lastRating: 'good',
+    });
+    expect(result.current.reviewItems['minimum-processing-rate']).toBeTruthy();
+    expect(
+      patchBodies.some((body) =>
+        body.mutations.some((mutation) => mutation.changes.reviewItems)
+      )
+    ).toBe(true);
     expect(
       window.localStorage.getItem(
         getScopedStorageKey(COACH_SYNC_QUEUE_KEY, scope)
       )
     ).toBeNull();
+    unmount();
+  });
+
+  it('tracks sync failures without recursively enqueueing the failure event', async () => {
+    const scope = createCoachStorageScope('offline-account');
+    let patchCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'PATCH') {
+          patchCount += 1;
+          return Response.json(
+            { error: { code: 'temporarily_unavailable' } },
+            { status: 503 }
+          );
+        }
+        return Response.json({
+          data: {
+            state: createInitialCoachState(),
+            importedProblem: null,
+            importedDrafts: [],
+            reviewProgress: { version: 1, items: {} },
+            hasData: false,
+            revision: 0,
+          },
+        });
+      })
+    );
+
+    const { result, unmount } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider storageScope={scope}>{children}</CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+
+    act(() => {
+      result.current.addArtifact({ ...reviewCard, id: 'offline-artifact' });
+    });
+    await waitFor(
+      () => {
+        expect(patchCount).toBe(1);
+        expect(result.current.syncStatus).toBe('error');
+      },
+      { timeout: 3_000 }
+    );
+
+    const queued = JSON.parse(
+      window.localStorage.getItem(
+        getScopedStorageKey(COACH_SYNC_QUEUE_KEY, scope)
+      ) ?? '[]'
+    ) as Array<{ changes?: { events?: ProductEvent[] } }>;
+    expect(queued).toHaveLength(1);
+    expect(
+      queued.flatMap((mutation) => mutation.changes?.events ?? [])
+    ).not.toContainEqual(expect.objectContaining({ name: 'sync_failed' }));
+    const analytics = JSON.parse(
+      window.localStorage.getItem(
+        getScopedStorageKey(COACH_ANALYTICS_KEY, scope)
+      ) ?? '[]'
+    ) as ProductEvent[];
+    expect(analytics).toContainEqual(
+      expect.objectContaining({
+        name: 'sync_failed',
+        properties: expect.objectContaining({ reason: 'server' }),
+      })
+    );
+    expect(result.current.state.events).not.toContainEqual(
+      expect.objectContaining({ name: 'sync_failed' })
+    );
     unmount();
   });
 });

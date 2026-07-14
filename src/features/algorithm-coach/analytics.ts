@@ -10,6 +10,18 @@ import {
 import { JsonValue, ProductEvent, ProductEventName } from './types';
 
 const MAX_STORED_EVENTS = 300;
+const COACH_GUEST_ID_COOKIE = 'algocoach_guest_id';
+const ANONYMOUS_FUNNEL_EVENTS = new Set<ProductEventName>([
+  'visitor_started',
+  'onboarding_started',
+  'activated',
+  'practice_started',
+  'first_code_run',
+  'first_problem_passed',
+  'review_completed',
+  'assessment_completed',
+  'experiment_exposed',
+]);
 let activeStorageScope: CoachStorageScope | null = GUEST_COACH_STORAGE_SCOPE;
 
 export function setProductAnalyticsScope(
@@ -25,6 +37,21 @@ function randomId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random()
     .toString(36)
     .slice(2, 10)}`;
+}
+
+export function ensureCoachGuestIdentity(): string {
+  if (typeof document === 'undefined') return 'server';
+  const existing = document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${COACH_GUEST_ID_COOKIE}=`))
+    ?.slice(COACH_GUEST_ID_COOKIE.length + 1);
+  if (existing && /^[A-Za-z0-9_-]{8,160}$/.test(existing)) return existing;
+
+  const identity = randomId('guest');
+  const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `${COACH_GUEST_ID_COOKIE}=${identity}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
+  return identity;
 }
 
 function getSessionId(scope: CoachStorageScope | null): string {
@@ -106,6 +133,7 @@ export function trackProductEvent(
   } = {},
   scope: CoachStorageScope | null = activeStorageScope
 ): ProductEvent {
+  if (typeof window !== 'undefined') ensureCoachGuestIdentity();
   const aliases: Record<string, ProductEventName> = {
     activation: 'activated',
     code_submit: 'code_submitted',
@@ -145,10 +173,54 @@ export function trackProductEvent(
         detail: event,
       })
     );
+    if (
+      scope === GUEST_COACH_STORAGE_SCOPE &&
+      ANONYMOUS_FUNNEL_EVENTS.has(event.name) &&
+      typeof fetch === 'function'
+    ) {
+      void fetch('/api/coach/events', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        keepalive: true,
+        body: JSON.stringify({
+          id: event.id,
+          name: event.name,
+          timestamp: event.timestamp,
+          problemSlug: event.problemSlug,
+        }),
+      }).catch(() => undefined);
+    }
   } catch {
     // Analytics must never interrupt the learning workflow.
   }
   return event;
+}
+
+export function loadProductAnalytics(
+  scope: CoachStorageScope | null = activeStorageScope
+): ProductEvent[] {
+  if (typeof window === 'undefined' || !scope) return [];
+  try {
+    const analyticsKey = getScopedStorageKey(COACH_ANALYTICS_KEY, scope);
+    const value = JSON.parse(
+      window.localStorage.getItem(analyticsKey) ?? '[]'
+    ) as unknown;
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter(
+        (event): event is ProductEvent =>
+          Boolean(event) &&
+          typeof event === 'object' &&
+          typeof (event as ProductEvent).id === 'string' &&
+          typeof (event as ProductEvent).name === 'string' &&
+          typeof (event as ProductEvent).timestamp === 'string' &&
+          typeof (event as ProductEvent).sessionId === 'string'
+      )
+      .slice(-MAX_STORED_EVENTS);
+  } catch {
+    return [];
+  }
 }
 
 export function clearProductAnalytics(

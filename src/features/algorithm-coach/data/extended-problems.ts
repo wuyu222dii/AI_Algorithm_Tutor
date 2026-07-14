@@ -1198,6 +1198,453 @@ const seeds: Seed[] = [
     ],
     estimatedMinutes: 14,
   },
+  {
+    number: 31,
+    slug: 'longest-consecutive-integer-chain',
+    title: ['连续整数链长度', 'Longest Consecutive Integer Chain'],
+    description: [
+      '给定未排序整数数组，返回由连续整数值组成的最长序列长度；重复值只计算一次。',
+      'Given an unsorted integer array, return the length of the longest sequence of consecutive values; duplicates count once.',
+    ],
+    difficulty: 'hard',
+    topics: ['array-hash'],
+    entryPoint: 'longestConsecutiveChain',
+    params: ['values', 'values'],
+    tests: [
+      { args: [[100, 4, 200, 1, 3, 2]], expected: 4 },
+      { args: [[0, 3, 7, 2, 5, 8, 4, 6, 0, 1]], expected: 9 },
+      { args: [[]], expected: 0 },
+      { args: [[9, 9, 8, 7, 5, 6]], expected: 5 },
+    ],
+    constraints: [
+      ['0 <= values.length <= 100000', '0 <= values.length <= 100000'],
+      [
+        '每个元素都是安全整数，结果不要求返回具体序列。',
+        'Every value is a safe integer; only the length is required.',
+      ],
+    ],
+    hints: [
+      [
+        '先消除重复值，并思考一条连续链的起点有什么特征。',
+        'Remove duplicates first and consider what distinguishes the start of a chain.',
+      ],
+      [
+        '只有不存在前驱值的数字才需要启动一次向后扩展。',
+        'Only a value without a predecessor needs to start a forward expansion.',
+      ],
+      [
+        '遍历值集合；发现链首时逐个检查后继，并更新已见到的最大长度。',
+        'Scan the value set; at each chain start, inspect successors and update the maximum length.',
+      ],
+    ],
+    reviewPoints: [
+      [
+        '从链首开始可避免对同一连续区间重复计数。',
+        'Starting only at chain heads avoids recounting the same range.',
+      ],
+      [
+        '哈希集合把成员检查降为均摊常数时间。',
+        'A hash set makes membership checks constant time on average.',
+      ],
+    ],
+    estimatedMinutes: 28,
+  },
+  {
+    number: 32,
+    slug: 'shortest-required-character-segment',
+    title: ['覆盖需求字符的最短片段', 'Shortest Required-Character Segment'],
+    description: [
+      '返回 text 中包含 required 全部字符及其重复次数的最短连续片段；没有可行片段时返回空字符串，并列时返回最早出现的片段。',
+      'Return the shortest contiguous segment of text containing every character of required with its multiplicity; return an empty string when impossible, and choose the earliest segment on ties.',
+    ],
+    difficulty: 'hard',
+    topics: ['two-pointers'],
+    entryPoint: 'shortestRequiredSegment',
+    params: ['text, required', 'text, required'],
+    tests: [
+      { args: ['ADOBECODEBANC', 'ABC'], expected: 'BANC' },
+      { args: ['a', 'aa'], expected: '' },
+      { args: ['aa', 'aa'], expected: 'aa' },
+      { args: ['bba', 'ab'], expected: 'ba' },
+    ],
+    constraints: [
+      ['0 <= text.length <= 100000', '0 <= text.length <= 100000'],
+      ['1 <= required.length <= 10000', '1 <= required.length <= 10000'],
+      [
+        '两个字符串只包含 ASCII 字符。',
+        'Both strings contain ASCII characters only.',
+      ],
+    ],
+    hints: [
+      [
+        '有效片段不仅要包含字符种类，还要满足每个字符的需求次数。',
+        'A valid segment must satisfy required counts, not just character kinds.',
+      ],
+      [
+        '右端负责纳入字符；片段有效后，左端应尝试收缩。',
+        'Use the right edge to add characters; once valid, try shrinking from the left.',
+      ],
+      [
+        '分别维护需求频次、窗口频次和已经满足需求的字符种类数。',
+        'Track required counts, window counts, and how many character requirements are currently satisfied.',
+      ],
+    ],
+    reviewPoints: [
+      [
+        '窗口有效性应能在移动一个边界后增量更新。',
+        'Window validity should update incrementally when either edge moves.',
+      ],
+      [
+        '只在得到更短片段时更新即可自然保留最早并列结果。',
+        'Updating only for a shorter segment naturally preserves the earliest tie.',
+      ],
+    ],
+    estimatedMinutes: 35,
+  },
+  {
+    number: 33,
+    slug: 'largest-histogram-rectangle-band',
+    title: ['柱形图中的最大矩形带', 'Largest Rectangle Band in a Histogram'],
+    description: [
+      '每个非负整数表示宽度为 1 的柱高，返回由一段连续柱子支撑的最大矩形面积。',
+      'Each non-negative integer is the height of a unit-width bar; return the largest rectangle area supported by a contiguous range of bars.',
+    ],
+    difficulty: 'hard',
+    topics: ['stack'],
+    entryPoint: 'largestHistogramBand',
+    params: ['heights', 'heights'],
+    tests: [
+      { args: [[2, 1, 5, 6, 2, 3]], expected: 10 },
+      { args: [[2, 4]], expected: 4 },
+      { args: [[]], expected: 0 },
+      { args: [[2, 1, 2]], expected: 3 },
+    ],
+    constraints: [
+      ['0 <= heights.length <= 100000', '0 <= heights.length <= 100000'],
+      [
+        '0 <= heights[i] <= 100000，最大面积为安全整数。',
+        '0 <= heights[i] <= 100000, and the maximum area is a safe integer.',
+      ],
+    ],
+    hints: [
+      [
+        '以某根柱高为矩形高度时，需要知道它能向左右延伸多远。',
+        'For a chosen bar height, determine how far that rectangle can extend on both sides.',
+      ],
+      [
+        '维护柱高单调不降的下标；遇到更矮柱时，部分矩形的右边界就确定了。',
+        'Keep indices with non-decreasing heights; a shorter bar fixes the right boundary for some rectangles.',
+      ],
+      [
+        '弹出下标时用当前下标与新栈顶推导宽度，末尾还要结算未弹出的柱子。',
+        'When popping an index, derive its width from the current index and the new stack top; settle remaining bars at the end.',
+      ],
+    ],
+    reviewPoints: [
+      [
+        '单调栈延迟计算，直到矩形边界变得确定。',
+        'A monotonic stack delays calculation until rectangle boundaries are known.',
+      ],
+      [
+        '哨兵高度可以统一处理遍历结束后的清栈。',
+        'A sentinel height can unify the final stack flush.',
+      ],
+    ],
+    estimatedMinutes: 38,
+  },
+  {
+    number: 34,
+    slug: 'minimum-peak-contiguous-group-sum',
+    title: ['连续分组的最小峰值', 'Minimum Peak Sum Across Contiguous Groups'],
+    description: [
+      '将非负整数数组按原顺序划分为恰好 groups 个非空连续组，返回所有组和中可能达到的最小最大值。',
+      'Split a non-negative integer array in order into exactly groups non-empty contiguous groups, and return the smallest possible value of the largest group sum.',
+    ],
+    difficulty: 'hard',
+    topics: ['binary-search'],
+    entryPoint: 'minimumPeakGroupSum',
+    params: ['values, groups', 'values, groups'],
+    tests: [
+      { args: [[7, 2, 5, 10, 8], 2], expected: 18 },
+      { args: [[1, 2, 3, 4, 5], 2], expected: 9 },
+      { args: [[1, 4, 4], 3], expected: 4 },
+      { args: [[2, 2, 2, 2], 3], expected: 4 },
+    ],
+    constraints: [
+      ['1 <= values.length <= 100000', '1 <= values.length <= 100000'],
+      ['1 <= groups <= values.length', '1 <= groups <= values.length'],
+      [
+        '所有元素非负，数组总和为安全整数。',
+        'All values are non-negative, and their total is a safe integer.',
+      ],
+    ],
+    hints: [
+      [
+        '答案不会小于最大单项，也不会大于所有元素之和。',
+        'The answer is at least the largest item and at most the total sum.',
+      ],
+      [
+        '固定一个峰值上限后，可以贪心判断最少需要多少个连续组。',
+        'For a fixed peak limit, greedily determine the minimum number of contiguous groups needed.',
+      ],
+      [
+        '利用“该上限是否可行”的单调性，在答案范围内寻找最小可行值。',
+        'Use the monotonic feasibility predicate to find the smallest workable value in the answer range.',
+      ],
+    ],
+    reviewPoints: [
+      [
+        '对答案二分需要明确搜索边界和单调判定。',
+        'Binary search on the answer requires precise bounds and a monotonic predicate.',
+      ],
+      [
+        '非负性保证贪心装组不会错过更少的组数。',
+        'Non-negative values make greedy packing valid for minimizing group count.',
+      ],
+    ],
+    estimatedMinutes: 36,
+  },
+  {
+    number: 35,
+    slug: 'reverse-node-sequence-by-groups',
+    title: ['按组翻转节点序列', 'Reverse a Node Sequence by Groups'],
+    description: [
+      '输入数组按顺序表示单链表各节点的值。每 k 个节点组成一组并翻转完整组，末尾不足 k 个节点时保持原顺序，返回翻转后的节点值数组。',
+      'The input array lists the values of a singly linked list in node order. Reverse each complete group of k nodes, keep a trailing partial group unchanged, and return the resulting node-value array.',
+    ],
+    difficulty: 'hard',
+    topics: ['linked-list'],
+    entryPoint: 'reverseNodeGroups',
+    params: ['values, k', 'values, k'],
+    tests: [
+      { args: [[1, 2, 3, 4, 5], 2], expected: [2, 1, 4, 3, 5] },
+      { args: [[1, 2, 3, 4, 5], 3], expected: [3, 2, 1, 4, 5] },
+      { args: [[], 2], expected: [] },
+      { args: [[1, 2], 3], expected: [1, 2] },
+    ],
+    constraints: [
+      ['0 <= values.length <= 100000', '0 <= values.length <= 100000'],
+      ['1 <= k <= 100000', '1 <= k <= 100000'],
+      [
+        '数组只是链表节点序列的 JSON 输入表示。',
+        'The array is the JSON input representation of the linked-list node sequence.',
+      ],
+    ],
+    hints: [
+      [
+        '每组翻转前先确认剩余节点数是否足够。',
+        'Before reversing a group, first confirm that enough nodes remain.',
+      ],
+      [
+        '除了组内方向，还要维护上一组尾部与下一组头部的连接。',
+        'Besides reversing within a group, preserve the links to the previous tail and next head.',
+      ],
+      [
+        '按组定位边界，翻转完整区间，再把该组的新尾部接回后继序列。',
+        'Locate each group boundary, reverse the complete range, then reconnect its new tail to the remaining sequence.',
+      ],
+    ],
+    reviewPoints: [
+      [
+        '虚拟头节点可以统一处理第一组与后续组。',
+        'A dummy head can handle the first and later groups uniformly.',
+      ],
+      [
+        '翻转前保存边界引用，避免丢失剩余链表。',
+        'Save boundary references before reversal to avoid losing the remaining list.',
+      ],
+    ],
+    estimatedMinutes: 40,
+  },
+  {
+    number: 36,
+    slug: 'fewest-string-rewrite-operations',
+    title: ['字符串改写最少操作数', 'Fewest Operations to Rewrite a String'],
+    description: [
+      '每次可以插入、删除或替换一个字符，返回将 source 改写为 target 所需的最少操作数。',
+      'In one operation, insert, delete, or replace one character; return the fewest operations needed to rewrite source as target.',
+    ],
+    difficulty: 'hard',
+    topics: ['dynamic-programming'],
+    entryPoint: 'fewestRewriteOperations',
+    params: ['source, target', 'source, target'],
+    tests: [
+      { args: ['kitten', 'sitting'], expected: 3 },
+      { args: ['horse', 'ros'], expected: 3 },
+      { args: ['', 'abc'], expected: 3 },
+      { args: ['intention', 'execution'], expected: 5 },
+    ],
+    constraints: [
+      ['0 <= source.length <= 500', '0 <= source.length <= 500'],
+      ['0 <= target.length <= 500', '0 <= target.length <= 500'],
+      [
+        '两个字符串只包含小写英文字母。',
+        'Both strings contain lowercase English letters only.',
+      ],
+    ],
+    hints: [
+      [
+        '比较两个前缀，状态需要记录各自已经考虑的长度。',
+        'Compare prefixes with a state that records how much of each string has been considered.',
+      ],
+      [
+        '末尾字符相同可以继承较短前缀；不同时比较三种操作来源。',
+        'Matching final characters inherit the shorter-prefix state; otherwise compare the three operation sources.',
+      ],
+      [
+        '建立二维前缀表，初始化空串边界，再按前缀长度逐格转移。',
+        'Build a two-dimensional prefix table, initialize empty-string boundaries, then fill it by prefix lengths.',
+      ],
+    ],
+    reviewPoints: [
+      [
+        '状态含义清晰后，插入、删除与替换分别对应相邻三个状态。',
+        'With a clear state meaning, insertion, deletion, and replacement map to three neighboring states.',
+      ],
+      [
+        '空前缀初始化代表连续插入或删除。',
+        'Empty-prefix initialization represents repeated insertion or deletion.',
+      ],
+    ],
+    estimatedMinutes: 38,
+  },
+  {
+    number: 37,
+    slug: 'shortest-one-letter-transformation-chain',
+    title: ['单字母变换最短链', 'Shortest One-Letter Transformation Chain'],
+    description: [
+      '每步只能替换一个字母，且变换后的单词必须在 words 中。返回从 beginWord 到 endWord 的最短单词链长度（包含两端）；无法到达时返回 0，起止相同时返回 1。',
+      'Change exactly one letter per step, and every transformed word must appear in words. Return the shortest chain length from beginWord to endWord including both endpoints; return 0 when unreachable and 1 when the endpoints are equal.',
+    ],
+    difficulty: 'hard',
+    topics: ['bfs'],
+    entryPoint: 'shortestTransformationChain',
+    params: ['beginWord, endWord, words', 'beginWord, endWord, words'],
+    tests: [
+      {
+        args: [
+          'mist',
+          'code',
+          ['most', 'cost', 'cast', 'case', 'cose', 'code'],
+        ],
+        expected: 5,
+      },
+      { args: ['talk', 'tail', ['tall', 'tail', 'balk']], expected: 3 },
+      { args: ['cold', 'warm', ['cord', 'card', 'ward']], expected: 0 },
+      { args: ['same', 'same', []], expected: 1 },
+    ],
+    constraints: [
+      ['1 <= beginWord.length <= 20', '1 <= beginWord.length <= 20'],
+      [
+        'endWord 与 words 中每个单词都和 beginWord 等长。',
+        'endWord and every word in words have the same length as beginWord.',
+      ],
+      ['0 <= words.length <= 5000', '0 <= words.length <= 5000'],
+    ],
+    hints: [
+      [
+        '把单词视为节点，只差一个字母的两个单词之间存在边。',
+        'Treat words as nodes, with an edge between words differing by one letter.',
+      ],
+      [
+        '要求最少步数时，应按与起点的距离逐层探索。',
+        'For the fewest steps, explore in layers of distance from the start.',
+      ],
+      [
+        '队列保存当前层单词和链长，候选单词首次入队时立即标记已访问。',
+        'Queue each word with its chain length, marking candidates visited when they are first enqueued.',
+      ],
+    ],
+    reviewPoints: [
+      [
+        '无权图的首次到达即得到最短路径。',
+        'The first arrival in an unweighted graph gives a shortest path.',
+      ],
+      [
+        '入队即去重可以避免重复扩展同一单词。',
+        'Deduplicating on enqueue prevents repeated expansion of a word.',
+      ],
+    ],
+    estimatedMinutes: 38,
+  },
+  {
+    number: 38,
+    slug: 'translation-equivalent-island-shapes',
+    title: ['平移等价岛屿形状', 'Island Shapes Equal Under Translation'],
+    description: [
+      '在只含 0 和 1 的网格中，四方向相邻的 1 构成岛屿。若两个岛屿仅通过平移即可重合，则形状相同；旋转或镜像不视为相同。返回不同岛屿形状的数量。',
+      'In a grid of 0s and 1s, orthogonally adjacent 1s form an island. Two shapes are equal only when translation makes them coincide; rotations and reflections remain distinct. Return the number of distinct island shapes.',
+    ],
+    difficulty: 'hard',
+    topics: ['dfs'],
+    entryPoint: 'countTranslationIslandShapes',
+    params: ['grid', 'grid'],
+    tests: [
+      {
+        args: [
+          [
+            [1, 1, 0, 0, 0],
+            [1, 0, 0, 1, 1],
+            [0, 0, 0, 1, 0],
+          ],
+        ],
+        expected: 1,
+      },
+      {
+        args: [
+          [
+            [1, 1, 0, 0, 1],
+            [1, 0, 0, 0, 1],
+            [0, 0, 1, 1, 1],
+          ],
+        ],
+        expected: 2,
+      },
+      { args: [[]], expected: 0 },
+      {
+        args: [
+          [
+            [1, 0, 1],
+            [1, 0, 0],
+            [0, 0, 0],
+          ],
+        ],
+        expected: 2,
+      },
+    ],
+    constraints: [
+      ['0 <= grid.length <= 200', '0 <= grid.length <= 200'],
+      [
+        '网格非空时为矩形，每个单元格为 0 或 1。',
+        'When non-empty, the grid is rectangular and every cell is 0 or 1.',
+      ],
+    ],
+    hints: [
+      [
+        '绝对坐标会随平移变化，需要为每个岛屿建立与位置无关的表示。',
+        'Absolute coordinates change under translation, so each island needs a position-independent representation.',
+      ],
+      [
+        '遍历岛屿时，记录每个单元格相对同一锚点的偏移。',
+        'While traversing an island, record every cell offset from one shared anchor.',
+      ],
+      [
+        '按固定顺序规范化偏移集合，将序列化结果放入集合中去重。',
+        'Normalize offsets in a fixed order and deduplicate their serialized representations in a set.',
+      ],
+    ],
+    reviewPoints: [
+      [
+        '相对坐标消除了平移差异，但保留方向差异。',
+        'Relative coordinates remove translation while preserving orientation.',
+      ],
+      [
+        '形状签名必须有稳定顺序，避免遍历顺序造成误判。',
+        'Shape signatures need a stable order to avoid traversal-order mismatches.',
+      ],
+    ],
+    estimatedMinutes: 40,
+  },
 ];
 
 export const extendedProblems = seeds.map(problem);

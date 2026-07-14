@@ -32,6 +32,7 @@ import {
 import { cn } from '@/shared/lib/utils';
 
 import { getProblemBySlug, problems } from '../data/problems';
+import { TOPIC_LABELS } from '../learning-progress';
 import { runCode } from '../runner';
 import { useCoachStore } from '../store';
 import type { CodeRunResult, Language, Problem, ProblemTopic } from '../types';
@@ -57,6 +58,9 @@ const DURATION_SECONDS = 20 * 60;
 const copy = {
   zh: {
     title: '算法能力测评',
+    localMode: '本地自测',
+    localModeNotice:
+      '代码在浏览器隔离环境中执行，结果用于个人学习反馈，不作为正式能力认证。',
     description:
       '20 分钟完成 2 道固定题，了解当前解题稳定性与需要补强的知识点。',
     beforeTitle: '准备好后再开始计时',
@@ -102,6 +106,9 @@ const copy = {
   },
   en: {
     title: 'Algorithm Assessment',
+    localMode: 'Local self-assessment',
+    localModeNotice:
+      'Code runs in an isolated browser environment. Results are for personal learning feedback, not formal certification.',
     description:
       'Solve two fixed problems in 20 minutes to measure consistency and identify topics to strengthen.',
     beforeTitle: 'Start when you are ready for the timer',
@@ -425,12 +432,20 @@ export function AssessmentPage() {
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
           <Panel>
             <div className="p-6 md:p-8">
-              <span className="bg-primary/10 text-primary flex size-12 items-center justify-center rounded-lg">
-                <BrainCircuit className="size-6" />
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="bg-primary/10 text-primary flex size-12 items-center justify-center rounded-lg">
+                  <BrainCircuit className="size-6" />
+                </span>
+                <Badge variant="outline" className="rounded-md">
+                  {t.localMode}
+                </Badge>
+              </div>
               <h2 className="mt-6 text-xl font-semibold">{t.beforeTitle}</h2>
               <p className="text-muted-foreground mt-2 max-w-2xl text-sm leading-6">
                 {t.beforeDescription}
+              </p>
+              <p className="text-muted-foreground mt-3 max-w-2xl text-xs leading-5">
+                {t.localModeNotice}
               </p>
               <div className="mt-6 grid gap-3 sm:grid-cols-3">
                 <IntroFact icon={<Clock3 />} value={t.duration} />
@@ -502,7 +517,17 @@ export function AssessmentPage() {
           />
           <Metric
             label={t.weak}
-            value={weakTopics.slice(0, 2).join(' / ') || '—'}
+            value={
+              weakTopics
+                .slice(0, 2)
+                .map(
+                  (topic) =>
+                    TOPIC_LABELS[topic as keyof typeof TOPIC_LABELS]?.[
+                      locale
+                    ] ?? topic
+                )
+                .join(' / ') || '—'
+            }
             icon={<BrainCircuit className="size-5" />}
             accent={weakTopics.length ? 'danger' : 'success'}
           />
@@ -520,7 +545,9 @@ export function AssessmentPage() {
               <div className="mt-4 flex flex-wrap gap-2">
                 {weakTopics.map((topic) => (
                   <Badge key={topic} variant="secondary" className="rounded-md">
-                    {topic}
+                    {TOPIC_LABELS[topic as keyof typeof TOPIC_LABELS]?.[
+                      locale
+                    ] ?? topic}
                   </Badge>
                 ))}
               </div>
@@ -574,6 +601,12 @@ export function AssessmentPage() {
             className="order-3 h-1.5 w-full md:order-none md:w-48"
           />
           <div className="ml-auto flex items-center gap-2">
+            <Badge
+              variant="outline"
+              className="hidden rounded-md sm:inline-flex"
+            >
+              {t.localMode}
+            </Badge>
             <Select
               value={language}
               onValueChange={(value) => setLanguage(value as Language)}

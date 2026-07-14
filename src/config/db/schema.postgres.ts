@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   boolean,
   check,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -595,7 +596,9 @@ export const coachProblem = table(
       .default(sql`'[]'::jsonb`),
     estimatedMinutes: smallint('estimated_minutes').notNull().default(20),
     status: text('status').notNull().default('published'),
+    isActive: boolean('is_active').notNull().default(false),
     sourceStatement: text('source_statement'),
+    sourceUrl: text('source_url'),
     contentVersion: integer('content_version').notNull().default(1),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
@@ -612,6 +615,11 @@ export const coachProblem = table(
     uniqueIndex('uq_coach_problem_owner_slug')
       .on(table.ownerUserId, table.slug)
       .where(sql`${table.ownerUserId} is not null`),
+    uniqueIndex('uq_coach_problem_owner_active')
+      .on(table.ownerUserId)
+      .where(
+        sql`${table.ownerUserId} is not null and ${table.isActive} = true`
+      ),
     index('idx_coach_problem_status_difficulty').on(
       table.status,
       table.difficulty
@@ -692,6 +700,7 @@ export const coachLearningProfile = table(
     goal: text('goal').notNull(),
     preferredLanguage: text('preferred_language').notNull(),
     weeklyTarget: smallint('weekly_target').notNull().default(5),
+    dailyMinutes: smallint('daily_minutes').notNull().default(30),
     onboardingCompleted: boolean('onboarding_completed')
       .notNull()
       .default(false),
@@ -717,6 +726,10 @@ export const coachLearningProfile = table(
     check(
       'chk_coach_learning_profile_weekly_target',
       sql`${table.weeklyTarget} between 1 and 14`
+    ),
+    check(
+      'chk_coach_learning_profile_daily_minutes',
+      sql`${table.dailyMinutes} between 10 and 180`
     ),
     check(
       'chk_coach_learning_profile_experiment',
@@ -766,6 +779,65 @@ export const coachSyncMutation = table(
     check(
       'chk_coach_sync_mutation_result_revision',
       sql`${table.resultRevision} >= 0`
+    ),
+  ]
+);
+
+export const coachReviewItem = table(
+  'coach_review_item',
+  {
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    problemSlug: text('problem_slug').notNull(),
+    status: text('status').notNull(),
+    source: text('source').notNull(),
+    dueAt: timestamp('due_at', { withTimezone: true }).notNull(),
+    intervalDays: integer('interval_days').notNull(),
+    repetitions: integer('repetitions').notNull(),
+    easeFactor: doublePrecision('ease_factor').notNull(),
+    lastObservedRunAt: timestamp('last_observed_run_at', {
+      withTimezone: true,
+    }),
+    lastFailureAt: timestamp('last_failure_at', { withTimezone: true }),
+    lastReviewedAt: timestamp('last_reviewed_at', { withTimezone: true }),
+    lastRating: text('last_rating'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_coach_review_item_user_problem').on(
+      table.userId,
+      table.problemSlug
+    ),
+    index('idx_coach_review_item_user_due').on(table.userId, table.dueAt.asc()),
+    index('idx_coach_review_item_user_status').on(
+      table.userId,
+      table.status,
+      table.updatedAt.desc()
+    ),
+    check(
+      'chk_coach_review_item_status',
+      sql`${table.status} in ('due', 'resolved', 'mastered')`
+    ),
+    check(
+      'chk_coach_review_item_source',
+      sql`${table.source} in ('mistake', 'completion')`
+    ),
+    check(
+      'chk_coach_review_item_interval',
+      sql`${table.intervalDays} between 1 and 365`
+    ),
+    check(
+      'chk_coach_review_item_repetitions',
+      sql`${table.repetitions} between 0 and 1000`
+    ),
+    check(
+      'chk_coach_review_item_ease_factor',
+      sql`${table.easeFactor} between 1.3 and 3.2`
+    ),
+    check(
+      'chk_coach_review_item_rating',
+      sql`${table.lastRating} is null or ${table.lastRating} in ('again', 'hard', 'good', 'easy')`
     ),
   ]
 );
@@ -1071,7 +1143,7 @@ export const coachProductEvent = table(
     ),
     check(
       'chk_coach_product_event_name',
-      sql`${table.name} in ('activated', 'practice_started', 'code_run', 'code_submitted', 'hint_revealed', 'diagnosis_requested', 'corrected_after_diagnosis', 'assessment_started', 'assessment_completed', 'counterexample_requested', 'review_card_created', 'coach_chat_message', 'csat_submitted')`
+      sql`${table.name} in ('activated', 'visitor_started', 'onboarding_started', 'practice_started', 'first_code_run', 'first_problem_passed', 'code_run', 'code_submitted', 'hint_revealed', 'diagnosis_requested', 'corrected_after_diagnosis', 'assessment_started', 'assessment_completed', 'counterexample_requested', 'review_card_created', 'review_completed', 'coach_chat_message', 'csat_submitted', 'guest_data_claimed', 'sync_succeeded', 'sync_failed', 'experiment_exposed', 'imported_problem_saved')`
     ),
     check(
       'chk_coach_product_event_experiment',

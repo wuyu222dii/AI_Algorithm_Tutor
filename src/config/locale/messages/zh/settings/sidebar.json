@@ -8,33 +8,18 @@
         "icon": "User"
       },
       {
-        "title": "账单",
-        "url": "/settings/billing",
-        "icon": "CreditCard"
-      },
-      {
-        "title": "支付",
-        "url": "/settings/payments",
-        "icon": "DollarSign"
-      },
-      {
-        "title": "积分",
-        "url": "/settings/credits",
-        "icon": "Coins"
-      },
-      {
-        "title": "API 密钥",
-        "url": "/settings/apikeys",
-        "icon": "RiKeyLine"
+        "title": "安全与数据",
+        "url": "/settings/security",
+        "icon": "ShieldCheck"
       }
     ]
   },
   "top_nav": {
     "items": [
       {
-        "title": "活动",
-        "url": "/activity",
-        "icon": "Activity"
+        "title": "返回学习",
+        "url": "/learn",
+        "icon": "House"
       },
       {
         "title": "设置",

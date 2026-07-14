@@ -1,0 +1,2 @@
+ALTER TABLE "algocoach"."coach_learning_profile" ADD COLUMN "daily_minutes" smallint DEFAULT 30 NOT NULL;--> statement-breakpoint
+ALTER TABLE "algocoach"."coach_learning_profile" ADD CONSTRAINT "chk_coach_learning_profile_daily_minutes" CHECK ("algocoach"."coach_learning_profile"."daily_minutes" between 10 and 180);

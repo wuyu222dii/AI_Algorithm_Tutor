@@ -1,4 +1,14 @@
 import {
+  claimGuestImportedDrafts,
+  clearImportedDrafts,
+  hasImportedDrafts,
+} from './imported-drafts';
+import {
+  claimGuestReviewProgress,
+  hasReviewProgress,
+} from './learning-progress';
+import { compactCoachSyncQueue } from './sync';
+import {
   AssessmentResult,
   CoachState,
   CoachSyncMutation,
@@ -260,6 +270,7 @@ export function clearCoachState(
   if (!target) return;
   try {
     target.removeItem(getScopedStorageKey(COACH_STORAGE_KEY, scope));
+    clearImportedDrafts(target, scope);
     if (scope === GUEST_COACH_STORAGE_SCOPE) {
       for (const key of LEGACY_STORAGE_KEYS) target.removeItem(key);
     }
@@ -373,7 +384,9 @@ export function loadCoachSyncQueue(
     );
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter(isStoredMutation) : [];
+    return Array.isArray(parsed)
+      ? compactCoachSyncQueue(parsed.filter(isStoredMutation))
+      : [];
   } catch {
     return [];
   }
@@ -383,16 +396,18 @@ export function saveCoachSyncQueue(
   queue: CoachSyncMutation[],
   storage?: Storage,
   scope: CoachStorageScope = GUEST_COACH_STORAGE_SCOPE
-): void {
+): CoachSyncMutation[] {
+  const compacted = compactCoachSyncQueue(queue);
   const target = getStorage(storage);
-  if (!target) return;
+  if (!target) return compacted;
   try {
     const key = getScopedStorageKey(COACH_SYNC_QUEUE_KEY, scope);
-    if (!queue.length) target.removeItem(key);
-    else target.setItem(key, JSON.stringify(queue));
+    if (!compacted.length) target.removeItem(key);
+    else target.setItem(key, JSON.stringify(compacted));
   } catch {
     // The in-memory queue still retries while this page remains open.
   }
+  return compacted;
 }
 
 export function clearCoachSyncQueue(
@@ -444,7 +459,9 @@ export function claimGuestCoachData(
       guestAnalytics.length > 0 ||
       guestExperiment === 'A' ||
       guestExperiment === 'B' ||
-      Boolean(guestImportedProblem);
+      Boolean(guestImportedProblem) ||
+      hasImportedDrafts(target, GUEST_COACH_STORAGE_SCOPE) ||
+      hasReviewProgress(target, GUEST_COACH_STORAGE_SCOPE);
 
     if (!hasGuestData) return false;
 
@@ -487,6 +504,9 @@ export function claimGuestCoachData(
         target.setItem(scopedImportedKey, guestImportedProblem);
       }
     }
+
+    claimGuestImportedDrafts(scope, target);
+    claimGuestReviewProgress(scope, target);
 
     clearCoachState(target, GUEST_COACH_STORAGE_SCOPE);
     target.removeItem(COACH_ANALYTICS_KEY);

@@ -219,6 +219,8 @@ function createCounterexample(request: CoachRequest): LearningArtifact {
       expected: source?.expected as JsonValue | undefined,
       actual: source?.actual as JsonValue | undefined,
       explanation,
+      verification: failed && observedTest ? 'observed' : 'unverified',
+      sourceTestId: source?.id,
     },
     nextAction:
       locale === 'zh'

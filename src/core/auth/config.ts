@@ -75,6 +75,15 @@ const authOptions = {
     errorURL: `${envConfigs.app_url.replace(/\/$/, '')}/auth-error`,
   },
   user: {
+    deleteUser: {
+      enabled: true,
+      afterDelete: async () => {
+        await recordOperationalEvent({
+          event: 'auth_account_deleted',
+          properties: { outcome: 'deleted' },
+        });
+      },
+    },
     // Allow persisting custom columns on user table.
     // Without this, better-auth may ignore extra properties during create/update.
     additionalFields: {

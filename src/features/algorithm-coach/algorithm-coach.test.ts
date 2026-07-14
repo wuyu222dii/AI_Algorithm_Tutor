@@ -1,13 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { getProblemBySlug, problems } from './data/problems';
 import { runOfflineCoachEval } from './eval';
 import { createDemoArtifact } from './fixtures';
 import { calculateProductMetrics } from './metrics';
 import {
+  classifyCoachProviderError,
   COACH_MODEL_WHITELIST,
   DEFAULT_COACH_MODEL,
+  estimateCoachCostUsd,
+  isCoachModelCircuitOpen,
+  recordCoachModelFailure,
+  recordCoachModelSuccess,
+  resetCoachModelCircuits,
   resolveCoachModel,
+  resolveCoachModelRoute,
 } from './model';
 import { parseProblemDraft } from './parser';
 import { coachRequestSchema, normalizeCoachRequest } from './schemas';
@@ -38,6 +45,10 @@ const failedRun: CodeRunResult = {
   executedAt: '2026-01-15T00:00:00.000Z',
 };
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe('algorithm coach domain', () => {
   it('falls back to the default model when model configuration is blank', () => {
     const previous = process.env.ALGO_COACH_MODEL;
@@ -60,8 +71,76 @@ describe('algorithm coach domain', () => {
     );
   });
 
-  it('ships thirty bilingual problems with verified tests and three hint levels', () => {
-    expect(problems).toHaveLength(30);
+  it('routes models by action and classifies only transient failures for failover', () => {
+    const previous = process.env.ALGO_COACH_HINT_MODEL;
+    process.env.ALGO_COACH_HINT_MODEL = 'openai/gpt-5.5';
+    try {
+      expect(resolveCoachModelRoute('hint')).toMatchObject({
+        primary: 'openai/gpt-5.5',
+      });
+    } finally {
+      if (previous === undefined) delete process.env.ALGO_COACH_HINT_MODEL;
+      else process.env.ALGO_COACH_HINT_MODEL = previous;
+    }
+    expect(
+      classifyCoachProviderError(new Error('No available channel for model'))
+    ).toBe('unavailable');
+    expect(classifyCoachProviderError({ statusCode: 429 })).toBe(
+      'rate_limited'
+    );
+    expect(classifyCoachProviderError({ status: 503 })).toBe('unavailable');
+    expect(classifyCoachProviderError(new Error('request timed out'))).toBe(
+      'timeout'
+    );
+    expect(
+      classifyCoachProviderError(new Error('schema validation failed'))
+    ).toBe('invalid_output');
+  });
+
+  it('opens and resets a model circuit after repeated transient failures', () => {
+    resetCoachModelCircuits();
+    const model = DEFAULT_COACH_MODEL;
+    recordCoachModelFailure(model, 'unavailable', 1000);
+    recordCoachModelFailure(model, 'unavailable', 1000);
+    expect(isCoachModelCircuitOpen(model, 1000)).toBe(false);
+    recordCoachModelFailure(model, 'unavailable', 1000);
+    expect(isCoachModelCircuitOpen(model, 1000)).toBe(true);
+    recordCoachModelSuccess(model);
+    expect(isCoachModelCircuitOpen(model, 1000)).toBe(false);
+  });
+
+  it('calculates a bounded token cost estimate', () => {
+    vi.stubEnv('COACH_INPUT_COST_PER_MILLION_USD', '');
+    vi.stubEnv('COACH_OUTPUT_COST_PER_MILLION_USD', '');
+    expect(
+      estimateCoachCostUsd({
+        inputTokens: 1_000,
+        outputTokens: 500,
+        totalTokens: 1_500,
+      })
+    ).toBe(0.007);
+  });
+
+  it('prices primary and fallback models independently', () => {
+    vi.stubEnv('COACH_INPUT_COST_PER_MILLION_USD', '');
+    vi.stubEnv('COACH_OUTPUT_COST_PER_MILLION_USD', '');
+    const usage = {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      totalTokens: 2_000_000,
+    };
+
+    expect(estimateCoachCostUsd(usage, 'google/gemini-2.5-flash')).toBe(12);
+    expect(estimateCoachCostUsd(usage, 'openai/gpt-5.5')).toBe(90);
+    expect(estimateCoachCostUsd(usage, 'anthropic/claude-4.5-sonnet')).toBe(30);
+
+    vi.stubEnv('COACH_GPT_5_5_INPUT_COST_PER_MILLION_USD', '3');
+    vi.stubEnv('COACH_GPT_5_5_OUTPUT_COST_PER_MILLION_USD', '7');
+    expect(estimateCoachCostUsd(usage, 'openai/gpt-5.5')).toBe(10);
+  });
+
+  it('ships thirty-eight bilingual problems with verified tests and three hint levels', () => {
+    expect(problems).toHaveLength(38);
     for (const problem of problems) {
       expect(problem.title.zh).toBeTruthy();
       expect(problem.title.en).toBeTruthy();
@@ -104,6 +183,8 @@ describe('algorithm coach domain', () => {
     const counterexample = artifact.counterexample;
     expect(counterexample?.input.length).toBeGreaterThan(0);
     expect(counterexample?.expected).toBeDefined();
+    expect(counterexample?.verification).toBe('unverified');
+    expect(counterexample?.sourceTestId).toBeTruthy();
     const problem = getProblemBySlug('minimum-processing-rate');
     expect(
       problem?.tests.some(
@@ -112,6 +193,23 @@ describe('algorithm coach domain', () => {
           test.expected === counterexample?.expected
       )
     ).toBe(true);
+  });
+
+  it('marks a counterexample as observed only when it matches a real failed test', () => {
+    const artifact = createDemoArtifact({
+      action: 'counterexample',
+      locale: 'zh',
+      problemSlug: 'dependency-cycle',
+      runResult: failedRun,
+    });
+
+    expect(artifact.counterexample).toMatchObject({
+      verification: 'observed',
+      sourceTestId: 'dfs-2',
+      expected: true,
+      actual: false,
+    });
+    expect(artifact.evidence.join(' ')).toContain('dfs-2');
   });
 
   it('migrates legacy local state and restores compatibility views', () => {
@@ -192,7 +290,7 @@ describe('algorithm coach domain', () => {
 
   it('passes bilingual deterministic safety and quality evaluations', () => {
     const summary = runOfflineCoachEval();
-    expect(summary.sampleCount).toBe(26);
+    expect(summary.sampleCount).toBe(100);
     expect(summary.failures).toEqual([]);
     expect(summary.structuredOutputRate).toBe(1);
     expect(summary.diagnosisAccuracy).toBe(1);

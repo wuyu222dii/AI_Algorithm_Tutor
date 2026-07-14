@@ -56,6 +56,14 @@ export interface Problem {
   hints: Record<CoachLocale, [string, string, string]>;
   reviewPoints: LocalizedText[];
   estimatedMinutes: number;
+  sourceStatement?: string;
+  sourceUrl?: string;
+}
+
+export interface ImportedDraftRecord {
+  problem: Problem;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface LocalizedProblem
@@ -109,10 +117,40 @@ export interface LearningProfile {
   goal: LearningGoal;
   preferredLanguage: Language;
   weeklyTarget: number;
+  dailyMinutes?: number;
   weeklyGoal?: number;
   onboardingCompleted?: boolean;
   createdAt?: string;
   onboardedAt: string;
+}
+
+export type ReviewStatus = 'due' | 'resolved' | 'mastered';
+export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
+
+export interface ReviewItem {
+  problemSlug: string;
+  status: ReviewStatus;
+  source: 'mistake' | 'completion';
+  dueAt: string;
+  intervalDays: number;
+  repetitions: number;
+  easeFactor: number;
+  updatedAt: string;
+  lastObservedRunAt?: string;
+  lastFailureAt?: string;
+  lastReviewedAt?: string;
+  lastRating?: ReviewRating;
+}
+
+export interface ReviewProgressState {
+  version: number;
+  items: Record<string, ReviewItem>;
+}
+
+export interface ReviewScheduleResult {
+  item: ReviewItem;
+  nextReviewAt: string;
+  intervalDays: number;
 }
 
 export interface PracticeSession {
@@ -138,6 +176,8 @@ export interface ParsedProblemDraft {
   testCoverage: 'none';
   warnings: string[];
   source: 'imported';
+  sourceStatement?: string;
+  sourceUrl?: string;
 }
 
 export type DiagnosisCategory =
@@ -153,6 +193,9 @@ export interface CounterexamplePayload {
   expected?: JsonValue;
   actual?: JsonValue;
   explanation: string;
+  /** Whether this exact input/result pair has real execution evidence. */
+  verification?: 'observed' | 'executed' | 'unverified';
+  sourceTestId?: string;
 }
 
 export interface HintPayload {
@@ -252,8 +295,11 @@ export interface CoachSyncMutation {
     code?: Record<string, Partial<Record<Language, string>>>;
     runs?: CodeRunResult[];
     completedProblemIds?: string[];
+    reviewItems?: Record<string, ReviewItem>;
   };
   importedProblem?: Problem | null;
+  importedDraftUpserts?: ImportedDraftRecord[];
+  deletedImportedDraftSlugs?: string[];
 }
 
 export interface CoachSyncResult {
@@ -263,8 +309,12 @@ export interface CoachSyncResult {
 }
 
 export type ProductEventName =
+  | 'visitor_started'
+  | 'onboarding_started'
   | 'activated'
   | 'practice_started'
+  | 'first_code_run'
+  | 'first_problem_passed'
   | 'code_run'
   | 'code_submitted'
   | 'hint_revealed'
@@ -274,6 +324,12 @@ export type ProductEventName =
   | 'assessment_completed'
   | 'counterexample_requested'
   | 'review_card_created'
+  | 'review_completed'
+  | 'guest_data_claimed'
+  | 'sync_succeeded'
+  | 'sync_failed'
+  | 'experiment_exposed'
+  | 'imported_problem_saved'
   | 'coach_chat_message'
   | 'csat_submitted';
 
@@ -290,6 +346,9 @@ export interface ProductMetrics {
   activated: boolean;
   completedProblems: number;
   attemptedProblems: number;
+  hintedProblems: number;
+  diagnosedProblems: number;
+  correctedProblems: number;
   practiceCompletionRate: number;
   hintUsageRate: number;
   correctionEffectiveness: number;
@@ -326,7 +385,25 @@ export interface CoachRequest {
   runResult?: CodeRunResult;
   hintLevel?: 1 | 2 | 3;
   experimentVariant?: 'A' | 'B';
-  model?: string;
+}
+
+export interface CoachTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+/** Server-side generation metadata. Model selection is never client-controlled. */
+export interface CoachGenerationResult {
+  artifact: LearningArtifact;
+  /** Raw provider classification retained for offline/live quality evaluation. */
+  providerDiagnosisCategory?: DiagnosisCategory;
+  selectedModel: string;
+  attempts: number;
+  fallbackFrom?: string;
+  finishReason: string;
+  usage: CoachTokenUsage;
+  estimatedCostUsd: number;
 }
 
 export interface CoachResponse {
@@ -336,6 +413,11 @@ export interface CoachResponse {
   promptVersion: string;
   latencyMs: number;
   traceId: string;
+  attempts?: number;
+  fallbackFrom?: string;
+  finishReason?: string;
+  usage?: CoachTokenUsage;
+  estimatedCostUsd?: number;
 }
 
 export interface CoachChatMessage {
@@ -351,5 +433,4 @@ export interface CoachChatRequest {
   language?: Language;
   code?: string;
   runResult?: CodeRunResult;
-  model?: string;
 }

@@ -5,12 +5,20 @@ import {
   errorResponse,
   readJsonBody,
 } from '@/features/algorithm-coach/http';
-import { enforceCoachRateLimits } from '@/features/algorithm-coach/rate-limit.server';
+import {
+  acquireCoachCapacity,
+  CoachCapacityLease,
+  commitCoachFailedUsage,
+  commitCoachUsage,
+  enforceCoachRateLimits,
+  releaseCoachCapacity,
+} from '@/features/algorithm-coach/rate-limit.server';
 import {
   coachChatRequestSchema,
   normalizeCoachChatRequest,
 } from '@/features/algorithm-coach/schemas';
 import {
+  COACH_CHAT_MAX_OUTPUT_TOKENS,
   COACH_PROMPT_VERSION,
   CoachModelError,
   getCoachRuntimeConfig,
@@ -21,6 +29,52 @@ import { CoachChatRequest } from '@/features/algorithm-coach/types';
 import { recordOperationalEvent } from '@/shared/lib/observability';
 
 export const dynamic = 'force-dynamic';
+
+function coachModelErrorResponse(error: CoachModelError, traceId: string) {
+  if (error.code === 'model_not_allowed') {
+    return errorResponse(
+      new CoachHttpError(
+        503,
+        'ai_configuration_error',
+        'The AI coach model configuration is invalid.'
+      ),
+      traceId
+    );
+  }
+  const failure = {
+    rate_limited: {
+      status: 429,
+      code: 'provider_rate_limited',
+      message: 'The AI provider rate limit has been reached.',
+    },
+    timeout: {
+      status: 504,
+      code: 'provider_timeout',
+      message: 'The AI provider did not respond in time.',
+    },
+    unavailable: {
+      status: 503,
+      code: 'provider_unavailable',
+      message: 'The AI provider is temporarily unavailable.',
+    },
+    invalid_output: {
+      status: 502,
+      code: 'provider_invalid_output',
+      message: 'The AI provider returned an invalid coach response.',
+    },
+    unknown: {
+      status: 502,
+      code: 'provider_failed',
+      message: 'The AI provider could not start a coach response.',
+    },
+  }[error.reason ?? 'unknown'];
+  const response = errorResponse(
+    new CoachHttpError(failure.status, failure.code, failure.message),
+    traceId
+  );
+  if (failure.status === 429) response.headers.set('retry-after', '30');
+  return response;
+}
 
 function localCoachChatResponse(
   chatRequest: CoachChatRequest,
@@ -50,6 +104,7 @@ function localCoachChatResponse(
 
 export async function POST(request: Request) {
   const traceId = crypto.randomUUID();
+  let capacityLease: CoachCapacityLease | undefined;
   const limited = await enforceCoachRateLimits(request, 'chat');
   if (limited) {
     limited.headers.set('x-coach-trace-id', traceId);
@@ -69,7 +124,7 @@ export async function POST(request: Request) {
     }
 
     const chatRequest = normalizeCoachChatRequest(parsed.data);
-    const config = await getCoachRuntimeConfig(chatRequest.model);
+    const config = await getCoachRuntimeConfig('chat');
     if (!config.apiKey) {
       const fallbackRequest = {
         action: 'hint' as const,
@@ -85,19 +140,30 @@ export async function POST(request: Request) {
       );
     }
 
-    const headers = {
-      'cache-control': 'no-store',
-      'content-type': 'text/plain; charset=utf-8',
-      'x-coach-model': config.model,
-      'x-coach-mode': 'live',
-      'x-coach-prompt-version': COACH_PROMPT_VERSION,
-      'x-coach-trace-id': traceId,
-    };
+    const capacity = await acquireCoachCapacity(request, 'chat', undefined, {
+      models: [
+        config.model,
+        ...(config.fallbackModel ? [config.fallbackModel] : []),
+      ],
+      input: chatRequest,
+      maxOutputTokens: COACH_CHAT_MAX_OUTPUT_TOKENS,
+      maxAttempts: 2,
+    });
+    if (capacity instanceof Response) {
+      capacity.headers.set('x-coach-trace-id', traceId);
+      return capacity;
+    }
+    capacityLease = capacity;
 
-    let stream;
+    let generation;
     try {
-      stream = await streamLiveCoachChat(chatRequest, config);
+      generation = await streamLiveCoachChat(chatRequest, config);
     } catch (error) {
+      await commitCoachFailedUsage(
+        capacityLease,
+        error instanceof CoachModelError ? error.attempts : 1
+      );
+      capacityLease = undefined;
       const fallbackRequest = {
         action: 'hint' as const,
         ...chatRequest,
@@ -119,16 +185,70 @@ export async function POST(request: Request) {
       throw error;
     }
 
+    const settledLease = capacityLease;
+    capacityLease = undefined;
+    void generation.completion
+      .then(async (completion) => {
+        await commitCoachUsage(
+          settledLease,
+          completion.usage,
+          completion.estimatedCostUsd,
+          generation.attempts
+        );
+        await recordOperationalEvent({
+          event: 'coach_chat_completed',
+          traceId,
+          properties: {
+            model: generation.selectedModel,
+            attempts: generation.attempts,
+            finishReason: completion.finishReason,
+            inputTokens: completion.usage.inputTokens,
+            outputTokens: completion.usage.outputTokens,
+            totalTokens: completion.usage.totalTokens,
+            estimatedCostUsd: completion.estimatedCostUsd,
+          },
+        });
+      })
+      .catch(async (error) => {
+        await commitCoachFailedUsage(settledLease, generation.attempts);
+        await recordOperationalEvent({
+          event: 'coach_chat_stream_failed',
+          level: 'error',
+          traceId,
+          properties: {
+            model: generation.selectedModel,
+            attempts: generation.attempts,
+          },
+          error,
+        });
+      });
+
+    const headers = {
+      'cache-control': 'no-store',
+      'content-type': 'text/plain; charset=utf-8',
+      'x-coach-model': generation.selectedModel,
+      'x-coach-mode': 'live',
+      'x-coach-attempts': String(generation.attempts),
+      'x-coach-prompt-version': COACH_PROMPT_VERSION,
+      'x-coach-trace-id': traceId,
+    };
+
     void recordOperationalEvent({
       event: 'coach_chat_started',
       traceId,
-      properties: { mode: 'live', model: config.model },
+      properties: {
+        mode: 'live',
+        model: generation.selectedModel,
+        attempts: generation.attempts,
+        fallbackFrom: generation.fallbackFrom,
+      },
     });
 
-    return new Response(stream, {
+    return new Response(generation.stream, {
       headers,
     });
   } catch (error) {
+    if (capacityLease) await releaseCoachCapacity(capacityLease);
     if (error instanceof CoachHttpError) return errorResponse(error, traceId);
     if (error instanceof CoachModelError) {
       if (error.code === 'provider_failed') {
@@ -139,17 +259,7 @@ export async function POST(request: Request) {
           error,
         });
       }
-      return errorResponse(
-        new CoachHttpError(
-          error.code === 'model_not_allowed' ? 400 : 502,
-          error.code,
-          error.code === 'provider_failed'
-            ? 'The AI provider could not start a coach response.'
-            : error.message,
-          error.code === 'provider_failed' ? undefined : error.message
-        ),
-        traceId
-      );
+      return coachModelErrorResponse(error, traceId);
     }
     void recordOperationalEvent({
       event: 'coach_chat_failed',

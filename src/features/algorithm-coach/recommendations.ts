@@ -1,5 +1,11 @@
 import { problems } from './data/problems';
-import { calculateTopicMastery } from './metrics';
+import {
+  calculateTopicMasterySnapshots,
+  createInitialReviewProgress,
+  isPracticeSessionCompleted,
+  reconcileReviewProgress,
+  ReviewItem,
+} from './learning-progress';
 import type { CoachState, LearningGoal, Problem, ProblemTopic } from './types';
 
 export type RecommendationReason =
@@ -45,46 +51,54 @@ function lastRunFor(state: CoachState, problem: Problem) {
   return runs[runs.length - 1];
 }
 
-function reviewIntervalDays(hintLevel: number, mastery: number): number {
-  if (hintLevel >= 2 || mastery < 45) return 2;
-  if (hintLevel === 1 || mastery < 70) return 4;
-  return 7;
-}
-
 function isReviewDue(
-  state: CoachState,
   problem: Problem,
-  topicMastery: Record<ProblemTopic, number>,
-  now: Date
+  reviewItems: Record<string, ReviewItem>
 ): boolean {
-  const session = state.sessions[problem.slug];
-  if (!session?.completedAt) return false;
-  const masteryValues = problem.topics
-    .filter((topic): topic is ProblemTopic => topic in topicMastery)
-    .map((topic) => topicMastery[topic]);
-  const mastery = masteryValues.length ? Math.min(...masteryValues) : 0;
-  const intervalMs =
-    reviewIntervalDays(session.hintLevel, mastery) * 24 * 60 * 60 * 1000;
-  const lastActivity = Date.parse(session.updatedAt || session.completedAt);
   return (
-    Number.isFinite(lastActivity) && now.getTime() >= lastActivity + intervalMs
+    (reviewItems[problem.slug] ?? reviewItems[problem.id])?.status === 'due'
   );
 }
 
 export function getProblemRecommendations(
   state: CoachState,
-  options: { limit?: number; now?: Date } = {}
+  options: {
+    limit?: number;
+    now?: Date;
+    reviewItems?: Record<string, ReviewItem>;
+    maxMinutes?: number;
+  } = {}
 ): ProblemRecommendation[] {
   const limit = Math.max(1, options.limit ?? 3);
   const now = options.now ?? new Date();
-  const mastery = calculateTopicMastery(state);
+  const reviewProgress = reconcileReviewProgress(
+    state,
+    {
+      ...createInitialReviewProgress(),
+      items: options.reviewItems ?? {},
+    },
+    { now }
+  );
+  const masterySnapshots = calculateTopicMasterySnapshots(
+    state,
+    reviewProgress.items
+  );
+  const mastery = Object.fromEntries(
+    Object.entries(masterySnapshots).map(([topic, snapshot]) => [
+      topic,
+      snapshot.value,
+    ])
+  ) as Record<ProblemTopic, number>;
   const goal = state.profile?.goal ?? 'foundation';
+  const assessmentWeakTopics = new Set(
+    state.assessments.at(-1)?.weakTopics ?? []
+  );
 
   const ranked = problems.map((problem, catalogIndex) => {
     const session = state.sessions[problem.slug];
     const lastRun = lastRunFor(state, problem);
-    const completed = Boolean(session?.completedAt);
-    const due = isReviewDue(state, problem, mastery, now);
+    const completed = isPracticeSessionCompleted(session);
+    const due = isReviewDue(problem, reviewProgress.items);
     const knownTopics = problem.topics.filter(
       (topic): topic is ProblemTopic => topic in mastery
     );
@@ -96,22 +110,41 @@ export function getProblemRecommendations(
       ...knownTopics.map((topic) => GOAL_TOPIC_WEIGHT[goal][topic] ?? 0)
     );
     const failed = Boolean(lastRun && lastRun.status !== 'passed');
+    const assessmentWeak = knownTopics.some((topic) =>
+      assessmentWeakTopics.has(topic)
+    );
 
     let score = 100 - weakestMastery + goalWeight - catalogIndex * 0.01;
     if (!session) score += 18;
     if (failed) score += 70;
     if (due) score += 130;
+    if (assessmentWeak) score += 55;
     if (session?.hintLevel) score += session.hintLevel * 6;
     if (completed && !due) score -= 140;
 
     let reason: RecommendationReason = 'continue';
     if (failed) reason = 'retry';
     else if (due) reason = 'review-due';
-    else if (weakestMastery < 60 && session) reason = 'weak-topic';
+    else if (assessmentWeak || (weakestMastery < 60 && session))
+      reason = 'weak-topic';
     else if (goalWeight > 0) reason = 'goal-fit';
 
     return { problem, reason, score };
   });
 
-  return ranked.sort((left, right) => right.score - left.score).slice(0, limit);
+  const sorted = ranked.sort((left, right) => right.score - left.score);
+  const maxMinutes = Math.max(0, options.maxMinutes ?? 0);
+  if (!maxMinutes) return sorted.slice(0, limit);
+
+  const selected: ProblemRecommendation[] = [];
+  let scheduledMinutes = 0;
+  for (const recommendation of sorted) {
+    if (selected.length >= limit) break;
+    const nextMinutes =
+      scheduledMinutes + recommendation.problem.estimatedMinutes;
+    if (selected.length > 0 && nextMinutes > maxMinutes) continue;
+    selected.push(recommendation);
+    scheduledMinutes = nextMinutes;
+  }
+  return selected;
 }

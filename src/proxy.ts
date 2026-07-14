@@ -4,15 +4,35 @@ import createIntlMiddleware from 'next-intl/middleware';
 
 import { routing } from '@/core/i18n/config';
 import { getSafeInternalCallback } from '@/shared/lib/auth-redirect';
-import { legacyFeaturesEnabled } from '@/shared/lib/legacy-features';
 
 const intlMiddleware = createIntlMiddleware(routing);
+const legacyApiPrefixes = [
+  '/api/ai',
+  '/api/chat',
+  '/api/email',
+  '/api/payment',
+  '/api/proxy',
+  '/api/storage',
+  '/api/user/get-user-credits',
+];
 const legacyPagePrefixes = [
   '/ai-image-generator',
   '/ai-music-generator',
   '/ai-video-generator',
   '/chat',
   '/pricing',
+  '/admin',
+  '/blog',
+  '/docs',
+  '/showcases',
+  '/updates',
+  '/activity/ai-tasks',
+  '/activity/chats',
+  '/settings/apikeys',
+  '/settings/billing',
+  '/settings/credits',
+  '/settings/invoices',
+  '/settings/payments',
 ];
 const authFlowPagePrefixes = [
   '/auth',
@@ -34,6 +54,13 @@ function matchesPagePrefix(pathname: string, prefixes: string[]) {
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  if (matchesPagePrefix(pathname, legacyApiPrefixes)) {
+    return NextResponse.json(
+      { error: { code: 'not_found', message: 'Endpoint not found.' } },
+      { status: 404, headers: { 'cache-control': 'no-store' } }
+    );
+  }
+
   // Handle internationalization first
   const intlResponse = intlMiddleware(request);
 
@@ -45,7 +72,6 @@ export async function proxy(request: NextRequest) {
     : pathname;
 
   if (
-    !legacyFeaturesEnabled() &&
     legacyPagePrefixes.some(
       (prefix) =>
         pathWithoutLocale === prefix ||

@@ -22,18 +22,15 @@ import { Button } from '@/shared/components/ui/button';
 import { Progress } from '@/shared/components/ui/progress';
 import { cn } from '@/shared/lib/utils';
 
-import { problems } from '../data/problems';
+import {
+  calculateTopicMasterySnapshots,
+  countNaturalWeekCompletions,
+  TOPIC_LABELS,
+} from '../learning-progress';
 import { useCoachStore } from '../store';
 import type { CodeRunResult } from '../types';
 import { CoachPage, Metric, Panel, PanelHeading } from './coach-ui';
-import {
-  getArtifacts,
-  getCompletedProblemIds,
-  getProfile,
-  getRuns,
-  localeKey,
-  runPassed,
-} from './domain-adapter';
+import { getProfile, getRuns, localeKey } from './domain-adapter';
 
 const copy = {
   zh: {
@@ -46,8 +43,9 @@ const copy = {
     days: '天',
     completed: '已完成',
     of: '共',
+    attempted: '已开始',
     runs: '次运行',
-    correctedDetail: '先失败后通过的题目',
+    correctedDetail: '诊断后纠正的题目',
     weekly: '近 7 天练习',
     weeklyDetail: '按代码运行次数统计',
     noActivity: '本周还没有运行记录',
@@ -85,8 +83,9 @@ const copy = {
     days: 'days',
     completed: 'completed',
     of: 'of',
+    attempted: 'started',
     runs: 'runs',
-    correctedDetail: 'Problems passed after an earlier failure',
+    correctedDetail: 'Problems corrected after diagnosis',
     weekly: 'Last 7 days',
     weeklyDetail: 'Measured by code runs',
     noActivity: 'No code runs this week yet',
@@ -126,79 +125,31 @@ export function ProgressPage() {
   const coach = useCoachStore();
   const state = coach.state;
   const runs = getRuns(state);
-  const artifacts = getArtifacts(state);
   const profile = getProfile(state);
-  const completedIds = getCompletedProblemIds(state);
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
   const [isResetting, setIsResetting] = useState(false);
 
-  const completionRate = Math.round(
-    (completedIds.size / Math.max(problems.length, 1)) * 100
+  const completionRate = Math.round(coach.metrics.practiceCompletionRate * 100);
+  const hintUsageRate = Math.round(coach.metrics.hintUsageRate * 100);
+  const correctionRate = Math.round(
+    coach.metrics.correctionEffectiveness * 100
   );
-  const hintCount = artifacts.filter(
-    (artifact) => artifact.type === 'hint'
-  ).length;
-  const hintUsageRate = runs.length
-    ? Math.min(100, Math.round((hintCount / runs.length) * 100))
-    : 0;
-
-  const problemOutcomes = useMemo(() => {
-    const map = new Map<string, { failed: boolean; passed: boolean }>();
-    runs.forEach((run) => {
-      const id = String(run.problemSlug);
-      if (!id) return;
-      const current = map.get(id) ?? { failed: false, passed: false };
-      if (runPassed(run)) current.passed = true;
-      else current.failed = true;
-      map.set(id, current);
-    });
-    return map;
-  }, [runs]);
-
-  const failedIds = Array.from(problemOutcomes.values()).filter(
-    (value) => value.failed
-  ).length;
-  const correctedIds = Array.from(problemOutcomes.values()).filter(
-    (value) => value.failed && value.passed
-  ).length;
-  const correctionRate = failedIds
-    ? Math.round((correctedIds / failedIds) * 100)
-    : 0;
   const activity = useMemo(() => buildActivity(runs, locale), [locale, runs]);
-  const streak = calculateStreak(runs);
+  const streak = coach.metrics.currentStreak;
   const topicMastery = useMemo(
     () =>
-      Array.from(new Set(problems.flatMap((problem) => problem.topics)))
-        .map((topic) => {
-          const related = problems.filter((problem) =>
-            problem.topics.includes(topic)
-          );
-          const done = related.filter(
-            (problem) =>
-              completedIds.has(problem.id) || completedIds.has(problem.slug)
-          ).length;
-          const failed = related.filter((problem) => {
-            const outcome =
-              problemOutcomes.get(problem.id) ??
-              problemOutcomes.get(problem.slug);
-            return outcome?.failed && !outcome?.passed;
-          }).length;
-          const value = Math.max(
-            0,
-            Math.min(
-              100,
-              Math.round((done / Math.max(related.length, 1)) * 100) -
-                failed * 12
-            )
-          );
-          return { topic, value, done, total: related.length };
-        })
-        .sort((a, b) => b.value - a.value),
-    [completedIds, problemOutcomes]
+      Object.values(
+        calculateTopicMasterySnapshots(state, coach.reviewItems)
+      ).sort((a, b) => b.value - a.value),
+    [coach.reviewItems, state]
   );
 
   const latestAssessment = state.assessments.at(-1);
   const weeklyGoal = Number(profile?.weeklyTarget ?? 5);
+  const weeklyCompletedCount = useMemo(
+    () => countNaturalWeekCompletions(state),
+    [state]
+  );
 
   function sendFeedback(value: 'up' | 'down') {
     setFeedback(value);
@@ -226,28 +177,28 @@ export function ProgressPage() {
         <Metric
           label={t.completion}
           value={`${completionRate}%`}
-          detail={`${completedIds.size} ${t.of} ${problems.length} ${t.completed}`}
+          detail={`${coach.metrics.completedProblems} ${t.of} ${coach.metrics.attemptedProblems} ${t.attempted}`}
           icon={<BookOpenCheck className="size-5" />}
           accent="success"
         />
         <Metric
           label={t.hintUsage}
           value={`${hintUsageRate}%`}
-          detail={`${hintCount} / ${runs.length} ${t.runs}`}
+          detail={`${coach.metrics.hintedProblems} / ${coach.metrics.attemptedProblems} ${t.runs}`}
           icon={<CircleHelp className="size-5" />}
           accent="amber"
         />
         <Metric
           label={t.correction}
           value={`${correctionRate}%`}
-          detail={`${correctedIds} ${t.correctedDetail}`}
+          detail={`${coach.metrics.correctedProblems} ${t.correctedDetail}`}
           icon={<CheckCircle2 className="size-5" />}
           accent="success"
         />
         <Metric
           label={t.streak}
           value={`${streak} ${t.days}`}
-          detail={`${Math.min(completedIds.size, weeklyGoal)} / ${weeklyGoal} ${t.weeklyGoal}`}
+          detail={`${Math.min(weeklyCompletedCount, weeklyGoal)} / ${weeklyGoal} ${t.weeklyGoal}`}
           icon={<Flame className="size-5" />}
           accent="amber"
         />
@@ -350,11 +301,11 @@ export function ProgressPage() {
           description={t.masteryDetail}
         />
         <div className="grid gap-x-8 gap-y-5 p-4 sm:grid-cols-2 md:p-5 xl:grid-cols-3">
-          {topicMastery.map(({ topic, value, done, total }) => (
+          {topicMastery.map(({ topic, value, completedCount, totalCount }) => (
             <div key={topic}>
               <div className="flex items-center gap-3">
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                  {topic}
+                  {TOPIC_LABELS[topic][locale]}
                 </span>
                 <Badge
                   variant="outline"
@@ -375,7 +326,7 @@ export function ProgressPage() {
               <Progress value={value} className="mt-2 h-1.5" />
               <div className="text-muted-foreground mt-1.5 flex justify-between text-[11px]">
                 <span>
-                  {done} / {total}
+                  {completedCount} / {totalCount}
                 </span>
                 <span>{value}%</span>
               </div>
@@ -465,26 +416,4 @@ function buildActivity(runs: CodeRunResult[], locale: 'zh' | 'en') {
       count,
     };
   });
-}
-
-function calculateStreak(runs: CodeRunResult[]) {
-  const days = new Set(
-    runs
-      .map((run) => run.executedAt)
-      .filter(Boolean)
-      .map((value) => {
-        const date = new Date(value);
-        date.setHours(0, 0, 0, 0);
-        return date.getTime();
-      })
-  );
-  let streak = 0;
-  const cursor = new Date();
-  cursor.setHours(0, 0, 0, 0);
-  if (!days.has(cursor.getTime())) cursor.setDate(cursor.getDate() - 1);
-  while (days.has(cursor.getTime())) {
-    streak += 1;
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  return streak;
 }

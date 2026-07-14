@@ -51,42 +51,6 @@
               "url": "/admin/posts"
             }
           ]
-        },
-        {
-          "title": "Payments & Credits",
-          "icon": "DollarSign",
-          "children": [
-            {
-              "title": "Payments",
-              "url": "/admin/payments",
-              "icon": "DollarSign"
-            },
-            {
-              "title": "Subscriptions",
-              "url": "/admin/subscriptions",
-              "icon": "CreditCard"
-            },
-            {
-              "title": "Credits",
-              "url": "/admin/credits",
-              "icon": "Coins"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "title": "Business",
-      "items": [
-        {
-          "title": "AI Tasks",
-          "url": "/admin/ai-tasks",
-          "icon": "Brain"
-        },
-        {
-          "title": "AI Chats",
-          "url": "/admin/chats",
-          "icon": "MessageCircle"
         }
       ]
     }
@@ -97,11 +61,6 @@
         "title": "Settings",
         "url": "/admin/settings/general",
         "icon": "Settings"
-      },
-      {
-        "title": "API Keys",
-        "url": "/admin/apikeys",
-        "icon": "Key"
       }
     ]
   },

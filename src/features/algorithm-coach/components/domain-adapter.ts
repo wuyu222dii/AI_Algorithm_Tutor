@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- This boundary reads legacy versions of browser-persisted state. */
+import { isPracticeSessionCompleted } from '../learning-progress';
 import type {
   CodeRunResult,
   Language,
@@ -94,17 +95,26 @@ export function getArtifacts(
 
 export function getCompletedProblemIds(state: CoachStateLike | undefined) {
   const direct = state?.completedProblemIds ?? state?.completedProblems;
-  if (Array.isArray(direct)) return new Set(direct.map(String));
+  if (Array.isArray(direct)) {
+    return new Set(
+      direct.map(String).filter((problemId) => {
+        const session = state?.sessions?.[problemId];
+        return session ? isPracticeSessionCompleted(session) : true;
+      })
+    );
+  }
 
   const completedSessions = Object.values(state?.sessions ?? {})
-    .filter((session: any) => Boolean(session.completedAt))
+    .filter((session: any) => {
+      return isPracticeSessionCompleted(session);
+    })
     .map((session: any) => String(session.problemSlug ?? ''))
     .filter(Boolean);
 
   return new Set([
     ...completedSessions,
     ...getRuns(state)
-      .filter((run: any) => run.passed ?? run.success)
+      .filter((run) => runPassed(run) && run.testScope !== 'sample')
       .map((run: any) =>
         String(run.problemId ?? run.problemSlug ?? run.problem?.id ?? '')
       )

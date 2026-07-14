@@ -31,6 +31,7 @@ export const testCaseResultSchema = z.object({
 });
 
 export const codeRunResultSchema = z.object({
+  id: z.string().min(1).max(240).optional(),
   problemSlug: z.string().min(1).max(120),
   language: languageSchema,
   status: z.enum([
@@ -47,6 +48,9 @@ export const codeRunResultSchema = z.object({
   error: z.string().max(8000).optional(),
   durationMs: z.number().min(0).max(60_000),
   executedAt: z.string().max(80),
+  codeSnapshot: z.string().max(30_000).optional(),
+  testScope: z.enum(['sample', 'full', 'unknown']).optional(),
+  submitted: z.boolean().optional(),
 });
 
 const localizedStringSchema = z.union([
@@ -64,52 +68,76 @@ export const problemContextSchema = z
     constraints: z.array(localizedStringSchema).max(20).optional(),
     entryPoint: z.string().max(100).optional(),
   })
-  .passthrough();
+  .strip();
+
+const commonRequestShape = {
+  locale: localeSchema.default('zh'),
+  problemSlug: z.string().max(120).optional(),
+  problemId: z.string().max(120).optional(),
+  problem: problemContextSchema.optional(),
+  language: languageSchema.optional(),
+  code: z.string().max(30_000).optional(),
+  runResult: codeRunResultSchema.optional(),
+  experimentVariant: z.enum(['A', 'B']).default('A'),
+};
+
+const parseRequestSchema = z.object({
+  ...commonRequestShape,
+  action: z.literal('parse'),
+  statement: z.string().trim().min(1).max(12_000),
+});
+
+const diagnoseRequestSchema = z.object({
+  ...commonRequestShape,
+  action: z.literal('diagnose'),
+  statement: z.string().max(12_000).optional(),
+  runResult: codeRunResultSchema
+    .refine(
+      (result) =>
+        result.status !== 'passed' &&
+        !(
+          result.totalTests > 0 &&
+          result.passedTests === result.totalTests &&
+          result.testResults.every((test) => test.passed)
+        ),
+      { message: 'diagnose requires a failed run result' }
+    )
+    .refine(
+      (result) =>
+        Boolean(result.error) ||
+        result.testResults.some((test) => !test.passed),
+      { message: 'diagnose requires concrete error or failed-test evidence' }
+    ),
+});
+
+const hintRequestSchema = z.object({
+  ...commonRequestShape,
+  action: z.literal('hint'),
+  statement: z.string().max(12_000).optional(),
+  hintLevel: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+});
+
+const counterexampleRequestSchema = z.object({
+  ...commonRequestShape,
+  action: z.literal('counterexample'),
+  statement: z.string().max(12_000).optional(),
+});
+
+const reviewCardRequestSchema = z.object({
+  ...commonRequestShape,
+  action: z.literal('review_card'),
+  statement: z.string().max(12_000).optional(),
+});
 
 export const coachRequestSchema = z
-  .object({
-    action: z.enum([
-      'parse',
-      'diagnose',
-      'hint',
-      'counterexample',
-      'review_card',
-    ]),
-    locale: localeSchema.default('zh'),
-    problemSlug: z.string().max(120).optional(),
-    problemId: z.string().max(120).optional(),
-    problem: problemContextSchema.optional(),
-    statement: z.string().max(12_000).optional(),
-    language: languageSchema.optional(),
-    code: z.string().max(30_000).optional(),
-    runResult: codeRunResultSchema.optional(),
-    hintLevel: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
-    experimentVariant: z.enum(['A', 'B']).default('A'),
-    model: z.string().max(100).optional(),
-  })
-  .strip()
+  .discriminatedUnion('action', [
+    parseRequestSchema,
+    diagnoseRequestSchema,
+    hintRequestSchema,
+    counterexampleRequestSchema,
+    reviewCardRequestSchema,
+  ])
   .superRefine((value, context) => {
-    if (value.action === 'parse' && !value.statement?.trim()) {
-      context.addIssue({
-        code: 'custom',
-        path: ['statement'],
-        message: 'statement is required for parse',
-      });
-    }
-    if (value.action === 'diagnose' && !value.runResult) {
-      context.addIssue({
-        code: 'custom',
-        path: ['runResult'],
-        message: 'runResult is required for diagnose',
-      });
-    }
-    if (value.action === 'hint' && !value.hintLevel) {
-      context.addIssue({
-        code: 'custom',
-        path: ['hintLevel'],
-        message: 'hintLevel is required for hint',
-      });
-    }
     if (
       value.action !== 'parse' &&
       !value.problemSlug &&
@@ -141,7 +169,6 @@ export const coachChatRequestSchema = z
     language: languageSchema.optional(),
     code: z.string().max(20_000).optional(),
     runResult: codeRunResultSchema.optional(),
-    model: z.string().max(100).optional(),
   })
   .strip()
   .superRefine((value, context) => {
@@ -169,7 +196,9 @@ function localizedValue(
 }
 
 function normalizeProblem(
-  problem: ValidatedCoachRequest['problem'],
+  problem:
+    | ValidatedCoachRequest['problem']
+    | ValidatedCoachChatRequest['problem'],
   locale: 'zh' | 'en'
 ): CoachProblemContext | undefined {
   if (!problem) return undefined;

@@ -3,11 +3,17 @@ import path from 'node:path';
 
 import { extendedProblems } from '../src/features/algorithm-coach/data/extended-problems';
 
+const hardOnly = process.argv.includes('--hard');
 const migrationPath = path.resolve(
   process.cwd(),
-  'src/config/db/migrations/0005_seed_extended_coach_catalog.sql'
+  hardOnly
+    ? 'src/config/db/migrations/0008_seed_hard_coach_catalog.sql'
+    : 'src/config/db/migrations/0005_seed_extended_coach_catalog.sql'
 );
-const catalog = JSON.stringify(extendedProblems).replaceAll('$catalog$', '');
+const selectedProblems = extendedProblems.filter((problem) =>
+  hardOnly ? problem.difficulty === 'hard' : problem.difficulty !== 'hard'
+);
+const catalog = JSON.stringify(selectedProblems).replaceAll('$catalog$', '');
 
 const sql = `WITH catalog AS (
   SELECT jsonb_array_elements($catalog$${catalog}$catalog$::jsonb) AS problem
@@ -97,7 +103,7 @@ ON CONFLICT ("id") DO UPDATE SET
 async function main() {
   await writeFile(migrationPath, sql, 'utf8');
   console.log(
-    `Generated ${migrationPath} with ${extendedProblems.length} problems.`
+    `Generated ${migrationPath} with ${selectedProblems.length} problems.`
   );
 }
 

@@ -1,3 +1,4 @@
+import { COACH_MODEL_WHITELIST } from '@/features/algorithm-coach/model';
 import postgres from 'postgres';
 
 import migrationJournal from '@/config/db/migrations/meta/_journal.json';
@@ -6,10 +7,39 @@ import type { HealthCheckResult, HealthStatus } from '@/shared/types/health';
 import packageJson from '../../../package.json';
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const TRUSTED_PROXY_HEADER_ALLOWLIST = new Set([
+  'cf-connecting-ip',
+  'x-forwarded-for',
+  'x-real-ip',
+]);
 const EXPECTED_MIGRATIONS = migrationJournal.entries.map((entry) => ({
   timestamp: entry.when,
   tag: entry.tag,
 }));
+const COACH_MODEL_ENV_NAMES = [
+  'ALGO_COACH_MODEL',
+  'ALGO_COACH_FALLBACK_MODEL',
+  ...[
+    'PARSE',
+    'DIAGNOSE',
+    'HINT',
+    'COUNTEREXAMPLE',
+    'REVIEW_CARD',
+    'CHAT',
+  ].flatMap((action) => [
+    `ALGO_COACH_${action}_MODEL`,
+    `ALGO_COACH_${action}_FALLBACK_MODEL`,
+  ]),
+] as const;
+
+type ReadinessFetch = (
+  input: string | URL | Request,
+  init?: RequestInit
+) => Promise<Response>;
+
+export interface ReadinessDependencies {
+  fetch?: ReadinessFetch;
+}
 
 function quotedIdentifier(value: string): string {
   if (!IDENTIFIER.test(value)) {
@@ -23,6 +53,28 @@ function boundedTimeout(value: string | undefined): number {
   return Number.isInteger(parsed) && parsed >= 500 && parsed <= 30_000
     ? parsed
     : 5_000;
+}
+
+function isHttpUrl(value: string | undefined): boolean {
+  if (!value?.trim()) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function invalidCoachModelSettings(env: NodeJS.ProcessEnv): string[] {
+  return COACH_MODEL_ENV_NAMES.filter((name) => {
+    const model = env[name]?.trim();
+    return (
+      Boolean(model) &&
+      !COACH_MODEL_WHITELIST.includes(
+        model as (typeof COACH_MODEL_WHITELIST)[number]
+      )
+    );
+  });
 }
 
 function ok(
@@ -71,15 +123,67 @@ export function checkRequiredConfiguration(
   }
 
   if (production) {
+    if (!env.AUTH_URL?.trim()) missing.push('AUTH_URL');
     if (!env.AUTH_SECRET?.trim() || env.AUTH_SECRET.trim().length < 32) {
       invalid.push('AUTH_SECRET');
     }
-    if (!env.OPENROUTER_API_KEY?.trim()) {
-      missing.push('OPENROUTER_API_KEY');
+    if (!env.REDIS_URL?.trim()) missing.push('REDIS_URL');
+    if (!env.REDIS_TOKEN?.trim()) missing.push('REDIS_TOKEN');
+    const trustedProxyHeaders = (env.TRUSTED_PROXY_HEADERS ?? '')
+      .split(',')
+      .map((header) => header.trim().toLowerCase())
+      .filter(Boolean);
+    if (!trustedProxyHeaders.length) {
+      missing.push('TRUSTED_PROXY_HEADERS');
+    } else if (
+      !trustedProxyHeaders.some((header) =>
+        TRUSTED_PROXY_HEADER_ALLOWLIST.has(header)
+      )
+    ) {
+      invalid.push('TRUSTED_PROXY_HEADERS');
     }
-    if (env.COACH_DEMO_FALLBACK_ENABLED === 'true') {
-      invalid.push('COACH_DEMO_FALLBACK_ENABLED');
+    if (env.DB_AUTO_MIGRATE === 'true') invalid.push('DB_AUTO_MIGRATE');
+  }
+
+  const authRequired =
+    production ||
+    env.EMAIL_AUTH_ENABLED === 'true' ||
+    env.GOOGLE_AUTH_ENABLED === 'true';
+  if (authRequired) {
+    if (!env.AUTH_URL?.trim() && !missing.includes('AUTH_URL')) {
+      missing.push('AUTH_URL');
     }
+    if (
+      (!env.AUTH_SECRET?.trim() || env.AUTH_SECRET.trim().length < 32) &&
+      !invalid.includes('AUTH_SECRET')
+    ) {
+      invalid.push('AUTH_SECRET');
+    }
+  }
+
+  if (env.AUTH_URL?.trim() && !isHttpUrl(env.AUTH_URL)) {
+    invalid.push('AUTH_URL');
+  }
+  if (env.REDIS_URL?.trim() && !isHttpUrl(env.REDIS_URL)) {
+    invalid.push('REDIS_URL');
+  }
+  if (Boolean(env.REDIS_URL?.trim()) !== Boolean(env.REDIS_TOKEN?.trim())) {
+    const missingRedisSetting = env.REDIS_URL?.trim()
+      ? 'REDIS_TOKEN'
+      : 'REDIS_URL';
+    if (!missing.includes(missingRedisSetting)) {
+      missing.push(missingRedisSetting);
+    }
+  }
+  if (env.OPENROUTER_BASE_URL?.trim() && !isHttpUrl(env.OPENROUTER_BASE_URL)) {
+    invalid.push('OPENROUTER_BASE_URL');
+  }
+  invalid.push(...invalidCoachModelSettings(env));
+  if (
+    !env.OPENROUTER_API_KEY?.trim() &&
+    (production || env.COACH_DEMO_FALLBACK_ENABLED !== 'true')
+  ) {
+    missing.push('OPENROUTER_API_KEY');
   }
 
   if (missing.length || invalid.length) {
@@ -90,6 +194,124 @@ export function checkRequiredConfiguration(
   }
 
   return ok();
+}
+
+export function checkAuthenticationConfiguration(
+  env: NodeJS.ProcessEnv = process.env
+): HealthCheckResult {
+  const required =
+    env.NODE_ENV === 'production' ||
+    env.EMAIL_AUTH_ENABLED === 'true' ||
+    env.GOOGLE_AUTH_ENABLED === 'true';
+  const baseUrlReady = isHttpUrl(env.AUTH_URL);
+  const secretReady = Boolean(
+    env.AUTH_SECRET?.trim() && env.AUTH_SECRET.trim().length >= 32
+  );
+  const googleEnabled = env.GOOGLE_AUTH_ENABLED === 'true';
+  const googleReady =
+    !googleEnabled ||
+    Boolean(env.GOOGLE_CLIENT_ID?.trim() && env.GOOGLE_CLIENT_SECRET?.trim());
+
+  if (!required && !baseUrlReady && !secretReady) {
+    return ok(undefined, {
+      mode: 'disabled',
+      required: false,
+      googleEnabled,
+    });
+  }
+  if (!baseUrlReady || !secretReady || !googleReady) {
+    return error('authentication_not_configured', undefined, {
+      baseUrlReady,
+      secretReady,
+      googleEnabled,
+      googleReady,
+    });
+  }
+  return ok(undefined, {
+    mode: 'configured',
+    googleEnabled,
+  });
+}
+
+export function checkAiConfiguration(
+  env: NodeJS.ProcessEnv = process.env
+): HealthCheckResult {
+  const liveConfigured = Boolean(env.OPENROUTER_API_KEY?.trim());
+  const demoConfigured = env.COACH_DEMO_FALLBACK_ENABLED === 'true';
+  const liveRequired = env.NODE_ENV === 'production';
+  const baseUrlReady =
+    !env.OPENROUTER_BASE_URL?.trim() || isHttpUrl(env.OPENROUTER_BASE_URL);
+  const invalidModelSettings = invalidCoachModelSettings(env);
+  const modelReady = invalidModelSettings.length === 0;
+
+  if (
+    (!liveConfigured && (liveRequired || !demoConfigured)) ||
+    !baseUrlReady ||
+    !modelReady
+  ) {
+    return error('ai_not_configured', undefined, {
+      liveConfigured,
+      demoConfigured,
+      liveRequired,
+      baseUrlReady,
+      modelReady,
+      ...(invalidModelSettings.length ? { invalidModelSettings } : {}),
+    });
+  }
+  return ok(undefined, {
+    mode: liveConfigured ? 'live' : 'demo',
+    demoFallbackEnabled: demoConfigured,
+    modelConfigured: COACH_MODEL_ENV_NAMES.some((name) =>
+      Boolean(env[name]?.trim())
+    ),
+  });
+}
+
+export async function checkRedisReadiness(
+  env: NodeJS.ProcessEnv = process.env,
+  fetcher: ReadinessFetch = globalThis.fetch
+): Promise<HealthCheckResult> {
+  const redisUrl = env.REDIS_URL?.trim().replace(/\/$/, '');
+  const redisToken = env.REDIS_TOKEN?.trim();
+  const required = env.NODE_ENV === 'production';
+
+  if (!redisUrl && !redisToken && !required) {
+    return ok(undefined, { mode: 'process-local', required: false });
+  }
+  if (!redisUrl || !redisToken || !isHttpUrl(redisUrl)) {
+    return error('redis_not_configured', undefined, {
+      required,
+      urlConfigured: Boolean(redisUrl),
+      tokenConfigured: Boolean(redisToken),
+    });
+  }
+
+  const timeoutMs = boundedTimeout(env.HEALTH_REDIS_TIMEOUT_MS);
+  const startedAt = Date.now();
+  try {
+    const response = await fetcher(redisUrl, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${redisToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(['PING']),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) {
+      return error('redis_unavailable', Date.now() - startedAt, {
+        httpStatus: response.status,
+      });
+    }
+    const payload = (await response.json()) as { result?: unknown };
+    if (payload.result !== 'PONG') {
+      return error('redis_invalid_response', Date.now() - startedAt);
+    }
+    return ok(Date.now() - startedAt, { mode: 'distributed' });
+  } catch {
+    return error('redis_unavailable', Date.now() - startedAt);
+  }
 }
 
 export function checkMigrationVersions(
@@ -126,9 +348,16 @@ export function liveHealthStatus(now = new Date()): HealthStatus {
 
 export async function readyHealthStatus(
   env: NodeJS.ProcessEnv = process.env,
-  now = new Date()
+  now = new Date(),
+  dependencies: ReadinessDependencies = {}
 ): Promise<HealthStatus> {
   const configuration = checkRequiredConfiguration(env);
+  const authentication = checkAuthenticationConfiguration(env);
+  const ai = checkAiConfiguration(env);
+  const redisPromise = checkRedisReadiness(
+    env,
+    dependencies.fetch ?? globalThis.fetch
+  );
   let database: HealthCheckResult;
   let migrations: HealthCheckResult;
   const databaseUrl = env.DATABASE_URL?.trim();
@@ -212,7 +441,15 @@ export async function readyHealthStatus(
     }
   }
 
-  const checks = { configuration, database, migrations };
+  const redis = await redisPromise;
+  const checks = {
+    configuration,
+    database,
+    migrations,
+    redis,
+    authentication,
+    ai,
+  };
   const status = Object.values(checks).every((check) => check.status === 'ok')
     ? 'ok'
     : 'error';

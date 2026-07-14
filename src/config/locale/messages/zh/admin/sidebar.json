@@ -51,42 +51,6 @@
               "url": "/admin/posts"
             }
           ]
-        },
-        {
-          "title": "支付与积分",
-          "icon": "DollarSign",
-          "children": [
-            {
-              "title": "支付",
-              "url": "/admin/payments",
-              "icon": "DollarSign"
-            },
-            {
-              "title": "订阅",
-              "url": "/admin/subscriptions",
-              "icon": "CreditCard"
-            },
-            {
-              "title": "积分",
-              "url": "/admin/credits",
-              "icon": "Coins"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "title": "业务",
-      "items": [
-        {
-          "title": "AI任务",
-          "url": "/admin/ai-tasks",
-          "icon": "Brain"
-        },
-        {
-          "title": "AI 对话",
-          "url": "/admin/chats",
-          "icon": "MessageCircle"
         }
       ]
     }
@@ -97,11 +61,6 @@
         "title": "设置",
         "url": "/admin/settings/general",
         "icon": "Settings"
-      },
-      {
-        "title": "API密钥",
-        "url": "/admin/apikeys",
-        "icon": "Key"
       }
     ]
   },

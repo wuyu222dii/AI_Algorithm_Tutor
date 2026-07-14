@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
   BookOpenCheck,
@@ -31,6 +31,7 @@ import {
 } from '@/shared/components/ui/select';
 import { cn } from '@/shared/lib/utils';
 
+import { countNaturalWeekCompletions } from '../learning-progress';
 import { getProblemRecommendations } from '../recommendations';
 import { useCoachStore } from '../store';
 import type { Language, LearningGoal } from '../types';
@@ -64,9 +65,11 @@ const copy = {
     language: '主要编程语言',
     weekly: '每周练习量',
     weeklyUnit: '道题 / 周',
+    dailyTime: '每日可用时间',
+    dailyTimeUnit: '分钟 / 天',
     start: '开始学习',
     today: '今日学习计划',
-    todayDescription: '建议按顺序完成，预计 35 分钟。',
+    todayDescription: '建议按顺序完成，预计 {minutes} 分钟。',
     continue: '开始练习',
     completed: '已完成',
     mastery: '知识点掌握',
@@ -107,9 +110,11 @@ const copy = {
     language: 'Primary language',
     weekly: 'Weekly practice target',
     weeklyUnit: 'problems / week',
+    dailyTime: 'Daily time budget',
+    dailyTimeUnit: 'minutes / day',
     start: 'Start learning',
     today: "Today's plan",
-    todayDescription: 'Complete in order. Estimated time: 35 minutes.',
+    todayDescription: 'Complete in order. Estimated time: {minutes} minutes.',
     continue: 'Start practice',
     completed: 'Completed',
     mastery: 'Topic mastery',
@@ -159,6 +164,7 @@ export function LearnPage() {
   const locale = localeKey(useLocale());
   const t = copy[locale];
   const coach = useCoachStore();
+  const trackEvent = coach.trackEvent;
   const state = coach.state;
   const profile = getProfile(state);
   const [editing, setEditing] = useState(false);
@@ -169,15 +175,40 @@ export function LearnPage() {
   const [weeklyGoal, setWeeklyGoal] = useState(
     String(profile?.weeklyTarget ?? profile?.weeklyGoal ?? 5)
   );
+  const [dailyMinutes, setDailyMinutes] = useState(
+    String(profile?.dailyMinutes ?? 30)
+  );
   const completedIds = getCompletedProblemIds(state);
   const runs = getRuns(state);
   const completedCount = completedIds.size;
+  const weeklyCompletedCount = useMemo(
+    () => countNaturalWeekCompletions(state),
+    [state]
+  );
   const onboarded = isOnboarded(state) && !editing;
 
   const todaysProblems = useMemo(
-    () => getProblemRecommendations(state, { limit: 3 }),
-    [state]
+    () =>
+      getProblemRecommendations(state, {
+        limit: 3,
+        reviewItems: coach.reviewItems,
+        maxMinutes: Number(profile?.dailyMinutes ?? dailyMinutes),
+      }),
+    [coach.reviewItems, dailyMinutes, profile?.dailyMinutes, state]
   );
+  const todayEstimatedMinutes = todaysProblems.reduce(
+    (total, item) => total + item.problem.estimatedMinutes,
+    0
+  );
+  const onboardingStarted = state.events.some(
+    (event) => event.name === 'onboarding_started'
+  );
+
+  useEffect(() => {
+    if (coach.hydrated && !profile && !onboardingStarted) {
+      trackEvent('onboarding_started');
+    }
+  }, [coach.hydrated, onboardingStarted, profile, trackEvent]);
 
   const recommendationReason = {
     retry: t.reasonRetry,
@@ -192,7 +223,7 @@ export function LearnPage() {
   );
   const weeklyProgress = Math.min(
     100,
-    Math.round((completedCount / Math.max(weeklyTarget, 1)) * 100)
+    Math.round((weeklyCompletedCount / Math.max(weeklyTarget, 1)) * 100)
   );
 
   function handleOnboarding(event: FormEvent) {
@@ -201,6 +232,7 @@ export function LearnPage() {
       goal: goal as LearningGoal,
       preferredLanguage: language,
       weeklyTarget: Number(weeklyGoal),
+      dailyMinutes: Number(dailyMinutes),
     });
     setEditing(false);
   }
@@ -290,6 +322,24 @@ export function LearnPage() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="mt-5 space-y-2">
+                <Label htmlFor="daily-minutes">{t.dailyTime}</Label>
+                <Select value={dailyMinutes} onValueChange={setDailyMinutes}>
+                  <SelectTrigger
+                    id="daily-minutes"
+                    className="w-full rounded-md"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[20, 30, 45, 60].map((minutes) => (
+                      <SelectItem key={minutes} value={String(minutes)}>
+                        {minutes} {t.dailyTimeUnit}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <Button
                 type="submit"
                 className="mt-6 w-full"
@@ -339,7 +389,7 @@ export function LearnPage() {
             <CalendarDays className="text-primary size-5" />
           </div>
           <p className="mt-3 text-2xl font-semibold tabular-nums">
-            {Math.min(completedCount, weeklyTarget)} / {weeklyTarget}
+            {Math.min(weeklyCompletedCount, weeklyTarget)} / {weeklyTarget}
           </p>
           <Progress value={weeklyProgress} className="mt-3" />
         </div>
@@ -350,7 +400,10 @@ export function LearnPage() {
           <PanelHeading
             icon={<Play className="size-4" />}
             title={t.today}
-            description={t.todayDescription}
+            description={t.todayDescription.replace(
+              '{minutes}',
+              String(todayEstimatedMinutes)
+            )}
             action={
               <Button asChild variant="ghost" size="sm">
                 <Link href="/problems">{t.explore}</Link>

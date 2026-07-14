@@ -32,9 +32,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Run limited live evaluation
-        if: env.OPENROUTER_API_KEY != ''
+      - name: Require live evaluation credentials
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "OPENROUTER_API_KEY must be configured for the live evaluation workflow."
+            exit 1
+          fi
+      - name: Run live evaluation quality gate
         run: pnpm eval:coach:live
-      - name: Explain skipped evaluation
-        if: env.OPENROUTER_API_KEY == ''
-        run: echo "OPENROUTER_API_KEY is not configured; live evaluation was skipped."

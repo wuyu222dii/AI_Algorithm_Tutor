@@ -5,9 +5,7 @@ import {
   ReactNode,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
-  useRef,
   useState,
 } from 'react';
 
@@ -38,7 +36,6 @@ export const AppContextProvider = ({ children }: { children: ReactNode }) => {
 
   // sign user
   const [user, setUser] = useState<User | null>(null);
-  const userRef = useRef<User | null>(null);
 
   // is check sign (true during SSR and initial render to avoid hydration mismatch when auth is enabled)
   const [isCheckSign, setIsCheckSign] = useState(!!envConfigs.auth_secret);
@@ -70,30 +67,8 @@ export const AppContextProvider = ({ children }: { children: ReactNode }) => {
     }
   }, []);
 
-  const fetchUserCredits = useCallback(async () => {
-    try {
-      if (!userRef.current) {
-        return;
-      }
-
-      const resp = await fetch('/api/user/get-user-credits', {
-        method: 'POST',
-      });
-      if (!resp.ok) {
-        throw new Error(`fetch failed with status: ${resp.status}`);
-      }
-      const { code, message, data } = await resp.json();
-      if (code !== 0) {
-        throw new Error(message);
-      }
-
-      setUser((prev) => (prev ? { ...prev, credits: data } : prev));
-    } catch (e) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.log('fetch user credits failed:', e);
-      }
-    }
-  }, []);
+  // Credits and payments are outside the public-beta product surface.
+  const fetchUserCredits = useCallback(async () => {}, []);
 
   const fetchUserInfo = useCallback(async () => {
     try {
@@ -115,10 +90,6 @@ export const AppContextProvider = ({ children }: { children: ReactNode }) => {
       }
     }
   }, []);
-
-  useEffect(() => {
-    userRef.current = user;
-  }, [user]);
 
   const value = useMemo(
     () => ({

@@ -1,7 +1,7 @@
 'use client';
 
 import { ReactNode, useMemo } from 'react';
-import { LoaderCircle } from 'lucide-react';
+import { LoaderCircle, RefreshCw } from 'lucide-react';
 import { useLocale } from 'next-intl';
 
 import { useSession } from '@/core/auth/client';
@@ -11,6 +11,11 @@ import { SignUser } from '@/shared/blocks/sign/sign-user';
 import { Badge } from '@/shared/components/ui/badge';
 import { Button } from '@/shared/components/ui/button';
 import { SidebarTrigger } from '@/shared/components/ui/sidebar';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/shared/components/ui/tooltip';
 import { cn } from '@/shared/lib/utils';
 import { UserNav } from '@/shared/types/blocks/common';
 import { Sidebar as SidebarType } from '@/shared/types/blocks/dashboard';
@@ -18,7 +23,7 @@ import { Sidebar as SidebarType } from '@/shared/types/blocks/dashboard';
 import { createCoachStorageScope } from '../storage';
 import { CoachProvider, useCoachStore } from '../store';
 
-const pageNames = {
+export const pageNames = {
   zh: {
     learn: '学习中心',
     problems: '题库',
@@ -31,6 +36,25 @@ const pageNames = {
     sync: '云端已同步',
     syncing: '同步中',
     syncError: '同步失败',
+    retrySync: '重试同步',
+    syncErrors: {
+      conflict: {
+        label: '数据冲突',
+        description: '云端数据冲突未能自动合并，请手动重试同步。',
+      },
+      network: {
+        label: '网络中断',
+        description: '当前无法连接同步服务，请检查网络后重试。',
+      },
+      auth: {
+        label: '登录失效',
+        description: '登录状态已失效，请重新登录后重试同步。',
+      },
+      server: {
+        label: '服务异常',
+        description: '同步服务暂时不可用，你的本地学习数据仍已保留。',
+      },
+    },
     guest: '访客本地',
     profile: '个人资料',
     security: '安全设置',
@@ -47,6 +71,29 @@ const pageNames = {
     sync: 'Cloud synced',
     syncing: 'Syncing',
     syncError: 'Sync failed',
+    retrySync: 'Retry sync',
+    syncErrors: {
+      conflict: {
+        label: 'Data conflict',
+        description:
+          'Cloud changes could not be merged automatically. Retry the sync.',
+      },
+      network: {
+        label: 'Network offline',
+        description:
+          'The sync service cannot be reached. Check your connection and retry.',
+      },
+      auth: {
+        label: 'Sign-in expired',
+        description:
+          'Your session has expired. Sign in again, then retry the sync.',
+      },
+      server: {
+        label: 'Service unavailable',
+        description:
+          'The sync service is temporarily unavailable. Your local learning data is preserved.',
+      },
+    },
     guest: 'Guest local',
     profile: 'Profile',
     security: 'Security',
@@ -188,14 +235,14 @@ function HydratedCoachContent({ children }: { children: ReactNode }) {
   return children;
 }
 
-function CoachSyncBadge({
+export function CoachSyncBadge({
   signedIn,
   copy,
 }: {
   signedIn: boolean;
   copy: (typeof pageNames)[keyof typeof pageNames];
 }) {
-  const { syncStatus } = useCoachStore();
+  const { retrySync, syncError, syncStatus } = useCoachStore();
   const status = signedIn ? syncStatus : 'local';
   const label = !signedIn
     ? copy.guest
@@ -204,6 +251,31 @@ function CoachSyncBadge({
       : status === 'error'
         ? copy.syncError
         : copy.sync;
+
+  if (signedIn && status === 'error') {
+    const errorCopy = copy.syncErrors[syncError ?? 'server'];
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
+            className="border-red-500/40 bg-red-500/10 text-red-700 sm:h-8 sm:w-auto sm:px-2.5 dark:text-red-300"
+            onClick={retrySync}
+            title={errorCopy.description}
+            aria-label={`${errorCopy.label}. ${errorCopy.description} ${copy.retrySync}`}
+          >
+            <RefreshCw />
+            <span className="hidden sm:inline">{errorCopy.label}</span>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-72">
+          {errorCopy.description} {copy.retrySync}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
 
   return (
     <Badge

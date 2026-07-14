@@ -50,6 +50,7 @@ async function handle(
       return errorResponse(
         new CoachHttpError(409, 'revision_conflict', error.message, {
           currentRevision: error.currentRevision,
+          replayedMutationIds: error.replayedMutationIds,
         }),
         traceId
       );
@@ -92,6 +93,8 @@ export async function PUT(request: Request) {
       userId,
       parsed.data.state,
       parsed.data.importedProblem,
+      parsed.data.importedDrafts,
+      parsed.data.reviewProgress,
       parsed.data.revision
     );
     return Response.json(

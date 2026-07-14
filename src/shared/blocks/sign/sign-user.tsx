@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ComponentProps } from 'react';
 import { Fragment } from 'react/jsx-runtime';
-import { Coins, LayoutDashboard, Loader2, LogOut, User } from 'lucide-react';
+import { Coins, Loader2, LogOut, User } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import { authClient, signOut, useSession } from '@/core/auth/client';
@@ -201,18 +201,6 @@ export function SignUser({
                 <DropdownMenuSeparator />
               </Fragment>
             ))}
-
-            {displayUser.isAdmin && (
-              <>
-                <DropdownMenuItem asChild>
-                  <Link className="w-full cursor-pointer" href="/admin">
-                    <LayoutDashboard />
-                    {t('admin_title')}
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-              </>
-            )}
 
             {userNav?.show_sign_out && (
               <DropdownMenuItem

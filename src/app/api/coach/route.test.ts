@@ -4,9 +4,12 @@ import { POST } from './route';
 
 const mocks = vi.hoisted(() => {
   class MockCoachModelError extends Error {
+    public readonly attempts = 1;
+
     constructor(
       message: string,
-      public readonly code: 'model_not_allowed' | 'provider_failed'
+      public readonly code: 'model_not_allowed' | 'provider_failed',
+      public readonly reason = 'unknown'
     ) {
       super(message);
       this.name = 'CoachModelError';
@@ -15,18 +18,27 @@ const mocks = vi.hoisted(() => {
 
   return {
     CoachModelError: MockCoachModelError,
+    acquireCoachCapacity: vi.fn(),
+    commitCoachFailedUsage: vi.fn(),
+    commitCoachUsage: vi.fn(),
     enforceCoachRateLimits: vi.fn(),
     generateLiveArtifact: vi.fn(),
     getCoachRuntimeConfig: vi.fn(),
     recordOperationalEvent: vi.fn(),
+    releaseCoachCapacity: vi.fn(),
   };
 });
 
 vi.mock('@/features/algorithm-coach/rate-limit.server', () => ({
+  acquireCoachCapacity: mocks.acquireCoachCapacity,
+  commitCoachFailedUsage: mocks.commitCoachFailedUsage,
+  commitCoachUsage: mocks.commitCoachUsage,
   enforceCoachRateLimits: mocks.enforceCoachRateLimits,
+  releaseCoachCapacity: mocks.releaseCoachCapacity,
 }));
 
 vi.mock('@/features/algorithm-coach/server', () => ({
+  COACH_ARTIFACT_MAX_OUTPUT_TOKENS: 500,
   COACH_PROMPT_VERSION: 'coach-test-v1',
   CoachModelError: mocks.CoachModelError,
   generateLiveArtifact: mocks.generateLiveArtifact,
@@ -58,6 +70,18 @@ describe('POST /api/coach provider fallback', () => {
     vi.stubEnv('VERCEL_ENV', '');
     vi.stubEnv('COACH_DEMO_FALLBACK_ENABLED', 'true');
     mocks.enforceCoachRateLimits.mockResolvedValue(null);
+    mocks.acquireCoachCapacity.mockResolvedValue({
+      id: 'lease-1',
+      identity: 'guest:test',
+      backend: 'memory',
+      reservedTokens: 1000,
+      reservedCostMicroUsd: 1000,
+      expiresAt: Date.now() + 1000,
+      settled: false,
+    });
+    mocks.commitCoachFailedUsage.mockResolvedValue(undefined);
+    mocks.commitCoachUsage.mockResolvedValue(undefined);
+    mocks.releaseCoachCapacity.mockResolvedValue(undefined);
     mocks.getCoachRuntimeConfig.mockResolvedValue({
       apiKey: 'configured-test-key',
       baseURL: 'https://provider.example/v1',
@@ -66,7 +90,8 @@ describe('POST /api/coach provider fallback', () => {
     mocks.generateLiveArtifact.mockRejectedValue(
       new mocks.CoachModelError(
         'No available channel for the configured model',
-        'provider_failed'
+        'provider_failed',
+        'unavailable'
       )
     );
     mocks.recordOperationalEvent.mockResolvedValue(undefined);
@@ -98,6 +123,10 @@ describe('POST /api/coach provider fallback', () => {
         level: 'warn',
       })
     );
+    expect(mocks.commitCoachFailedUsage).toHaveBeenCalledWith(
+      expect.anything(),
+      1
+    );
   });
 
   it('keeps provider failures visible in production', async () => {
@@ -106,11 +135,11 @@ describe('POST /api/coach provider fallback', () => {
     const response = await POST(coachRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(503);
     expect(response.headers.get('x-coach-mode')).toBeNull();
     expect(body.error).toMatchObject({
-      code: 'provider_failed',
-      message: 'The AI provider could not generate a valid coach response.',
+      code: 'provider_unavailable',
+      message: 'The AI provider is temporarily unavailable.',
     });
     expect(JSON.stringify(body)).not.toContain('No available channel');
   });
@@ -125,9 +154,30 @@ describe('POST /api/coach provider fallback', () => {
       })
     );
 
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(503);
     expect(response.headers.get('x-coach-mode')).toBeNull();
   });
+
+  it.each([
+    ['timeout', 504, 'provider_timeout'],
+    ['rate_limited', 429, 'provider_rate_limited'],
+    ['invalid_output', 502, 'provider_invalid_output'],
+  ])(
+    'maps %s provider failures to a stable HTTP error',
+    async (reason, status, code) => {
+      vi.stubEnv('NODE_ENV', 'production');
+      mocks.generateLiveArtifact.mockRejectedValueOnce(
+        new mocks.CoachModelError('provider detail', 'provider_failed', reason)
+      );
+
+      const response = await POST(coachRequest());
+      const body = await response.json();
+
+      expect(response.status).toBe(status);
+      expect(body.error.code).toBe(code);
+      expect(JSON.stringify(body)).not.toContain('provider detail');
+    }
+  );
 
   it('preserves the no-key curated problem fallback', async () => {
     mocks.getCoachRuntimeConfig.mockResolvedValue({
@@ -143,16 +193,62 @@ describe('POST /api/coach provider fallback', () => {
     expect(mocks.generateLiveArtifact).not.toHaveBeenCalled();
   });
 
-  it('returns 400 for a disallowed model without falling back', async () => {
-    mocks.getCoachRuntimeConfig.mockRejectedValue(
-      new mocks.CoachModelError('Model is not allowed', 'model_not_allowed')
-    );
+  it('ignores a client model field and uses action-based server routing', async () => {
+    mocks.generateLiveArtifact.mockResolvedValue({
+      artifact: {
+        id: 'hint-1',
+        type: 'hint',
+        locale: 'zh',
+        title: '提示',
+        summary: '从不变量开始。',
+        details: [],
+        evidence: [],
+        createdAt: new Date().toISOString(),
+      },
+      selectedModel: 'gpt-5.5',
+      attempts: 1,
+      finishReason: 'stop',
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      estimatedCostUsd: 0.00003,
+    });
 
-    const response = await POST(coachRequest());
+    const response = await POST(coachRequest({ model: 'attacker/model' }));
     const body = await response.json();
 
+    expect(response.status).toBe(200);
+    expect(body.model).toBe('gpt-5.5');
+    expect(mocks.getCoachRuntimeConfig).toHaveBeenCalledWith('hint');
+    expect(mocks.generateLiveArtifact.mock.calls[0]?.[0]).not.toHaveProperty(
+      'model'
+    );
+  });
+
+  it('rejects diagnosis for an already passing run', async () => {
+    const response = await POST(
+      coachRequest({
+        action: 'diagnose',
+        hintLevel: undefined,
+        runResult: {
+          problemSlug: 'dependency-cycle',
+          language: 'javascript',
+          status: 'passed',
+          passedTests: 1,
+          totalTests: 1,
+          testResults: [
+            {
+              testId: 'sample-1',
+              passed: true,
+              durationMs: 1,
+            },
+          ],
+          console: [],
+          durationMs: 1,
+          executedAt: new Date().toISOString(),
+        },
+      })
+    );
+
     expect(response.status).toBe(400);
-    expect(body.error.code).toBe('model_not_allowed');
-    expect(response.headers.get('x-coach-mode')).toBeNull();
+    expect(mocks.acquireCoachCapacity).not.toHaveBeenCalled();
   });
 });
