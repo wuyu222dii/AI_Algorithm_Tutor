@@ -1,4 +1,13 @@
-import { CoachLocale, Difficulty, Language, ParsedProblemDraft } from './types';
+import {
+  createTypeScriptTemplate,
+  normalizeProblemLanguageConfigs,
+} from './languages';
+import type {
+  CoachLocale,
+  Difficulty,
+  ParsedProblemDraft,
+  ProblemTemplates,
+} from './types';
 
 const TITLE_PREFIX = /^(?:题目|标题|problem|title)\s*[:：]\s*/i;
 const CONSTRAINT_MARKER =
@@ -58,12 +67,14 @@ function toPythonName(entryPoint: string): string {
     .toLowerCase();
 }
 
-function createTemplates(entryPoint: string): Record<Language, string> {
-  return {
-    javascript: `function ${entryPoint}(input) {
+function createTemplates(entryPoint: string): ProblemTemplates {
+  const javascript = `function ${entryPoint}(input) {
   // TODO: implement your solution.
   
-}`,
+}`;
+  return {
+    javascript,
+    typescript: createTypeScriptTemplate(javascript),
     python: `def ${toPythonName(entryPoint)}(input):
     # TODO: implement your solution.
     pass`,
@@ -123,13 +134,18 @@ export function parseProblemDraft(
     );
   }
 
+  const templates = createTemplates(entryPoint);
   return {
     title,
     description: statement,
     difficulty: inferDifficulty(statement),
     constraints,
     entryPoint,
-    templates: createTemplates(entryPoint),
+    templates,
+    languageConfigs: normalizeProblemLanguageConfigs({
+      entryPoint,
+      templates,
+    }),
     tests: [],
     testCoverage: 'none',
     warnings,

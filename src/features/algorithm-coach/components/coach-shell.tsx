@@ -20,8 +20,10 @@ import { cn } from '@/shared/lib/utils';
 import { UserNav } from '@/shared/types/blocks/common';
 import { Sidebar as SidebarType } from '@/shared/types/blocks/dashboard';
 
+import type { EnabledLanguage } from '../languages';
 import { createCoachStorageScope } from '../storage';
 import { CoachProvider, useCoachStore } from '../store';
+import type { Problem } from '../types';
 
 export const pageNames = {
   zh: {
@@ -100,7 +102,15 @@ export const pageNames = {
   },
 } as const;
 
-export function CoachShell({ children }: { children: ReactNode }) {
+export function CoachShell({
+  children,
+  enabledLanguages,
+  problems,
+}: {
+  children: ReactNode;
+  enabledLanguages: readonly EnabledLanguage[];
+  problems: readonly Problem[];
+}) {
   const locale = useLocale() === 'zh' ? 'zh' : 'en';
   const pathname = usePathname();
   const copy = pageNames[locale];
@@ -182,6 +192,8 @@ export function CoachShell({ children }: { children: ReactNode }) {
   return (
     <CoachProvider
       key={storageScope ?? 'auth-pending'}
+      enabledLanguages={enabledLanguages}
+      problems={problems}
       storageScope={storageScope}
     >
       <DashboardLayout sidebar={sidebar}>

@@ -31,6 +31,7 @@ import {
 } from '@/shared/components/ui/select';
 import { cn } from '@/shared/lib/utils';
 
+import { LANGUAGE_REGISTRY } from '../languages';
 import { countNaturalWeekCompletions } from '../learning-progress';
 import { getProblemRecommendations } from '../recommendations';
 import { useCoachStore } from '../store';
@@ -164,12 +165,13 @@ export function LearnPage() {
   const locale = localeKey(useLocale());
   const t = copy[locale];
   const coach = useCoachStore();
+  const enabledLanguages = coach.enabledLanguages;
   const trackEvent = coach.trackEvent;
   const state = coach.state;
   const profile = getProfile(state);
   const [editing, setEditing] = useState(false);
   const [goal, setGoal] = useState(String(profile?.goal ?? 'interview'));
-  const [language, setLanguage] = useState<Language>(
+  const [selectedLanguage, setLanguage] = useState<Language>(
     getPreferredLanguage(state)
   );
   const [weeklyGoal, setWeeklyGoal] = useState(
@@ -178,12 +180,18 @@ export function LearnPage() {
   const [dailyMinutes, setDailyMinutes] = useState(
     String(profile?.dailyMinutes ?? 30)
   );
+
+  const language = enabledLanguages.some(
+    (languageId) => languageId === selectedLanguage
+  )
+    ? selectedLanguage
+    : (enabledLanguages[0] ?? 'javascript');
   const completedIds = getCompletedProblemIds(state);
   const runs = getRuns(state);
   const completedCount = completedIds.size;
   const weeklyCompletedCount = useMemo(
-    () => countNaturalWeekCompletions(state),
-    [state]
+    () => countNaturalWeekCompletions(state, { catalog: coach.problems }),
+    [coach.problems, state]
   );
   const onboarded = isOnboarded(state) && !editing;
 
@@ -193,8 +201,15 @@ export function LearnPage() {
         limit: 3,
         reviewItems: coach.reviewItems,
         maxMinutes: Number(profile?.dailyMinutes ?? dailyMinutes),
+        catalog: coach.problems,
       }),
-    [coach.reviewItems, dailyMinutes, profile?.dailyMinutes, state]
+    [
+      coach.problems,
+      coach.reviewItems,
+      dailyMinutes,
+      profile?.dailyMinutes,
+      state,
+    ]
   );
   const todayEstimatedMinutes = todaysProblems.reduce(
     (total, item) => total + item.problem.estimatedMinutes,
@@ -302,8 +317,11 @@ export function LearnPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="javascript">{t.javascript}</SelectItem>
-                    <SelectItem value="python">{t.python}</SelectItem>
+                    {enabledLanguages.map((languageId) => (
+                      <SelectItem key={languageId} value={languageId}>
+                        {LANGUAGE_REGISTRY[languageId].label}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

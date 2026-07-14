@@ -20,6 +20,7 @@ import {
   compactCoachSyncQueue,
   createCoachSyncMutation,
   filterUnappliedCoachMutations,
+  getPracticeSessionKey,
 } from './sync';
 import {
   CoachSyncMutation,
@@ -357,6 +358,79 @@ describe('coach incremental sync', () => {
     });
     expect(merged.state.code['dependency-cycle']).toEqual(session.code);
     expect(merged.state.completedProblemIds).toEqual(['dependency-cycle']);
+    expect(applyCoachSyncMutation(merged, mutation)).toEqual(merged);
+  });
+
+  it('keeps same-slug sessions and code isolated by content version', () => {
+    const v1Run = {
+      ...syncRun('version-one-run', 'failed', '2026-07-14T01:00:00.000Z'),
+      problemContentVersion: 1,
+    };
+    const v2Run = {
+      ...syncRun('version-two-run', 'passed', '2026-07-15T01:00:00.000Z'),
+      problemContentVersion: 2,
+    };
+    const remoteState = createInitialCoachState();
+    remoteState.sessions['dependency-cycle'] = syncSession(
+      '2026-07-14T02:00:00.000Z',
+      {
+        problemContentVersion: 1,
+        code: { javascript: 'version-one-code' },
+        runs: [v1Run],
+        hintLevel: 3,
+      }
+    );
+    remoteState.code['dependency-cycle'] = {
+      javascript: 'version-one-code',
+    };
+    remoteState.runs = [v1Run];
+
+    const mutation: CoachSyncMutation = {
+      id: 'version-two-change',
+      baseRevision: 1,
+      createdAt: '2026-07-15T02:00:00.000Z',
+      changes: {
+        // A legacy server may still serialize this record under the bare slug.
+        sessions: {
+          'dependency-cycle': syncSession('2026-07-15T02:00:00.000Z', {
+            problemContentVersion: 2,
+            code: { javascript: 'version-two-code' },
+            runs: [v2Run],
+            hintLevel: 1,
+          }),
+        },
+        code: {
+          'dependency-cycle': { javascript: 'version-two-code' },
+        },
+        runs: [v2Run],
+      },
+    };
+    const document = {
+      state: remoteState,
+      importedProblem: null,
+      importedDrafts: [],
+      reviewProgress: createInitialReviewProgress(),
+    };
+
+    const merged = applyCoachSyncMutation(document, mutation);
+    const v2Key = getPracticeSessionKey('dependency-cycle', 2);
+    expect(merged.state.sessions['dependency-cycle']).toMatchObject({
+      problemContentVersion: 1,
+      code: { javascript: 'version-one-code' },
+      hintLevel: 3,
+    });
+    expect(merged.state.sessions['dependency-cycle'].runs).toEqual([v1Run]);
+    expect(merged.state.sessions[v2Key]).toMatchObject({
+      problemContentVersion: 2,
+      code: { javascript: 'version-two-code' },
+      hintLevel: 1,
+    });
+    expect(merged.state.sessions[v2Key].runs).toEqual([v2Run]);
+    expect(merged.state.code['dependency-cycle']?.javascript).toBe(
+      'version-one-code'
+    );
+    expect(merged.state.code[v2Key]?.javascript).toBe('version-two-code');
+    expect(merged.state.runs).toEqual([v1Run, v2Run]);
     expect(applyCoachSyncMutation(merged, mutation)).toEqual(merged);
   });
 

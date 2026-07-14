@@ -23,6 +23,38 @@ export interface CoachSyncDocument {
   reviewProgress: ReviewProgressState;
 }
 
+const SESSION_VERSION_SEPARATOR = '::v';
+
+export function normalizeProblemContentVersion(
+  contentVersion: number | undefined
+): number {
+  return Number.isInteger(contentVersion) && Number(contentVersion) > 0
+    ? Number(contentVersion)
+    : 1;
+}
+
+/** Version 1 keeps the original slug key for existing local and cloud data. */
+export function getPracticeSessionKey(
+  problemSlug: string,
+  contentVersion: number | undefined = 1
+): string {
+  const version = normalizeProblemContentVersion(contentVersion);
+  return version === 1
+    ? problemSlug
+    : `${problemSlug}${SESSION_VERSION_SEPARATOR}${version}`;
+}
+
+function slugFromSessionKey(key: string): string {
+  const separatorIndex = key.lastIndexOf(SESSION_VERSION_SEPARATOR);
+  if (separatorIndex < 1) return key;
+  const version = Number(
+    key.slice(separatorIndex + SESSION_VERSION_SEPARATOR.length)
+  );
+  return Number.isInteger(version) && version > 1
+    ? key.slice(0, separatorIndex)
+    : key;
+}
+
 export function coachSyncRetryDelay(attempt: number): number {
   const safeAttempt = Number.isInteger(attempt) ? Math.max(0, attempt) : 0;
   return Math.min(30_000, 1000 * 2 ** safeAttempt);
@@ -66,17 +98,18 @@ function changedArrayValues<T>(
 }
 
 function runKey(run: CodeRunResult): string {
-  return (
+  return [
+    run.problemSlug,
+    normalizeProblemContentVersion(run.problemContentVersion),
     run.id ??
-    [
-      run.problemSlug,
-      run.language,
-      run.executedAt,
-      run.status,
-      run.passedTests,
-      run.totalTests,
-    ].join('|')
-  );
+      [
+        run.language,
+        run.executedAt,
+        run.status,
+        run.passedTests,
+        run.totalTests,
+      ].join('|'),
+  ].join('|');
 }
 
 function timestamp(value: string | undefined): number {
@@ -152,19 +185,79 @@ function mergePracticeSession(
   return merged;
 }
 
+function normalizePracticeSession(
+  session: PracticeSession,
+  fallbackKey: string
+): PracticeSession {
+  const problemSlug = session.problemSlug || slugFromSessionKey(fallbackKey);
+  const problemContentVersion = normalizeProblemContentVersion(
+    session.problemContentVersion
+  );
+  return {
+    ...session,
+    problemSlug,
+    problemContentVersion,
+    runs: (session.runs ?? [])
+      .filter(
+        (run) =>
+          normalizeProblemContentVersion(
+            run.problemContentVersion ?? problemContentVersion
+          ) === problemContentVersion
+      )
+      .map((run) => ({
+        ...run,
+        problemSlug,
+        problemContentVersion,
+      })),
+  };
+}
+
+function upsertSession(
+  sessions: Record<string, PracticeSession>,
+  rawKey: string,
+  session: PracticeSession
+): void {
+  const normalized = normalizePracticeSession(session, rawKey);
+  const key = getPracticeSessionKey(
+    normalized.problemSlug,
+    normalized.problemContentVersion
+  );
+  const existing = sessions[key];
+  sessions[key] = existing
+    ? mergePracticeSession(existing, normalized, normalized.problemSlug)
+    : normalized;
+}
+
+function normalizeSessions(
+  sessions: Record<string, PracticeSession>
+): Record<string, PracticeSession> {
+  const normalized: Record<string, PracticeSession> = {};
+  for (const [key, session] of Object.entries(sessions)) {
+    upsertSession(normalized, key, session);
+  }
+  return normalized;
+}
+
 function mergeSessions(
   current: Record<string, PracticeSession>,
   incoming: Record<string, PracticeSession> | undefined
 ): Record<string, PracticeSession> {
-  if (!incoming) return current;
-  const merged = { ...current };
-  for (const [problemSlug, session] of Object.entries(incoming)) {
-    const existing = merged[problemSlug];
-    merged[problemSlug] = existing
-      ? mergePracticeSession(existing, session, problemSlug)
-      : { ...session, problemSlug };
+  const merged = normalizeSessions(current);
+  for (const [key, session] of Object.entries(incoming ?? {})) {
+    upsertSession(merged, key, session);
   }
   return merged;
+}
+
+function resolveSessionCodeKey(
+  rawKey: string,
+  sessions: Record<string, PracticeSession>
+): string {
+  if (sessions[rawKey]) return rawKey;
+  const candidates = Object.entries(sessions).filter(
+    ([, session]) => session.problemSlug === rawKey
+  );
+  return candidates.length === 1 ? candidates[0][0] : rawKey;
 }
 
 function mergeSessionCode(
@@ -177,21 +270,41 @@ function mergeSessionCode(
   code: CoachState['code'];
 } {
   const synchronizedSessions = { ...sessions };
-  const code: CoachState['code'] = { ...current.code };
+  const code: CoachState['code'] = {};
 
-  for (const [problemSlug, incomingCode] of Object.entries(
-    changes.code ?? {}
-  )) {
-    const session = synchronizedSessions[problemSlug];
+  for (const [rawKey, storedCode] of Object.entries(current.code)) {
+    const key = resolveSessionCodeKey(rawKey, synchronizedSessions);
+    code[key] = { ...code[key], ...storedCode };
+  }
+
+  const changedSessionKeyByRawKey = new Map(
+    Object.entries(changes.sessions ?? {}).map(([rawKey, session]) => {
+      const normalized = normalizePracticeSession(session, rawKey);
+      return [
+        rawKey,
+        getPracticeSessionKey(
+          normalized.problemSlug,
+          normalized.problemContentVersion
+        ),
+      ] as const;
+    })
+  );
+  const changedSessionKeys = new Set(changedSessionKeyByRawKey.values());
+
+  for (const [rawKey, incomingCode] of Object.entries(changes.code ?? {})) {
+    const sessionKey =
+      changedSessionKeyByRawKey.get(rawKey) ??
+      resolveSessionCodeKey(rawKey, synchronizedSessions);
+    const session = synchronizedSessions[sessionKey];
     if (!session) {
-      code[problemSlug] = { ...code[problemSlug], ...incomingCode };
+      code[sessionKey] = { ...code[sessionKey], ...incomingCode };
       continue;
     }
     if (
-      !changes.sessions?.[problemSlug] &&
+      !changedSessionKeys.has(sessionKey) &&
       timestamp(mutationCreatedAt) >= timestamp(session.updatedAt)
     ) {
-      synchronizedSessions[problemSlug] = {
+      synchronizedSessions[sessionKey] = {
         ...session,
         code: { ...session.code, ...incomingCode },
         updatedAt: laterTimestamp(session.updatedAt, mutationCreatedAt),
@@ -199,8 +312,8 @@ function mergeSessionCode(
     }
   }
 
-  for (const [problemSlug, session] of Object.entries(synchronizedSessions)) {
-    code[problemSlug] = { ...session.code };
+  for (const [sessionKey, session] of Object.entries(synchronizedSessions)) {
+    code[sessionKey] = { ...session.code };
   }
   return { sessions: synchronizedSessions, code };
 }

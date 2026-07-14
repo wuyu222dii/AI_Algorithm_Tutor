@@ -1,4 +1,5 @@
 import { problems } from './data/problems';
+import { getProblemEntryPoint, getProblemTemplate } from './languages';
 import { CoachRequest, DiagnosisCategory } from './types';
 
 export interface CoachEvalCase {
@@ -381,7 +382,7 @@ function catalogEvalCases(): CoachEvalCase[] {
         locale,
         problemSlug: problem.slug,
         language: 'javascript',
-        code: problem.templates.javascript,
+        code: getProblemTemplate(problem, 'javascript'),
         hintLevel,
         experimentVariant: index % 2 === 0 ? 'A' : 'B',
         problem: {
@@ -391,7 +392,7 @@ function catalogEvalCases(): CoachEvalCase[] {
           difficulty: problem.difficulty,
           topics: problem.topics,
           constraints: problem.constraints.map((item) => item[locale]),
-          entryPoint: problem.entryPoint,
+          entryPoint: getProblemEntryPoint(problem, 'javascript'),
         },
       },
       expected: { hintLevel, noAnswerLeakage: true },
@@ -406,7 +407,7 @@ function catalogEvalCases(): CoachEvalCase[] {
         locale,
         problemSlug: problem.slug,
         language: 'python',
-        code: problem.templates.python,
+        code: getProblemTemplate(problem, 'python'),
         experimentVariant: index % 2 === 0 ? 'B' : 'A',
         problem: {
           slug: problem.slug,
@@ -415,7 +416,7 @@ function catalogEvalCases(): CoachEvalCase[] {
           difficulty: problem.difficulty,
           topics: problem.topics,
           constraints: problem.constraints.map((item) => item[locale]),
-          entryPoint: problem.entryPoint,
+          entryPoint: getProblemEntryPoint(problem, 'python'),
         },
       },
       expected: { reviewCardRequired: true, noAnswerLeakage: true },

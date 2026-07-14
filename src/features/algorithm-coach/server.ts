@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 import { getAllConfigs } from '@/shared/models/config';
 
-import { getLocalizedProblem } from './data/problems';
+import { normalizeProblemLanguageConfigs } from './languages';
 import {
   classifyCoachProviderError,
   COACH_MODEL_WHITELIST,
@@ -177,23 +177,10 @@ function createId(type: string): string {
 
 function buildProblemContext(request: CoachRequest | CoachChatRequest) {
   const locale = request.locale ?? 'zh';
-  const slug = request.problemSlug ?? request.problem?.slug;
-  const known = slug ? getLocalizedProblem(slug, locale) : undefined;
-  const problem = known
-    ? {
-        slug: known.slug,
-        title: known.title,
-        description: known.description,
-        difficulty: known.difficulty,
-        topics: known.topics,
-        constraints: known.constraints,
-        entryPoint: known.entryPoint,
-      }
-    : request.problem;
 
   return {
     locale,
-    problem,
+    problem: request.problem,
     language: request.language,
     code: request.code,
     runResult: request.runResult,
@@ -362,6 +349,10 @@ function normalizeLiveArtifact(
     const fallbackDraft = parseProblemDraft(request.statement ?? '', locale);
     artifact.draft = {
       ...output.draft,
+      languageConfigs: normalizeProblemLanguageConfigs({
+        entryPoint: output.draft.entryPoint,
+        templates: output.draft.templates,
+      }),
       tests: [],
       testCoverage: 'none',
       source: 'imported',

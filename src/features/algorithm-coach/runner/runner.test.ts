@@ -35,6 +35,7 @@ class FakeWorker {
 }
 
 const problem = getProblemBySlug('first-unique-position');
+const enabledLanguages = ['javascript', 'typescript', 'python'] as const;
 
 function latestWorker(): FakeWorker {
   const worker = FakeWorker.instances.at(-1);
@@ -91,12 +92,13 @@ describe('browser code runner coordination', () => {
     vi.unstubAllGlobals();
   });
 
-  it.each<Language>(['javascript', 'python'])(
+  it.each<Language>(['javascript', 'typescript', 'python'])(
     'returns a passed result from the %s worker',
     async (language) => {
       const pending = runCode({
         problem: problem!,
         language,
+        enabledLanguages,
         code:
           language === 'python'
             ? 'def first_unique_position(values): return 0'
@@ -115,10 +117,21 @@ describe('browser code runner coordination', () => {
       });
       expect(worker.terminated).toBe(true);
       expect(worker.options?.type).toBe('module');
+      expect(worker.postedMessage).toMatchObject({
+        languageConfig: {
+          entryPoint:
+            language === 'python'
+              ? 'first_unique_position'
+              : 'firstUniquePosition',
+        },
+      });
       if (language === 'python') {
         expect(String(worker.source)).toBe(
           '/algorithm-coach-python-runner.mjs'
         );
+      }
+      if (language === 'typescript') {
+        expect(worker.options?.name).toBe('algocoach-typescript-runner');
       }
     }
   );
@@ -126,10 +139,17 @@ describe('browser code runner coordination', () => {
   it.each([
     ['javascript', 'syntax_error'],
     ['javascript', 'runtime_error'],
+    ['typescript', 'syntax_error'],
+    ['typescript', 'runtime_error'],
     ['python', 'syntax_error'],
     ['python', 'runtime_error'],
   ] as const)('preserves %s %s results', async (language, status) => {
-    const pending = runCode({ problem: problem!, language, code: 'invalid' });
+    const pending = runCode({
+      problem: problem!,
+      language,
+      enabledLanguages,
+      code: 'invalid',
+    });
     const worker = latestWorker();
     worker.emit({ type: 'ready' });
     worker.emit({ type: 'result', payload: resultPayload(status) });
@@ -143,10 +163,15 @@ describe('browser code runner coordination', () => {
     expect(worker.terminated).toBe(true);
   });
 
-  it.each<Language>(['javascript', 'python'])(
+  it.each<Language>(['javascript', 'typescript', 'python'])(
     'terminates the %s worker after the execution deadline',
     async (language) => {
-      const pending = runCode({ problem: problem!, language, code: 'loop' });
+      const pending = runCode({
+        problem: problem!,
+        language,
+        enabledLanguages,
+        code: 'loop',
+      });
       const worker = latestWorker();
       worker.emit({ type: 'ready' });
       await vi.advanceTimersByTimeAsync(3_000);
@@ -160,4 +185,37 @@ describe('browser code runner coordination', () => {
       expect(worker.terminated).toBe(true);
     }
   );
+
+  it('fails closed when a language is disabled', async () => {
+    await expect(
+      runCode({
+        problem: problem!,
+        language: 'rust',
+        enabledLanguages,
+        code: 'fn main() {}',
+      })
+    ).resolves.toMatchObject({
+      language: 'rust',
+      status: 'runtime_error',
+      error: 'Rust execution is not enabled.',
+      runnerMode: 'remote-judge',
+    });
+    expect(FakeWorker.instances).toHaveLength(0);
+  });
+
+  it('fails closed when the TypeScript feature flag is off', async () => {
+    await expect(
+      runCode({
+        problem: problem!,
+        language: 'typescript',
+        enabledLanguages: ['javascript', 'python'],
+        code: 'function firstUniquePosition(values: number[]) { return 0; }',
+      })
+    ).resolves.toMatchObject({
+      language: 'typescript',
+      status: 'runtime_error',
+      error: 'TypeScript execution is not enabled.',
+    });
+    expect(FakeWorker.instances).toHaveLength(0);
+  });
 });

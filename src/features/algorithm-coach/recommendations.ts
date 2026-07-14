@@ -1,7 +1,7 @@
-import { problems } from './data/problems';
 import {
   calculateTopicMasterySnapshots,
   createInitialReviewProgress,
+  getProblemPracticeSession,
   isPracticeSessionCompleted,
   reconcileReviewProgress,
   ReviewItem,
@@ -47,7 +47,7 @@ const GOAL_TOPIC_WEIGHT: Record<
 };
 
 function lastRunFor(state: CoachState, problem: Problem) {
-  const runs = state.sessions[problem.slug]?.runs ?? [];
+  const runs = getProblemPracticeSession(state, problem)?.runs ?? [];
   return runs[runs.length - 1];
 }
 
@@ -67,6 +67,7 @@ export function getProblemRecommendations(
     now?: Date;
     reviewItems?: Record<string, ReviewItem>;
     maxMinutes?: number;
+    catalog?: readonly Problem[];
   } = {}
 ): ProblemRecommendation[] {
   const limit = Math.max(1, options.limit ?? 3);
@@ -77,11 +78,12 @@ export function getProblemRecommendations(
       ...createInitialReviewProgress(),
       items: options.reviewItems ?? {},
     },
-    { now }
+    { now, catalog: options.catalog }
   );
   const masterySnapshots = calculateTopicMasterySnapshots(
     state,
-    reviewProgress.items
+    reviewProgress.items,
+    options.catalog
   );
   const mastery = Object.fromEntries(
     Object.entries(masterySnapshots).map(([topic, snapshot]) => [
@@ -94,8 +96,8 @@ export function getProblemRecommendations(
     state.assessments.at(-1)?.weakTopics ?? []
   );
 
-  const ranked = problems.map((problem, catalogIndex) => {
-    const session = state.sessions[problem.slug];
+  const ranked = (options.catalog ?? []).map((problem, catalogIndex) => {
+    const session = getProblemPracticeSession(state, problem);
     const lastRun = lastRunFor(state, problem);
     const completed = isPracticeSessionCompleted(session);
     const due = isReviewDue(problem, reviewProgress.items);

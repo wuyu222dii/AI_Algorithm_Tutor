@@ -1,9 +1,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-import { getProblemBySlug, problems } from './data/problems';
-import type { ProblemTopic } from './types';
+import type { Problem, ProblemTopic, ProblemVersionRef } from './types';
 
-export const ASSESSMENT_VERSION = '2026-07-v1';
+export const ASSESSMENT_VERSION = '2026-07-v2';
 export const ASSESSMENT_DURATION_MINUTES = 20;
 const ASSESSMENT_GRACE_MINUTES = 5;
 
@@ -11,6 +10,7 @@ export interface SignedAssessmentSession {
   id: string;
   version: string;
   problemSlugs: string[];
+  problemVersions: ProblemVersionRef[];
   durationMinutes: number;
   startedAt: string;
   expiresAt: string;
@@ -27,6 +27,7 @@ export interface VerifiedAssessmentResult {
   id: string;
   version: string;
   problemSlugs: string[];
+  problemVersions: ProblemVersionRef[];
   startedAt: string;
   completedAt: string;
   score: number;
@@ -86,26 +87,39 @@ function stableNumber(seed: string): number {
   return digest.readUInt32BE(0);
 }
 
-export function selectAssessmentProblems(seed: string): string[] {
+export function selectAssessmentProblems(
+  seed: string,
+  problems: readonly Problem[]
+): ProblemVersionRef[] {
   const candidates = problems.map((problem) => problem.slug);
   if (candidates.length < 2) {
     throw new Error('At least two assessment problems are required');
   }
   const firstIndex = stableNumber(`${seed}:first`) % candidates.length;
   const first = candidates[firstIndex];
-  const firstTopic = getProblemBySlug(first)?.topics[0];
+  const firstTopic = problems.find((problem) => problem.slug === first)
+    ?.topics[0];
   const alternatives = candidates.filter(
-    (slug) => slug !== first && getProblemBySlug(slug)?.topics[0] !== firstTopic
+    (slug) =>
+      slug !== first &&
+      problems.find((problem) => problem.slug === slug)?.topics[0] !==
+        firstTopic
   );
   const pool = alternatives.length
     ? alternatives
     : candidates.filter((item) => item !== first);
   const second = pool[stableNumber(`${seed}:second`) % pool.length];
-  return [first, second];
+  return [first, second].map((slug) => ({
+    slug,
+    contentVersion:
+      problems.find((problem) => problem.slug === slug)?.version
+        ?.contentVersion ?? 1,
+  }));
 }
 
 export function createSignedAssessmentSession(options: {
   id: string;
+  problems: readonly Problem[];
   now?: Date;
 }): SignedAssessmentSession {
   const now = options.now ?? new Date();
@@ -113,10 +127,15 @@ export function createSignedAssessmentSession(options: {
     now.getTime() +
       (ASSESSMENT_DURATION_MINUTES + ASSESSMENT_GRACE_MINUTES) * 60_000
   );
+  const problemVersions = selectAssessmentProblems(
+    options.id,
+    options.problems
+  );
   const payload: AssessmentTokenPayload = {
     id: options.id,
     version: ASSESSMENT_VERSION,
-    problemSlugs: selectAssessmentProblems(options.id),
+    problemSlugs: problemVersions.map((problem) => problem.slug),
+    problemVersions,
     durationMinutes: ASSESSMENT_DURATION_MINUTES,
     startedAt: now.toISOString(),
     expiresAt: expiresAt.toISOString(),
@@ -125,6 +144,26 @@ export function createSignedAssessmentSession(options: {
 }
 
 export function verifyAssessmentSession(
+  token: string,
+  problems: readonly Problem[],
+  now = new Date()
+): AssessmentTokenPayload {
+  const payload = readSignedAssessmentSession(token, now);
+  if (
+    payload.problemVersions.some((reference) => {
+      const problem = problems.find((item) => item.slug === reference.slug);
+      return (
+        !problem ||
+        (problem.version?.contentVersion ?? 1) !== reference.contentVersion
+      );
+    })
+  ) {
+    throw new Error('Assessment problem set is invalid');
+  }
+  return payload;
+}
+
+export function readSignedAssessmentSession(
   token: string,
   now = new Date()
 ): AssessmentTokenPayload {
@@ -135,7 +174,20 @@ export function verifyAssessmentSession(
   if (
     !Array.isArray(payload.problemSlugs) ||
     payload.problemSlugs.length !== 2 ||
-    payload.problemSlugs.some((slug) => !getProblemBySlug(slug))
+    !Array.isArray(payload.problemVersions) ||
+    payload.problemVersions.length !== 2 ||
+    payload.problemVersions.some(
+      (reference) =>
+        !reference ||
+        typeof reference.slug !== 'string' ||
+        !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(reference.slug) ||
+        !Number.isInteger(reference.contentVersion) ||
+        reference.contentVersion < 1
+    ) ||
+    payload.problemVersions.some(
+      (reference, index) => payload.problemSlugs[index] !== reference.slug
+    ) ||
+    new Set(payload.problemSlugs).size !== payload.problemSlugs.length
   ) {
     throw new Error('Assessment problem set is invalid');
   }
@@ -154,10 +206,11 @@ export function verifyAssessmentSession(
 export function completeSignedAssessment(options: {
   token: string;
   runs: AssessmentRunClaim[];
+  problems: readonly Problem[];
   now?: Date;
 }): VerifiedAssessmentResult {
   const now = options.now ?? new Date();
-  const session = verifyAssessmentSession(options.token, now);
+  const session = verifyAssessmentSession(options.token, options.problems, now);
   const runBySlug = new Map(options.runs.map((run) => [run.problemSlug, run]));
   if (
     runBySlug.size !== session.problemSlugs.length ||
@@ -172,7 +225,11 @@ export function completeSignedAssessment(options: {
     new Set(
       session.problemSlugs
         .filter((slug) => !runBySlug.get(slug)?.passed)
-        .flatMap((slug) => getProblemBySlug(slug)?.topics ?? [])
+        .flatMap(
+          (slug) =>
+            options.problems.find((problem) => problem.slug === slug)?.topics ??
+            []
+        )
         .filter((topic): topic is ProblemTopic =>
           [
             'array-hash',
@@ -191,6 +248,7 @@ export function completeSignedAssessment(options: {
     id: session.id,
     version: session.version,
     problemSlugs: session.problemSlugs,
+    problemVersions: session.problemVersions,
     startedAt: session.startedAt,
     completedAt: now.toISOString(),
     score: Math.round((correctCount / session.problemSlugs.length) * 100),

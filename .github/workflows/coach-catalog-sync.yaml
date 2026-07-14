@@ -1,0 +1,73 @@
+name: AlgoCoach Exercism Catalog Sync
+
+on:
+  schedule:
+    - cron: '17 15 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: coach-exercism-catalog-sync
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sync-database-candidates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_VERSION: '22.13.0'
+      PNPM_VERSION: '11.7.0'
+      DATABASE_PROVIDER: postgresql
+      DATABASE_URL: ${{ secrets.CATALOG_DATABASE_URL }}
+      DB_SCHEMA: algocoach
+      DB_SINGLETON_ENABLED: 'true'
+      CATALOG_SYNC_ENABLED: 'true'
+      EXERCISM_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Require the restricted catalog writer URL
+        run: test -n "$DATABASE_URL"
+      - name: Fetch candidates into PostgreSQL quarantine
+        run: pnpm catalog:sync -- --trigger scheduled
+      - name: Apply deterministic catalog quality gates
+        run: pnpm catalog:validate
+      # Publishing remains an explicit, reviewer-authenticated manual command.
+
+  deterministic-fixture-artifact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_VERSION: '22.13.0'
+      PNPM_VERSION: '11.7.0'
+      CATALOG_WORKSPACE: .catalog/exercism-fixture-workspace.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build deterministic review fixture
+        run: pnpm catalog:sync -- --fixture --workspace "$CATALOG_WORKSPACE"
+      - name: Validate deterministic review fixture
+        run: pnpm catalog:validate -- --fixture --workspace "$CATALOG_WORKSPACE"
+      - name: Upload reviewable fixture workspace
+        uses: actions/upload-artifact@v4
+        with:
+          name: exercism-catalog-fixture-${{ github.run_id }}
+          path: ${{ env.CATALOG_WORKSPACE }}
+          if-no-files-found: error
+          retention-days: 30

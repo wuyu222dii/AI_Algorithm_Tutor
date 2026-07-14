@@ -89,7 +89,7 @@ function errorMessage(error) {
 
 self.onmessage = async (event) => {
   try {
-    const { problem, code, scope } = event.data;
+    const { problem, languageConfig, code, scope } = event.data;
     const tests = selectedTests(problem, scope);
     const pyodide = await loadPyodide({ indexURL: '/pyodide/' });
     self.postMessage({ type: 'ready' });
@@ -97,7 +97,10 @@ self.onmessage = async (event) => {
 
     pyodide.globals.set('__user_code', code);
     pyodide.globals.set('__tests_json', JSON.stringify(tests));
-    pyodide.globals.set('__entry_point', camelToSnake(problem.entryPoint));
+    pyodide.globals.set(
+      '__entry_point',
+      languageConfig?.entryPoint ?? camelToSnake(problem.entryPoint)
+    );
 
     try {
       const rawResult = await pyodide.runPythonAsync(PYTHON_HARNESS);

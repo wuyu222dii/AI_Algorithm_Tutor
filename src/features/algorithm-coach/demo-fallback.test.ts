@@ -13,11 +13,14 @@ describe('coach deterministic demo fallback', () => {
     vi.stubEnv('VERCEL_ENV', '');
 
     expect(
-      canUseCoachDemoFallback({
-        action: 'hint',
-        problemSlug: 'dependency-cycle',
-        hintLevel: 1,
-      })
+      canUseCoachDemoFallback(
+        {
+          action: 'hint',
+          problemSlug: 'dependency-cycle',
+          hintLevel: 1,
+        },
+        true
+      )
     ).toBe(true);
   });
 

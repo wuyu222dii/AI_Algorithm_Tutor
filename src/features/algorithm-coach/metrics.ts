@@ -3,14 +3,16 @@ import {
   calculateTopicMasterySnapshots,
   isPracticeSessionCompleted,
   ReviewItem,
+  selectCurrentPracticeSessions,
 } from './learning-progress';
-import { CoachState, ProblemTopic, ProductMetrics } from './types';
+import { CoachState, Problem, ProblemTopic, ProductMetrics } from './types';
 
 export function calculateTopicMastery(
   state: CoachState,
-  reviewItems: Record<string, ReviewItem> = {}
+  reviewItems: Record<string, ReviewItem> = {},
+  catalog: readonly Problem[] = []
 ): Record<ProblemTopic, number> {
-  const snapshots = calculateTopicMasterySnapshots(state, reviewItems);
+  const snapshots = calculateTopicMasterySnapshots(state, reviewItems, catalog);
   return Object.fromEntries(
     Object.entries(snapshots).map(([topic, snapshot]) => [
       topic,
@@ -22,9 +24,13 @@ export function calculateTopicMastery(
 export function calculateProductMetrics(
   state: CoachState,
   reviewItems: Record<string, ReviewItem> = {},
-  options: { now?: Date; timeZone?: string } = {}
+  options: {
+    now?: Date;
+    timeZone?: string;
+    catalog?: readonly Problem[];
+  } = {}
 ): ProductMetrics {
-  const sessions = Object.values(state.sessions);
+  const sessions = selectCurrentPracticeSessions(state, options.catalog);
   const attempted = sessions.filter((session) => session.runs.length > 0);
   const completed = attempted.filter(isPracticeSessionCompleted);
   const hinted = attempted.filter((session) => session.hintLevel > 0);
@@ -53,6 +59,6 @@ export function calculateProductMetrics(
       : 0,
     assessmentAverage: Math.round(assessmentAverage),
     currentStreak: calculateLearningStreak(state, options),
-    topicMastery: calculateTopicMastery(state, reviewItems),
+    topicMastery: calculateTopicMastery(state, reviewItems, options.catalog),
   };
 }

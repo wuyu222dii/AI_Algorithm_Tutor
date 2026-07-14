@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
+import { getProblemBySlug } from '../../src/features/algorithm-coach/data/problems';
 import { createDemoArtifact } from '../../src/features/algorithm-coach/fixtures';
 import type { CoachRequest } from '../../src/features/algorithm-coach/types';
 
@@ -62,11 +63,14 @@ async function setEditorCode(page: Page, solution: string) {
 test.beforeEach(async ({ page }) => {
   await page.route(/\/api\/coach$/, async (route) => {
     const request = route.request().postDataJSON() as CoachRequest;
+    const problem = request.problemSlug
+      ? getProblemBySlug(request.problemSlug)
+      : undefined;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        artifact: createDemoArtifact(request),
+        artifact: createDemoArtifact(request, problem),
         mode: 'live',
         model: 'test/fixture',
         promptVersion: 'e2e-v1',
@@ -327,7 +331,7 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
     page.getByText(/相较上次运行已修改代码/).filter({ visible: true })
   ).toBeVisible();
 
-  await page.getByRole('button', { name: '提交测试' }).click();
+  await page.getByRole('button', { name: '提交本地测试' }).click();
   await expect(page.getByText('本题已完成。')).toBeVisible({
     timeout: 15_000,
   });
@@ -335,7 +339,7 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const raw = window.localStorage.getItem('algocoach:state:v2');
+        const raw = window.localStorage.getItem('algocoach:state:v3');
         if (!raw) return [];
         return (JSON.parse(raw).artifacts ?? []).map(
           (artifact: { type?: string }) => artifact.type
@@ -521,7 +525,7 @@ test('runs Python in an isolated browser worker', async ({
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const raw = window.localStorage.getItem('algocoach:state:v2');
+        const raw = window.localStorage.getItem('algocoach:state:v3');
         if (!raw) return false;
         return (JSON.parse(raw).runs ?? []).some(
           (run: { language?: string; status?: string }) =>
@@ -530,6 +534,77 @@ test('runs Python in an isolated browser worker', async ({
       })
     )
     .toBe(true);
+});
+
+test('runs and restores TypeScript in the isolated QuickJS worker', async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name.startsWith('mobile'),
+    'Covered by the desktop runner flow'
+  );
+  await completeOnboarding(page);
+  await page.goto('/practice/first-unique-position');
+
+  const languageSelect = page.locator('[role="combobox"]:visible');
+  await expect(languageSelect).toHaveCount(1);
+  await languageSelect.click();
+  await page.getByRole('option', { name: 'TypeScript' }).click({ force: true });
+  await expect(languageSelect).toContainText('TypeScript');
+
+  const solution = `function firstUniquePosition(values: number[]): number {
+  const counts = new Map<number, number>();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return values.findIndex((value) => counts.get(value) === 1);
+}`;
+  await setEditorCode(page, solution);
+  await page.getByRole('button', { name: '运行样例' }).click();
+  await expect(page.getByText('全部通过', { exact: true }).first()).toBeVisible(
+    { timeout: 30_000 }
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = window.localStorage.getItem('algocoach:state:v3');
+        if (!raw) return false;
+        return (JSON.parse(raw).runs ?? []).some(
+          (run: {
+            language?: string;
+            status?: string;
+            runnerMode?: string;
+            runtimeVersion?: string;
+            problemContentVersion?: number;
+          }) =>
+            run.language === 'typescript' &&
+            run.status === 'passed' &&
+            run.runnerMode === 'browser-worker' &&
+            run.runtimeVersion?.includes('typescript@5.9') &&
+            run.problemContentVersion === 1
+        );
+      })
+    )
+    .toBe(true);
+
+  await page.reload();
+  await expect(languageSelect).toContainText('TypeScript');
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const monaco = (
+          window as typeof window & {
+            monaco?: {
+              editor?: {
+                getModels: () => Array<{ getValue: () => string }>;
+              };
+            };
+          }
+        ).monaco;
+        return monaco?.editor?.getModels()[0]?.getValue() ?? '';
+      })
+    )
+    .toContain('values: number[]');
 });
 
 test('mobile practice tabs and assessment remain usable', async ({
@@ -592,7 +667,7 @@ test('mobile practice tabs and assessment remain usable', async ({
 }`
   );
   await page
-    .getByRole('button', { name: '提交测试' })
+    .getByRole('button', { name: '提交本地测试' })
     .filter({ visible: true })
     .click();
   await expect(page.getByText('本题已完成。')).toBeVisible({
@@ -605,7 +680,7 @@ test('mobile practice tabs and assessment remain usable', async ({
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const raw = window.localStorage.getItem('algocoach:state:v2');
+        const raw = window.localStorage.getItem('algocoach:state:v3');
         if (!raw) return false;
         return (JSON.parse(raw).artifacts ?? []).some(
           (artifact: { type?: string }) => artifact.type === 'review_card'
@@ -638,7 +713,7 @@ test('mobile practice tabs and assessment remain usable', async ({
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const raw = window.localStorage.getItem('algocoach:state:v2');
+        const raw = window.localStorage.getItem('algocoach:state:v3');
         return raw ? (JSON.parse(raw).assessments ?? []).length : 0;
       })
     )

@@ -17,6 +17,8 @@ const anonymousFunnelEventSchema = z.object({
     'first_problem_passed',
     'review_completed',
     'assessment_completed',
+    'language_selected',
+    'typescript_transpile_failed',
     'experiment_exposed',
   ]),
   timestamp: z.iso.datetime(),

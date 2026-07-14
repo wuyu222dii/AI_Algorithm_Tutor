@@ -1,14 +1,28 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 
 import migrationJournal from '../src/config/db/migrations/meta/_journal.json';
 import { readyHealthStatus } from '../src/core/db/readiness';
+import { CatalogDatabaseStore } from '../src/features/algorithm-coach/catalog/catalog-store.server';
+import { curatedExercismProblems } from '../src/features/algorithm-coach/catalog/curated-exercism-problems';
+import type { ExercismCatalogAdapter } from '../src/features/algorithm-coach/catalog/exercism-adapter';
+import { exercismSnapshotFixture } from '../src/features/algorithm-coach/catalog/fixtures/exercism-snapshot.fixture';
 import { migrateDatabase } from './migrate-database';
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const READ_ONLY_CATALOG_TABLES = [
+  'coach_catalog_source',
+  'coach_catalog_sync_run',
+  'coach_problem_candidate',
+  'coach_problem_revision',
+  'coach_problem_origin',
+  'coach_catalog_review_audit',
+  'coach_test_case',
+] as const;
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
@@ -56,6 +70,364 @@ async function ensureApplicationRole(
   if (!statement?.sql)
     throw new Error('Failed to prepare the application role');
   await admin.unsafe(statement.sql);
+}
+
+async function verifyVersionedCatalog(
+  app: postgres.Sql,
+  applicationSchema: string
+) {
+  const [catalog] = await app.unsafe<
+    {
+      curated_count: number;
+      revision_count: number;
+      missing_pointer_count: number;
+      missing_typescript_count: number;
+      unversioned_test_count: number;
+      published_catalog_count: number;
+      external_count: number;
+      external_current_revision_count: number;
+      external_test_count: number;
+      external_origin_count: number;
+      external_audit_count: number;
+    }[]
+  >(`
+    SELECT
+      count(*)::int AS curated_count,
+      count(revision.id)::int AS revision_count,
+      count(*) FILTER (WHERE problem.current_revision_id IS NULL)::int AS missing_pointer_count,
+      count(*) FILTER (WHERE NOT (revision.language_configs ? 'typescript'))::int AS missing_typescript_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_test_case" AS test_case
+        JOIN "${applicationSchema}"."coach_problem" AS test_problem
+          ON test_problem.id = test_case.problem_id
+        WHERE test_problem.owner_user_id IS NULL
+          AND test_problem.source = 'curated'
+          AND test_case.revision_id IS NULL
+      ) AS unversioned_test_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_problem"
+        WHERE owner_user_id IS NULL AND status = 'published'
+      ) AS published_catalog_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_problem"
+        WHERE owner_user_id IS NULL AND source = 'external' AND status = 'published'
+      ) AS external_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_problem"
+        WHERE owner_user_id IS NULL AND source = 'external' AND current_revision_id IS NOT NULL
+      ) AS external_current_revision_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_test_case" AS external_test
+        JOIN "${applicationSchema}"."coach_problem" AS external_problem
+          ON external_problem.id = external_test.problem_id
+        WHERE external_problem.source = 'external' AND external_test.revision_id IS NOT NULL
+      ) AS external_test_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_problem_origin"
+        WHERE license_spdx = 'MIT'
+      ) AS external_origin_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_catalog_review_audit"
+        WHERE metadata->>'reviewer' = 'migration:0015'
+      ) AS external_audit_count
+    FROM "${applicationSchema}"."coach_problem" AS problem
+    LEFT JOIN "${applicationSchema}"."coach_problem_revision" AS revision
+      ON revision.id = problem.current_revision_id
+    WHERE problem.owner_user_id IS NULL
+      AND problem.source = 'curated'
+  `);
+  if (
+    !catalog ||
+    catalog.curated_count < 38 ||
+    catalog.revision_count !== catalog.curated_count ||
+    catalog.missing_pointer_count !== 0 ||
+    catalog.missing_typescript_count !== 0 ||
+    catalog.unversioned_test_count !== 0 ||
+    catalog.published_catalog_count < 58 ||
+    catalog.external_count !== 20 ||
+    catalog.external_current_revision_count !== 20 ||
+    catalog.external_test_count < 60 ||
+    catalog.external_origin_count !== 20 ||
+    catalog.external_audit_count !== 20
+  ) {
+    throw new Error(
+      `Versioned catalog backfill is incomplete: ${JSON.stringify(catalog)}`
+    );
+  }
+}
+
+async function verifyCatalogOwnershipConstraints(
+  admin: postgres.Sql,
+  applicationSchema: string
+) {
+  const rows = await admin.unsafe<
+    { problem_id: string; revision_id: string; test_id: string }[]
+  >(`
+    SELECT DISTINCT ON (problem.id)
+      problem.id AS problem_id, revision.id AS revision_id, test_case.id AS test_id
+    FROM "${applicationSchema}"."coach_problem" AS problem
+    JOIN "${applicationSchema}"."coach_problem_revision" AS revision
+      ON revision.problem_id = problem.id
+    JOIN "${applicationSchema}"."coach_test_case" AS test_case
+      ON test_case.problem_id = problem.id AND test_case.revision_id = revision.id
+    WHERE problem.owner_user_id IS NULL
+    ORDER BY problem.id, test_case.id
+    LIMIT 2
+  `);
+  if (rows.length !== 2 || rows[0]?.problem_id === rows[1]?.problem_id) {
+    throw new Error('Catalog ownership constraint fixtures are unavailable');
+  }
+
+  const expectForeignKeyViolation = async (
+    operation: (tx: postgres.TransactionSql) => Promise<unknown>,
+    label: string
+  ) => {
+    let rejected = false;
+    try {
+      await admin.begin(operation);
+    } catch (error) {
+      rejected =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === '23503';
+    }
+    if (!rejected) throw new Error(`${label} bypassed composite ownership`);
+  };
+
+  await expectForeignKeyViolation(
+    (tx) =>
+      tx.unsafe(
+        `UPDATE "${applicationSchema}"."coach_problem" SET current_revision_id = $1 WHERE id = $2`,
+        [rows[1]!.revision_id, rows[0]!.problem_id]
+      ),
+    'Current revision pointer'
+  );
+  await expectForeignKeyViolation(
+    (tx) =>
+      tx.unsafe(
+        `INSERT INTO "${applicationSchema}"."coach_test_case" (id, problem_id, revision_id, ordinal, args, expected) VALUES ($1, $2, $3, 30000, '[]'::jsonb, 'null'::jsonb)`,
+        [
+          `ci_cross_revision_test_${Date.now()}`,
+          rows[1]!.problem_id,
+          rows[0]!.revision_id,
+        ]
+      ),
+    'Test revision pointer'
+  );
+
+  const expectImmutableRejection = async (
+    operation: (tx: postgres.TransactionSql) => Promise<unknown>,
+    label: string
+  ) => {
+    let rejected = false;
+    try {
+      await admin.begin(operation);
+    } catch (error) {
+      rejected =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === '23514';
+    }
+    if (!rejected) throw new Error(`${label} bypassed revision immutability`);
+  };
+
+  await expectImmutableRejection(
+    (tx) =>
+      tx.unsafe(
+        `UPDATE "${applicationSchema}"."coach_problem_revision" SET title = jsonb_set(title, '{en}', '"tampered"'::jsonb) WHERE id = $1`,
+        [rows[0]!.revision_id]
+      ),
+    'Revision content update'
+  );
+  await expectImmutableRejection(
+    (tx) =>
+      tx.unsafe(
+        `DELETE FROM "${applicationSchema}"."coach_problem_revision" WHERE id = $1`,
+        [rows[0]!.revision_id]
+      ),
+    'Revision deletion'
+  );
+  await expectImmutableRejection(
+    (tx) =>
+      tx.unsafe(
+        `UPDATE "${applicationSchema}"."coach_test_case" SET expected = 'null'::jsonb WHERE id = $1`,
+        [rows[0]!.test_id]
+      ),
+    'Revision test update'
+  );
+  await expectImmutableRejection(
+    (tx) =>
+      tx.unsafe(
+        `DELETE FROM "${applicationSchema}"."coach_test_case" WHERE id = $1`,
+        [rows[0]!.test_id]
+      ),
+    'Revision test deletion'
+  );
+
+  await admin.unsafe(
+    `UPDATE "${applicationSchema}"."coach_problem_revision" SET status = status, published_at = published_at WHERE id = $1`,
+    [rows[0]!.revision_id]
+  );
+}
+
+async function verifyApplicationCatalogPermissions(
+  app: postgres.Sql,
+  applicationSchema: string
+) {
+  const privileges = await app.unsafe<
+    {
+      table_name: string;
+      can_select: boolean;
+      can_insert: boolean;
+      can_update: boolean;
+      can_delete: boolean;
+    }[]
+  >(
+    `
+      SELECT
+        table_name,
+        has_table_privilege(current_user, format('%I.%I', $1::text, table_name), 'SELECT') AS can_select,
+        has_table_privilege(current_user, format('%I.%I', $1::text, table_name), 'INSERT') AS can_insert,
+        has_table_privilege(current_user, format('%I.%I', $1::text, table_name), 'UPDATE') AS can_update,
+        has_table_privilege(current_user, format('%I.%I', $1::text, table_name), 'DELETE') AS can_delete
+      FROM unnest($2::text[]) AS catalog_table(table_name)
+      ORDER BY table_name
+    `,
+    [applicationSchema, READ_ONLY_CATALOG_TABLES]
+  );
+  if (
+    privileges.length !== READ_ONLY_CATALOG_TABLES.length ||
+    privileges.some(
+      (row) =>
+        !row.can_select || row.can_insert || row.can_update || row.can_delete
+    )
+  ) {
+    throw new Error(
+      `Application catalog privileges are not read-only: ${JSON.stringify(privileges)}`
+    );
+  }
+}
+
+async function verifyCatalogPublicationLifecycle(
+  admin: postgres.Sql,
+  applicationSchema: string
+) {
+  const database = drizzle(admin);
+  const store = new CatalogDatabaseStore(database);
+  const adapter = {
+    fetchSnapshot: async () => ({
+      notModified: false,
+      revision: exercismSnapshotFixture.revision,
+      etag: exercismSnapshotFixture.etag,
+      localContentFingerprint: exercismSnapshotFixture.localContentFingerprint,
+      snapshot: exercismSnapshotFixture,
+    }),
+  } as unknown as ExercismCatalogAdapter;
+
+  const firstSync = await store.syncExercism(
+    curatedExercismProblems,
+    adapter,
+    'manual'
+  );
+  if (firstSync.candidateIds.length !== 20) {
+    throw new Error('Fixture sync did not create exactly 20 candidates');
+  }
+  const secondSync = await store.syncExercism(
+    curatedExercismProblems,
+    adapter,
+    'manual'
+  );
+  if (secondSync.candidateIds.length !== 0) {
+    throw new Error('Repeated fixture sync created duplicate candidates');
+  }
+
+  const candidateId = firstSync.candidateIds[0]!;
+  const targetProblem = curatedExercismProblems[0]!;
+  const validation = await store.validateCandidates([candidateId]);
+  if (validation.validated !== 1) {
+    throw new Error('Fixture candidate did not pass validation');
+  }
+
+  let unapprovedPublishRejected = false;
+  try {
+    await store.publishCandidates([candidateId], 'ci-release-manager');
+  } catch {
+    unapprovedPublishRejected = true;
+  }
+  if (!unapprovedPublishRejected) {
+    throw new Error('An unapproved catalog candidate was published');
+  }
+
+  const approval = await store.approveCandidates(
+    [candidateId],
+    'ci-content-reviewer'
+  );
+  const repeatedApproval = await store.approveCandidates(
+    [candidateId],
+    'ci-content-reviewer'
+  );
+  if (approval.approved !== 1 || repeatedApproval.alreadyApproved !== 1) {
+    throw new Error('Catalog approval was not independently idempotent');
+  }
+
+  const historyUserId = `ci_catalog_history_${Date.now()}`;
+  await admin.unsafe(
+    `INSERT INTO "${applicationSchema}"."user" (id, name, email, email_verified) VALUES ($1, 'Catalog history', $2, true)`,
+    [historyUserId, `${historyUserId}@example.test`]
+  );
+  try {
+    await admin.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_practice_session" (id, user_id, problem_slug_snapshot, problem_content_version, started_at, updated_at) VALUES ($1, $2, $3, 1, now(), now())`,
+      [`${historyUserId}_session`, historyUserId, targetProblem.slug]
+    );
+
+    const published = await store.publishCandidates(
+      [candidateId],
+      'ci-release-manager'
+    );
+    const repeatedPublish = await store.publishCandidates(
+      [candidateId],
+      'ci-release-manager'
+    );
+    if (published.published !== 1 || repeatedPublish.alreadyPublished !== 1) {
+      throw new Error('Catalog publication was not atomically idempotent');
+    }
+
+    const [publishedState] = await admin.unsafe<
+      { version: number; revision_count: number }[]
+    >(
+      `SELECT current_revision.version, count(all_revision.id)::int AS revision_count FROM "${applicationSchema}"."coach_problem" AS problem JOIN "${applicationSchema}"."coach_problem_revision" AS current_revision ON current_revision.id = problem.current_revision_id JOIN "${applicationSchema}"."coach_problem_revision" AS all_revision ON all_revision.problem_id = problem.id WHERE problem.slug = $1 GROUP BY current_revision.version`,
+      [targetProblem.slug]
+    );
+    if (publishedState?.version !== 2 || publishedState.revision_count !== 2) {
+      throw new Error('Publishing did not create an immutable second revision');
+    }
+
+    await store.rollbackProblem(targetProblem.slug, 1, 'ci-release-manager');
+    const [rolledBack] = await admin.unsafe<
+      { version: number; session_version: number }[]
+    >(
+      `SELECT revision.version, session.problem_content_version AS session_version FROM "${applicationSchema}"."coach_problem" AS problem JOIN "${applicationSchema}"."coach_problem_revision" AS revision ON revision.id = problem.current_revision_id JOIN "${applicationSchema}"."coach_practice_session" AS session ON session.problem_slug_snapshot = problem.slug AND session.user_id = $2 WHERE problem.slug = $1`,
+      [targetProblem.slug, historyUserId]
+    );
+    if (rolledBack?.version !== 1 || rolledBack.session_version !== 1) {
+      throw new Error('Rollback changed historical practice provenance');
+    }
+  } finally {
+    await admin.unsafe(
+      `DELETE FROM "${applicationSchema}"."user" WHERE id = $1`,
+      [historyUserId]
+    );
+  }
 }
 
 async function verifyAuthAndLearningIsolation(
@@ -149,6 +521,32 @@ async function verifyAuthAndLearningIsolation(
       throw new Error('Learning data was not isolated by authenticated user');
     }
 
+    const versionedSessionSlug = `versioned-session-${nonce}`;
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_practice_session" (id, user_id, problem_slug_snapshot, problem_content_version, started_at, updated_at) VALUES ($1, $2, $3, 1, now(), now()), ($4, $2, $3, 2, now(), now())`,
+      [
+        `ci_session_v1_${nonce}`,
+        firstUserId,
+        versionedSessionSlug,
+        `ci_session_v2_${nonce}`,
+      ]
+    );
+    const versionedSessions = await app.unsafe<
+      { problem_content_version: number }[]
+    >(
+      `SELECT problem_content_version FROM "${applicationSchema}"."coach_practice_session" WHERE user_id = $1 AND problem_slug_snapshot = $2 ORDER BY problem_content_version`,
+      [firstUserId, versionedSessionSlug]
+    );
+    if (
+      versionedSessions.length !== 2 ||
+      versionedSessions[0]?.problem_content_version !== 1 ||
+      versionedSessions[1]?.problem_content_version !== 2
+    ) {
+      throw new Error(
+        'Versioned practice sessions did not round-trip independently'
+      );
+    }
+
     const reviewValues = [
       firstUserId,
       'dependency-cycle',
@@ -202,13 +600,49 @@ async function verifyAuthAndLearningIsolation(
     }
 
     const importedDraftValues = {
-      title: JSON.stringify({ zh: '私有草稿', en: 'Private draft' }),
-      description: JSON.stringify({ zh: '测试题面', en: 'Test statement' }),
-      templates: JSON.stringify({
+      title: { zh: '私有草稿', en: 'Private draft' },
+      description: { zh: '测试题面', en: 'Test statement' },
+      templates: {
         javascript: 'function solve(input) { return input; }',
+        typescript:
+          'function solveTyped(input: string): string { return input; }',
         python: 'def solve(input):\n    return input',
-      }),
-      hints: JSON.stringify({ zh: ['', '', ''], en: ['', '', ''] }),
+      },
+      languageConfigs: {
+        javascript: {
+          entryPoint: 'solve',
+          template: 'function solve(input) { return input; }',
+          signature: {
+            parameters: [{ name: 'input', type: { kind: 'string' } }],
+            returns: { kind: 'string' },
+          },
+          runtimeVersion: 'quickjs@test',
+        },
+        typescript: {
+          entryPoint: 'solveTyped',
+          template:
+            'function solveTyped(input: string): string { return input; }',
+          signature: {
+            parameters: [{ name: 'input', type: { kind: 'string' } }],
+            returns: { kind: 'string' },
+          },
+          runtimeVersion: 'typescript@test',
+        },
+        python: {
+          entryPoint: 'solve_python',
+          template: 'def solve_python(input):\n    return input',
+          signature: {
+            parameters: [{ name: 'input', type: { kind: 'string' } }],
+            returns: { kind: 'string' },
+          },
+          runtimeVersion: 'pyodide@test',
+        },
+      },
+      signature: {
+        parameters: [{ name: 'input', type: { kind: 'string' } }],
+        returns: { kind: 'string' },
+      },
+      hints: { zh: ['', '', ''], en: ['', '', ''] },
     };
     const insertImportedDraft = async (
       id: string,
@@ -217,7 +651,7 @@ async function verifyAuthAndLearningIsolation(
       active: boolean
     ) =>
       app.unsafe(
-        `INSERT INTO "${applicationSchema}"."coach_problem" (id, slug, owner_user_id, source, title, description, difficulty, topics, entry_point, templates, hints, status, is_active) VALUES ($1, $2, $3, 'imported', $4::jsonb, $5::jsonb, 'medium', ARRAY['custom']::text[], 'solve', $6::jsonb, $7::jsonb, 'draft', $8)`,
+        `INSERT INTO "${applicationSchema}"."coach_problem" (id, slug, owner_user_id, source, title, description, difficulty, topics, entry_point, templates, language_configs, signature, hints, status, is_active) VALUES ($1, $2, $3, 'imported', $4::jsonb, $5::jsonb, 'medium', ARRAY['custom']::text[], 'solve', $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, 'draft', $10)`,
         [
           id,
           slug,
@@ -225,6 +659,8 @@ async function verifyAuthAndLearningIsolation(
           importedDraftValues.title,
           importedDraftValues.description,
           importedDraftValues.templates,
+          importedDraftValues.languageConfigs,
+          importedDraftValues.signature,
           importedDraftValues.hints,
           active,
         ]
@@ -236,6 +672,38 @@ async function verifyAuthAndLearningIsolation(
       'imported-draft',
       true
     );
+
+    const importedTestId = `ci_imported_test_${nonce}`;
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_imported_test_case" (id, problem_id, owner_user_id, ordinal, args, expected, is_sample) VALUES ($1, $2, $3, 0, $4::jsonb, $5::jsonb, true)`,
+      [
+        importedTestId,
+        `ci_draft_first_a_${nonce}`,
+        firstUserId,
+        ['round-trip'],
+        'round-trip',
+      ]
+    );
+    const [importedContract] = await app.unsafe<
+      {
+        typescript_entry_point: string;
+        python_runtime: string;
+        test_count: number;
+        language_configs: unknown;
+      }[]
+    >(
+      `SELECT problem.language_configs, problem.language_configs->'typescript'->>'entryPoint' AS typescript_entry_point, problem.language_configs->'python'->>'runtimeVersion' AS python_runtime, count(test_case.id)::int AS test_count FROM "${applicationSchema}"."coach_problem" AS problem LEFT JOIN "${applicationSchema}"."coach_imported_test_case" AS test_case ON test_case.problem_id = problem.id AND test_case.owner_user_id = problem.owner_user_id WHERE problem.id = $1 AND problem.owner_user_id = $2 GROUP BY problem.id`,
+      [`ci_draft_first_a_${nonce}`, firstUserId]
+    );
+    if (
+      importedContract?.typescript_entry_point !== 'solveTyped' ||
+      importedContract.python_runtime !== 'pyodide@test' ||
+      importedContract.test_count !== 1
+    ) {
+      throw new Error(
+        `Imported language contracts or tests did not round-trip: ${JSON.stringify(importedContract)}`
+      );
+    }
     await insertImportedDraft(
       `ci_draft_first_b_${nonce}`,
       firstUserId,
@@ -340,8 +808,14 @@ async function verifyAuthAndLearningIsolation(
       'guest_data_claimed',
       'sync_succeeded',
       'sync_failed',
+      'language_selected',
+      'typescript_transpile_failed',
       'experiment_exposed',
       'imported_problem_saved',
+      'catalog_sync_completed',
+      'catalog_candidate_rejected',
+      'catalog_revision_published',
+      'catalog_revision_rolled_back',
     ];
     await app.unsafe(
       `INSERT INTO "${applicationSchema}"."coach_product_event" (id, user_id, session_id, name, properties, occurred_at) SELECT $1 || ordinal::text, $2, $3, name, '{}'::jsonb, now() FROM unnest($4::text[]) WITH ORDINALITY AS funnel(name, ordinal)`,
@@ -465,6 +939,8 @@ export async function runPostgresIntegrationTest(): Promise<void> {
         'The applied migration journal does not match the repository'
       );
     }
+    await verifyCatalogOwnershipConstraints(admin, applicationSchema);
+    await verifyCatalogPublicationLifecycle(admin, applicationSchema);
 
     const app = postgres(applicationDatabaseUrl, {
       max: 1,
@@ -481,6 +957,8 @@ export async function runPostgresIntegrationTest(): Promise<void> {
         `DELETE FROM "${applicationSchema}"."config" WHERE name = $1`,
         [probeName]
       );
+      await verifyVersionedCatalog(app, applicationSchema);
+      await verifyApplicationCatalogPermissions(app, applicationSchema);
       await verifyAuthAndLearningIsolation(app, applicationSchema);
 
       let ddlRejected = false;
@@ -531,7 +1009,7 @@ export async function runPostgresIntegrationTest(): Promise<void> {
     }
 
     console.log(
-      `[database-test] ${expected.length} migrations are current; OAuth and imported-draft idempotency/isolation, restricted DML/readiness, and DDL rejection passed`
+      `[database-test] ${expected.length} migrations are current; catalog sync/approval/publication/rollback, immutable history, OAuth and imported-draft isolation, restricted DML/readiness, and DDL rejection passed`
     );
   } finally {
     await admin.end({ timeout: 2 });

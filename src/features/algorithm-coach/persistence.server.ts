@@ -7,6 +7,7 @@ import { dbPostgres } from '@/core/db';
 import {
   coachAssessment,
   coachCodeRun,
+  coachImportedTestCase,
   coachLearningArtifact,
   coachLearningProfile,
   coachPracticeSession,
@@ -15,12 +16,17 @@ import {
   coachReviewItem,
   coachSyncMutation as coachSyncMutationTable,
   coachSyncState,
-  coachTestCase,
 } from '@/config/db/schema.postgres';
 
+import { normalizeProblemLanguageConfigs } from './languages';
 import { createInitialReviewProgress } from './learning-progress';
 import { createInitialCoachState } from './storage';
-import { applyCoachSyncMutations, filterUnappliedCoachMutations } from './sync';
+import {
+  applyCoachSyncMutations,
+  filterUnappliedCoachMutations,
+  getPracticeSessionKey,
+  normalizeProblemContentVersion,
+} from './sync';
 import {
   CoachState,
   CoachSyncMutation,
@@ -107,8 +113,8 @@ function asIso(value: unknown): string {
     : parsed.toISOString();
 }
 
-function sessionId(userId: string, problemSlug: string): string {
-  return stableId('practice', [userId, problemSlug]);
+function sessionId(userId: string, sessionKey: string): string {
+  return stableId('practice', [userId, sessionKey]);
 }
 
 function runClientId(userId: string, run: CodeRunResult): string {
@@ -223,6 +229,22 @@ async function syncImportedDrafts(
 
   for (const record of sync.records) {
     const { problem } = record;
+    const languageConfigs = normalizeProblemLanguageConfigs(problem);
+    const primaryConfig =
+      languageConfigs.javascript ??
+      languageConfigs.python ??
+      Object.values(languageConfigs).find(Boolean);
+    if (!primaryConfig) {
+      throw new Error(
+        `Problem ${problem.slug} has no runnable language config.`
+      );
+    }
+    const templates = Object.fromEntries(
+      Object.entries(languageConfigs).map(([language, config]) => [
+        language,
+        config?.template,
+      ])
+    );
     const id =
       existingIdBySlug.get(problem.slug) ??
       persistedImportedProblemId(userId, problem);
@@ -243,8 +265,10 @@ async function syncImportedDrafts(
         description: problem.description,
         difficulty: problem.difficulty,
         topics: problem.topics,
-        entryPoint: problem.entryPoint,
-        templates: problem.templates,
+        entryPoint: primaryConfig.entryPoint,
+        templates,
+        languageConfigs,
+        signature: problem.signature ?? primaryConfig.signature ?? null,
         examples: problem.examples,
         constraints: problem.constraints,
         hints: problem.hints,
@@ -266,8 +290,10 @@ async function syncImportedDrafts(
           description: problem.description,
           difficulty: problem.difficulty,
           topics: problem.topics,
-          entryPoint: problem.entryPoint,
-          templates: problem.templates,
+          entryPoint: primaryConfig.entryPoint,
+          templates,
+          languageConfigs,
+          signature: problem.signature ?? primaryConfig.signature ?? null,
           examples: problem.examples,
           constraints: problem.constraints,
           hints: problem.hints,
@@ -281,12 +307,20 @@ async function syncImportedDrafts(
         },
       });
 
-    await tx.delete(coachTestCase).where(eq(coachTestCase.problemId, id));
+    await tx
+      .delete(coachImportedTestCase)
+      .where(
+        and(
+          eq(coachImportedTestCase.ownerUserId, userId),
+          eq(coachImportedTestCase.problemId, id)
+        )
+      );
     if (problem.tests.length > 0) {
-      await tx.insert(coachTestCase).values(
+      await tx.insert(coachImportedTestCase).values(
         problem.tests.map((test, ordinal) => ({
           id: persistedImportedTestId(userId, problem.slug, test.id),
           problemId: id,
+          ownerUserId: userId,
           ordinal,
           args: test.args,
           expected: test.expected,
@@ -459,14 +493,19 @@ async function persistCoachDataInTransaction(
       });
   }
 
-  const persistedSessionIdBySlug = new Map<string, string>();
-  const persistedRunIdBySlug = new Map<string, string>();
+  const persistedSessionIdByKey = new Map<string, string>();
+  const persistedRunIdByKey = new Map<string, string>();
   const persistedRunIdByClientId = new Map<string, string>();
   const seenRunIds = new Set<string>();
 
-  for (const [slug, session] of Object.entries(state.sessions)) {
-    const persistedSessionId = sessionId(userId, slug);
-    persistedSessionIdBySlug.set(slug, persistedSessionId);
+  for (const [recordKey, session] of Object.entries(state.sessions)) {
+    const slug = session.problemSlug;
+    const contentVersion = normalizeProblemContentVersion(
+      session.problemContentVersion
+    );
+    const sessionKey = getPracticeSessionKey(slug, contentVersion);
+    const persistedSessionId = sessionId(userId, recordKey);
+    persistedSessionIdByKey.set(sessionKey, persistedSessionId);
     const sessionStatus = session.completedAt ? 'completed' : 'active';
     await tx
       .insert(coachPracticeSession)
@@ -475,6 +514,7 @@ async function persistCoachDataInTransaction(
         userId,
         problemId: problemIdBySlug.get(slug),
         problemSlugSnapshot: slug,
+        problemContentVersion: contentVersion,
         code: session.code,
         hintLevel: session.hintLevel,
         diagnosisCount: session.diagnosisCount,
@@ -488,6 +528,7 @@ async function persistCoachDataInTransaction(
         target: coachPracticeSession.id,
         set: {
           problemId: problemIdBySlug.get(slug),
+          problemContentVersion: contentVersion,
           code: session.code,
           hintLevel: session.hintLevel,
           diagnosisCount: session.diagnosisCount,
@@ -503,7 +544,7 @@ async function persistCoachDataInTransaction(
       const persistedRunId = namespacedId('run', userId, clientRunId);
       if (seenRunIds.has(persistedRunId)) continue;
       seenRunIds.add(persistedRunId);
-      persistedRunIdBySlug.set(slug, persistedRunId);
+      persistedRunIdByKey.set(sessionKey, persistedRunId);
       persistedRunIdByClientId.set(clientRunId, persistedRunId);
       await tx
         .insert(coachCodeRun)
@@ -512,7 +553,11 @@ async function persistCoachDataInTransaction(
           sessionId: persistedSessionId,
           problemId: problemIdBySlug.get(slug),
           problemSlugSnapshot: slug,
+          problemContentVersion:
+            run.problemContentVersion ?? session.problemContentVersion ?? 1,
           language: run.language,
+          runtimeVersion: run.runtimeVersion ?? 'unknown',
+          runnerMode: run.runnerMode ?? 'browser-worker',
           codeSnapshot: run.codeSnapshot ?? session.code[run.language] ?? '',
           status: run.status,
           passedTests: run.passedTests,
@@ -529,6 +574,10 @@ async function persistCoachDataInTransaction(
           target: coachCodeRun.id,
           set: {
             codeSnapshot: run.codeSnapshot ?? session.code[run.language] ?? '',
+            problemContentVersion:
+              run.problemContentVersion ?? session.problemContentVersion ?? 1,
+            runtimeVersion: run.runtimeVersion ?? 'unknown',
+            runnerMode: run.runnerMode ?? 'browser-worker',
             status: run.status,
             passedTests: run.passedTests,
             totalTests: run.totalTests,
@@ -545,6 +594,17 @@ async function persistCoachDataInTransaction(
 
   for (const artifact of state.artifacts) {
     const slug = artifact.problemSlug;
+    const artifactContentVersion = normalizeProblemContentVersion(
+      artifact.problemContentVersion ??
+        (slug
+          ? Object.values(state.sessions).find(
+              (session) => session.problemSlug === slug
+            )?.problemContentVersion
+          : undefined)
+    );
+    const artifactSessionKey = slug
+      ? getPracticeSessionKey(slug, artifactContentVersion)
+      : undefined;
     const artifactId = namespacedId('artifact', userId, artifact.id);
     const artifactRunId = artifact.runId
       ? persistedRunIdByClientId.get(artifact.runId)
@@ -554,14 +614,17 @@ async function persistCoachDataInTransaction(
       .values({
         id: artifactId,
         userId,
-        sessionId: slug ? persistedSessionIdBySlug.get(slug) : undefined,
+        sessionId: artifactSessionKey
+          ? persistedSessionIdByKey.get(artifactSessionKey)
+          : undefined,
         problemId: slug ? problemIdBySlug.get(slug) : undefined,
         runId:
           artifactRunId ??
-          (artifact.type === 'diagnose' && slug
-            ? persistedRunIdBySlug.get(slug)
+          (artifact.type === 'diagnose' && artifactSessionKey
+            ? persistedRunIdByKey.get(artifactSessionKey)
             : undefined),
         problemSlugSnapshot: slug,
+        problemContentVersion: artifactContentVersion,
         type: artifact.type,
         locale: artifact.locale,
         title: artifact.title,
@@ -586,13 +649,16 @@ async function persistCoachDataInTransaction(
       .onConflictDoUpdate({
         target: coachLearningArtifact.id,
         set: {
-          sessionId: slug ? persistedSessionIdBySlug.get(slug) : undefined,
+          sessionId: artifactSessionKey
+            ? persistedSessionIdByKey.get(artifactSessionKey)
+            : undefined,
           problemId: slug ? problemIdBySlug.get(slug) : undefined,
           runId:
             artifactRunId ??
-            (artifact.type === 'diagnose' && slug
-              ? persistedRunIdBySlug.get(slug)
+            (artifact.type === 'diagnose' && artifactSessionKey
+              ? persistedRunIdByKey.get(artifactSessionKey)
               : undefined),
+          problemContentVersion: artifactContentVersion,
           title: artifact.title,
           summary: artifact.summary,
           details: artifact.details,
@@ -635,6 +701,12 @@ async function persistCoachDataInTransaction(
         id: assessmentId,
         userId,
         problemSlugs: state.activeAssessment.problemSlugs,
+        problemVersions:
+          state.activeAssessment.problemVersions ??
+          state.activeAssessment.problemSlugs.map((slug) => ({
+            slug,
+            contentVersion: 1,
+          })),
         status: 'active',
         durationMinutes: state.activeAssessment.durationMinutes,
         startedAt: asDate(state.activeAssessment.startedAt),
@@ -645,6 +717,12 @@ async function persistCoachDataInTransaction(
         target: coachAssessment.id,
         set: {
           problemSlugs: state.activeAssessment.problemSlugs,
+          problemVersions:
+            state.activeAssessment.problemVersions ??
+            state.activeAssessment.problemSlugs.map((slug) => ({
+              slug,
+              contentVersion: 1,
+            })),
           status: 'active',
           durationMinutes: state.activeAssessment.durationMinutes,
           startedAt: asDate(state.activeAssessment.startedAt),
@@ -661,6 +739,12 @@ async function persistCoachDataInTransaction(
         id: assessmentId,
         userId,
         problemSlugs: assessment.problemSlugs,
+        problemVersions:
+          assessment.problemVersions ??
+          assessment.problemSlugs.map((slug) => ({
+            slug,
+            contentVersion: 1,
+          })),
         status: 'completed',
         durationMinutes: 20,
         startedAt: asDate(assessment.startedAt),
@@ -679,6 +763,12 @@ async function persistCoachDataInTransaction(
         target: coachAssessment.id,
         set: {
           problemSlugs: assessment.problemSlugs,
+          problemVersions:
+            assessment.problemVersions ??
+            assessment.problemSlugs.map((slug) => ({
+              slug,
+              contentVersion: 1,
+            })),
           status: 'completed',
           completedAt: asDate(assessment.completedAt),
           score: assessment.score,
@@ -982,9 +1072,14 @@ async function loadCoachDataFromTransaction(
   const importedTests = importedProblemIds.length
     ? await tx
         .select()
-        .from(coachTestCase)
-        .where(inArray(coachTestCase.problemId, importedProblemIds))
-        .orderBy(asc(coachTestCase.ordinal))
+        .from(coachImportedTestCase)
+        .where(
+          and(
+            eq(coachImportedTestCase.ownerUserId, userId),
+            inArray(coachImportedTestCase.problemId, importedProblemIds)
+          )
+        )
+        .orderBy(asc(coachImportedTestCase.ordinal))
     : [];
   const importedTestsByProblem = new Map<string, typeof importedTests>();
   for (const test of importedTests) {
@@ -1020,6 +1115,9 @@ async function loadCoachDataFromTransaction(
       codeSnapshot: row.codeSnapshot,
       testScope: row.testScope as CodeRunResult['testScope'],
       submitted: row.submitted,
+      problemContentVersion: row.problemContentVersion,
+      runtimeVersion: row.runtimeVersion,
+      runnerMode: row.runnerMode as CodeRunResult['runnerMode'],
     };
     const current = runsBySession.get(row.sessionId) ?? [];
     current.push(run);
@@ -1044,8 +1142,13 @@ async function loadCoachDataFromTransaction(
 
   for (const row of sessions) {
     const sessionRuns = (runsBySession.get(row.id) ?? []).slice(-30);
-    state.sessions[row.problemSlugSnapshot] = {
+    const sessionKey = getPracticeSessionKey(
+      row.problemSlugSnapshot,
+      row.problemContentVersion
+    );
+    state.sessions[sessionKey] = {
       problemSlug: row.problemSlugSnapshot,
+      problemContentVersion: row.problemContentVersion,
       code: row.code as CoachState['code'][string],
       runs: sessionRuns,
       hintLevel: row.hintLevel as 0 | 1 | 2 | 3,
@@ -1055,8 +1158,7 @@ async function loadCoachDataFromTransaction(
       updatedAt: asIso(row.updatedAt),
       completedAt: row.completedAt ? asIso(row.completedAt) : undefined,
     };
-    state.code[row.problemSlugSnapshot] =
-      row.code as CoachState['code'][string];
+    state.code[sessionKey] = row.code as CoachState['code'][string];
     if (row.completedAt)
       state.completedProblemIds.push(row.problemSlugSnapshot);
   }
@@ -1076,6 +1178,9 @@ async function loadCoachDataFromTransaction(
       codeSnapshot: row.codeSnapshot,
       testScope: row.testScope as CodeRunResult['testScope'],
       submitted: row.submitted,
+      problemContentVersion: row.problemContentVersion,
+      runtimeVersion: row.runtimeVersion,
+      runnerMode: row.runnerMode as CodeRunResult['runnerMode'],
     }))
     .slice(-200);
 
@@ -1087,6 +1192,7 @@ async function loadCoachDataFromTransaction(
         type: row.type as LearningArtifact['type'],
         locale: row.locale as LearningArtifact['locale'],
         problemSlug: row.problemSlugSnapshot ?? undefined,
+        problemContentVersion: row.problemContentVersion,
         runId: row.runId
           ? clientIdFromNamespaced('run', userId, row.runId)
           : undefined,
@@ -1123,6 +1229,9 @@ async function loadCoachDataFromTransaction(
     ? {
         id: clientIdFromNamespaced('assessment', userId, activeAssessment.id),
         problemSlugs: activeAssessment.problemSlugs,
+        problemVersions: activeAssessment.problemVersions as NonNullable<
+          CoachState['activeAssessment']
+        >['problemVersions'],
         startedAt: asIso(activeAssessment.startedAt),
         durationMinutes: activeAssessment.durationMinutes,
       }
@@ -1132,6 +1241,8 @@ async function loadCoachDataFromTransaction(
     .map((row) => ({
       id: clientIdFromNamespaced('assessment', userId, row.id),
       problemSlugs: row.problemSlugs,
+      problemVersions:
+        row.problemVersions as CoachState['assessments'][number]['problemVersions'],
       startedAt: asIso(row.startedAt),
       completedAt: asIso(row.completedAt),
       score: row.score ?? 0,
@@ -1160,8 +1271,18 @@ async function loadCoachDataFromTransaction(
     )
     .slice(-300);
 
-  const importedDrafts: ImportedDraftRecord[] = importedRows.map(
-    (imported) => ({
+  const importedDrafts: ImportedDraftRecord[] = importedRows.map((imported) => {
+    const storedLanguageConfigs = imported.languageConfigs as
+      | Problem['languageConfigs']
+      | undefined;
+    const languageConfigs =
+      storedLanguageConfigs && Object.keys(storedLanguageConfigs).length > 0
+        ? storedLanguageConfigs
+        : normalizeProblemLanguageConfigs({
+            entryPoint: imported.entryPoint,
+            templates: imported.templates as Problem['templates'],
+          });
+    return {
       problem: {
         id: clientIdFromNamespaced('imported_problem', userId, imported.id),
         slug: imported.slug,
@@ -1171,6 +1292,8 @@ async function loadCoachDataFromTransaction(
         topics: imported.topics,
         entryPoint: imported.entryPoint,
         templates: imported.templates as Problem['templates'],
+        languageConfigs,
+        signature: (imported.signature as Problem['signature']) ?? undefined,
         tests: (importedTestsByProblem.get(imported.id) ?? []).map((test) => ({
           id: importedTestClientId(userId, imported.slug, test.id),
           args: test.args as Problem['tests'][number]['args'],
@@ -1188,8 +1311,8 @@ async function loadCoachDataFromTransaction(
       },
       createdAt: asIso(imported.createdAt),
       updatedAt: asIso(imported.updatedAt),
-    })
-  );
+    };
+  });
   const importedProblem =
     importedRows.find((row) => row.isActive) && importedDrafts.length
       ? (importedDrafts[importedRows.findIndex((row) => row.isActive)]

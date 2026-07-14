@@ -39,8 +39,13 @@ import {
 import { Textarea } from '@/shared/components/ui/textarea';
 import { cn } from '@/shared/lib/utils';
 
-import { problems } from '../data/problems';
 import { createImportedDraftSlug } from '../imported-drafts';
+import {
+  getProblemEntryPoint,
+  getProblemTemplate,
+  LANGUAGE_REGISTRY,
+  normalizeProblemLanguageConfigs,
+} from '../languages';
 import { TOPIC_LABELS } from '../learning-progress';
 import { parseProblemDraft } from '../parser';
 import { useCoachStore } from '../store';
@@ -196,6 +201,8 @@ export function ProblemsPage() {
   const t = copy[locale];
   const router = useRouter();
   const coach = useCoachStore();
+  const problems = coach.problems;
+  const enabledLanguages = coach.enabledLanguages;
   const completedIds = getCompletedProblemIds(coach.state);
   const [query, setQuery] = useState('');
   const [difficulty, setDifficulty] = useState('all');
@@ -216,7 +223,7 @@ export function ProblemsPage() {
   const topics = useMemo(
     () =>
       Array.from(new Set(problems.flatMap((problem) => problem.topics))).sort(),
-    []
+    [problems]
   );
 
   const filtered = useMemo(() => {
@@ -237,7 +244,7 @@ export function ProblemsPage() {
         (status === 'all' || (status === 'completed' ? completed : !completed))
       );
     });
-  }, [completedIds, difficulty, locale, query, status, topic]);
+  }, [completedIds, difficulty, locale, problems, query, status, topic]);
 
   async function handleParse() {
     if (statement.trim().length < 20) {
@@ -325,6 +332,10 @@ export function ProblemsPage() {
       topics: ['custom'],
       entryPoint: draft.entryPoint,
       templates: draft.templates,
+      languageConfigs: normalizeProblemLanguageConfigs({
+        entryPoint: draft.entryPoint,
+        templates: draft.templates,
+      }),
       tests: draft.tests,
       examples: [],
       constraints: draft.constraints.map((constraint) => ({
@@ -362,11 +373,9 @@ export function ProblemsPage() {
     toast.success(t.draftDeleted);
   }
 
-  const visibleTemplate =
-    draft?.templates[templateLanguage] ??
-    (templateLanguage === 'javascript'
-      ? 'function solve(input) {\n  // TODO\n}'
-      : 'def solve(input):\n    # TODO\n    pass');
+  const visibleTemplate = draft
+    ? getProblemTemplate(draft, templateLanguage)
+    : '';
 
   return (
     <CoachPage
@@ -474,7 +483,7 @@ export function ProblemsPage() {
                       </dt>
                       <dd>
                         <Input
-                          value={draft.entryPoint}
+                          value={draft.entryPoint ?? ''}
                           onChange={(event) =>
                             setDraft({
                               ...draft,
@@ -536,10 +545,11 @@ export function ProblemsPage() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="javascript">
-                          {t.javascript}
-                        </SelectItem>
-                        <SelectItem value="python">{t.python}</SelectItem>
+                        {enabledLanguages.map((languageId) => (
+                          <SelectItem key={languageId} value={languageId}>
+                            {LANGUAGE_REGISTRY[languageId].label}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -549,6 +559,8 @@ export function ProblemsPage() {
                       setDraft({
                         ...draft,
                         templates: {
+                          javascript: draft.templates?.javascript ?? '',
+                          python: draft.templates?.python ?? '',
                           ...draft.templates,
                           [templateLanguage]: event.target.value,
                         },
@@ -850,7 +862,7 @@ export function ProblemsPage() {
                 <div className="mt-auto flex items-center justify-between gap-3 pt-5">
                   <span className="text-muted-foreground flex items-center gap-1.5 font-mono text-xs">
                     <CodeXml className="size-3.5" />
-                    {problem.entryPoint}
+                    {getProblemEntryPoint(problem, 'javascript')}
                   </span>
                   <Button
                     asChild

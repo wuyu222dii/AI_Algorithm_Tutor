@@ -30,6 +30,7 @@ import {
   saveImportedDraftCollection,
   upsertImportedDraftRecords,
 } from './imported-drafts';
+import type { EnabledLanguage } from './languages';
 import {
   clearReviewProgress,
   createInitialReviewProgress,
@@ -62,6 +63,7 @@ import {
   loadCoachSyncQueue,
   loadImportedProblem,
   mergeCoachStates,
+  normalizeCoachState,
   saveImportedProblem as persistImportedProblem,
   saveCoachRevision,
   saveCoachState,
@@ -73,6 +75,8 @@ import {
   coachSyncRetryDelay,
   createCoachSyncMutation,
   filterUnappliedCoachMutations,
+  getPracticeSessionKey,
+  normalizeProblemContentVersion,
 } from './sync';
 import {
   classifyCoachSyncFailure,
@@ -134,6 +138,8 @@ type AssessmentInput = Partial<AssessmentResult> & {
 
 export interface CoachStoreValue {
   state: CoachState;
+  problems: readonly Problem[];
+  enabledLanguages: readonly EnabledLanguage[];
   metrics: ProductMetrics;
   reviewItems: Record<string, ReviewItem>;
   hydrated: boolean;
@@ -169,10 +175,11 @@ const CoachStoreContext = createContext<CoachStoreValue | null>(null);
 
 const now = () => new Date().toISOString();
 
-function createSession(problemSlug: string) {
+function createSession(problemSlug: string, problemContentVersion = 1) {
   const timestamp = now();
   return {
     problemSlug,
+    problemContentVersion,
     code: {},
     runs: [],
     hintLevel: 0 as const,
@@ -185,9 +192,13 @@ function createSession(problemSlug: string) {
 
 export function CoachProvider({
   children,
+  enabledLanguages = ['javascript', 'python'],
+  problems = [],
   storageScope = GUEST_COACH_STORAGE_SCOPE,
 }: {
   children: ReactNode;
+  enabledLanguages?: readonly EnabledLanguage[];
+  problems?: readonly Problem[];
   storageScope?: CoachStorageScope | null;
 }) {
   const [state, setState] = useState<CoachState>(createInitialCoachState);
@@ -229,6 +240,12 @@ export function CoachProvider({
       reviewHydratedScope &&
       storageScope === hydratedScope &&
       storageScope === reviewHydratedScope
+  );
+  const problemContentVersion = useCallback(
+    (problemSlug: string) =>
+      problems.find((problem) => problem.slug === problemSlug)?.version
+        ?.contentVersion ?? 1,
+    [problems]
   );
 
   const flushRemoteSync = useCallback(async function flushRemoteSync() {
@@ -407,14 +424,9 @@ export function CoachProvider({
       setSyncError(null);
       if (!hasPendingMutations && !syncSucceededTrackedRef.current) {
         syncSucceededTrackedRef.current = true;
-        const event = trackProductEvent('sync_succeeded', {
+        trackProductEvent('sync_succeeded', {
           properties: { revision: Number(revision) },
         });
-        setState((current) =>
-          current.events.some((item) => item.name === 'sync_succeeded')
-            ? current
-            : { ...current, events: [...current.events, event].slice(-300) }
-        );
       }
     } catch (error) {
       if (
@@ -546,7 +558,9 @@ export function CoachProvider({
               };
             };
             if (cancelled) return;
-            const remoteState = payload.data?.state;
+            const remoteState = payload.data?.state
+              ? normalizeCoachState(payload.data.state)
+              : undefined;
             const remoteRevision = Number(payload.data?.revision ?? 0);
             if (
               remoteState &&
@@ -728,8 +742,10 @@ export function CoachProvider({
 
   useEffect(() => {
     if (!hydrated) return;
-    setReviewProgress((current) => reconcileReviewProgress(state, current));
-  }, [hydrated, state]);
+    setReviewProgress((current) =>
+      reconcileReviewProgress(state, current, { catalog: problems })
+    );
+  }, [hydrated, problems, state]);
 
   useEffect(() => {
     reviewProgressRef.current = reviewProgress;
@@ -873,21 +889,31 @@ export function CoachProvider({
     }));
   }, []);
 
-  const setPreferredLanguage = useCallback((language: Language) => {
-    setState((current) => {
-      if (!current.profile) return current;
-      return {
-        ...current,
-        profile: { ...current.profile, preferredLanguage: language },
-      };
-    });
-  }, []);
+  const setPreferredLanguage = useCallback(
+    (language: Language) => {
+      if (!enabledLanguages.some((item) => item === language)) return;
+      setState((current) => {
+        if (!current.profile) return current;
+        const event = trackProductEvent('language_selected', {
+          properties: { language },
+        });
+        return {
+          ...current,
+          profile: { ...current.profile, preferredLanguage: language },
+          events: [...current.events, event].slice(-300),
+        };
+      });
+    },
+    [enabledLanguages]
+  );
 
   const saveCode = useCallback(
     (problemSlug: string, language: Language, code: string) => {
       setState((current) => {
-        const existing = current.sessions[problemSlug];
-        const session = existing ?? createSession(problemSlug);
+        const contentVersion = problemContentVersion(problemSlug);
+        const sessionKey = getPracticeSessionKey(problemSlug, contentVersion);
+        const existing = current.sessions[sessionKey];
+        const session = existing ?? createSession(problemSlug, contentVersion);
         const event = existing
           ? null
           : trackProductEvent('practice_started', { problemSlug });
@@ -895,7 +921,7 @@ export function CoachProvider({
           ...current,
           sessions: {
             ...current.sessions,
-            [problemSlug]: {
+            [sessionKey]: {
               ...session,
               code: { ...session.code, [language]: code },
               updatedAt: now(),
@@ -903,8 +929,8 @@ export function CoachProvider({
           },
           code: {
             ...current.code,
-            [problemSlug]: {
-              ...current.code[problemSlug],
+            [sessionKey]: {
+              ...current.code[sessionKey],
               [language]: code,
             },
           },
@@ -914,7 +940,7 @@ export function CoachProvider({
         };
       });
     },
-    []
+    [problemContentVersion]
   );
 
   const recordRun = useCallback(
@@ -942,17 +968,23 @@ export function CoachProvider({
           ? maybeOptions
           : { submitted: false };
       setState((current) => {
+        const contentVersion = normalizeProblemContentVersion(
+          result.problemContentVersion ?? problemContentVersion(problemSlug)
+        );
+        const sessionKey = getPracticeSessionKey(problemSlug, contentVersion);
         const session =
-          current.sessions[problemSlug] ?? createSession(problemSlug);
+          current.sessions[sessionKey] ??
+          createSession(problemSlug, contentVersion);
         const storedResult: CodeRunResult = {
           ...result,
           id: result.id ?? crypto.randomUUID(),
           codeSnapshot:
             result.codeSnapshot ??
             session.code[result.language] ??
-            current.code[problemSlug]?.[result.language] ??
+            current.code[sessionKey]?.[result.language] ??
             '',
           submitted: options.submitted ?? result.submitted ?? false,
+          problemContentVersion: contentVersion,
           testScope:
             result.testScope ?? (options.submitted ? 'full' : 'unknown'),
         };
@@ -1011,7 +1043,7 @@ export function CoachProvider({
           ...current,
           sessions: {
             ...current.sessions,
-            [problemSlug]: {
+            [sessionKey]: {
               ...session,
               runs: [...session.runs, storedResult].slice(-30),
               correctedAfterDiagnosis:
@@ -1040,63 +1072,88 @@ export function CoachProvider({
         };
       });
     },
-    []
+    [problemContentVersion]
   ) as RecordRun;
 
-  const revealHint = useCallback((problemSlug: string) => {
-    setState((current) => {
-      const session =
-        current.sessions[problemSlug] ?? createSession(problemSlug);
-      if (session.hintLevel >= 3) return current;
-      const hintLevel = (session.hintLevel + 1) as 1 | 2 | 3;
-      const event = trackProductEvent('hint_revealed', {
-        problemSlug,
-        properties: {
-          hintLevel,
-          experimentVariant: getExperimentVariant(problemSlug),
-        },
+  const revealHint = useCallback(
+    (problemSlug: string) => {
+      setState((current) => {
+        const contentVersion = problemContentVersion(problemSlug);
+        const sessionKey = getPracticeSessionKey(problemSlug, contentVersion);
+        const session =
+          current.sessions[sessionKey] ??
+          createSession(problemSlug, contentVersion);
+        if (session.hintLevel >= 3) return current;
+        const hintLevel = (session.hintLevel + 1) as 1 | 2 | 3;
+        const event = trackProductEvent('hint_revealed', {
+          problemSlug,
+          properties: {
+            hintLevel,
+            experimentVariant: getExperimentVariant(problemSlug),
+          },
+        });
+        return {
+          ...current,
+          sessions: {
+            ...current.sessions,
+            [sessionKey]: { ...session, hintLevel, updatedAt: now() },
+          },
+          events: [...current.events, event].slice(-300),
+        };
       });
-      return {
-        ...current,
-        sessions: {
-          ...current.sessions,
-          [problemSlug]: { ...session, hintLevel, updatedAt: now() },
-        },
-        events: [...current.events, event].slice(-300),
-      };
-    });
-  }, []);
+    },
+    [problemContentVersion]
+  );
 
-  const addArtifact = useCallback((artifact: LearningArtifact) => {
-    setState((current) => {
-      const problemSlug =
-        artifact.problemSlug ??
-        (artifact as LearningArtifact & { problemId?: string }).problemId;
-      const shouldCountDiagnosis = artifact.type === 'diagnose' && problemSlug;
-      const session = problemSlug
-        ? (current.sessions[problemSlug] ?? createSession(problemSlug))
-        : null;
-      const event = shouldCountDiagnosis
-        ? trackProductEvent('diagnosis_requested', { problemSlug })
-        : null;
-      return {
-        ...current,
-        artifacts: [...current.artifacts, artifact].slice(-100),
-        sessions:
-          shouldCountDiagnosis && session
-            ? {
-                ...current.sessions,
-                [problemSlug]: {
-                  ...session,
-                  diagnosisCount: session.diagnosisCount + 1,
-                  updatedAt: now(),
-                },
-              }
-            : current.sessions,
-        events: event ? [...current.events, event].slice(-300) : current.events,
-      };
-    });
-  }, []);
+  const addArtifact = useCallback(
+    (artifact: LearningArtifact) => {
+      setState((current) => {
+        const problemSlug =
+          artifact.problemSlug ??
+          (artifact as LearningArtifact & { problemId?: string }).problemId;
+        const shouldCountDiagnosis =
+          artifact.type === 'diagnose' && problemSlug;
+        const contentVersion = problemSlug
+          ? normalizeProblemContentVersion(
+              artifact.problemContentVersion ??
+                problemContentVersion(problemSlug)
+            )
+          : undefined;
+        const sessionKey = problemSlug
+          ? getPracticeSessionKey(problemSlug, contentVersion)
+          : null;
+        const session = problemSlug
+          ? (current.sessions[sessionKey!] ??
+            createSession(problemSlug, contentVersion))
+          : null;
+        const storedArtifact = problemSlug
+          ? { ...artifact, problemSlug, problemContentVersion: contentVersion }
+          : artifact;
+        const event = shouldCountDiagnosis
+          ? trackProductEvent('diagnosis_requested', { problemSlug })
+          : null;
+        return {
+          ...current,
+          artifacts: [...current.artifacts, storedArtifact].slice(-100),
+          sessions:
+            shouldCountDiagnosis && session
+              ? {
+                  ...current.sessions,
+                  [sessionKey!]: {
+                    ...session,
+                    diagnosisCount: session.diagnosisCount + 1,
+                    updatedAt: now(),
+                  },
+                }
+              : current.sessions,
+          events: event
+            ? [...current.events, event].slice(-300)
+            : current.events,
+        };
+      });
+    },
+    [problemContentVersion]
+  );
 
   const startAssessment = useCallback(
     (problemSlugs = DEFAULT_ASSESSMENT_PROBLEMS, durationMinutes = 20) => {
@@ -1110,13 +1167,17 @@ export function CoachProvider({
         activeAssessment: {
           id,
           problemSlugs,
+          problemVersions: problemSlugs.map((slug) => ({
+            slug,
+            contentVersion: problemContentVersion(slug),
+          })),
           startedAt,
           durationMinutes,
         },
         events: [...current.events, event].slice(-300),
       }));
     },
-    []
+    [problemContentVersion]
   );
 
   const completeAssessment = useCallback((input: AssessmentInput) => {
@@ -1312,7 +1373,11 @@ export function CoachProvider({
   const value = useMemo<CoachStoreValue>(
     () => ({
       state,
-      metrics: calculateProductMetrics(state, reviewProgress.items),
+      problems,
+      enabledLanguages,
+      metrics: calculateProductMetrics(state, reviewProgress.items, {
+        catalog: problems,
+      }),
       reviewItems: reviewProgress.items,
       hydrated,
       storageScope: hydrated ? storageScope : null,
@@ -1338,6 +1403,8 @@ export function CoachProvider({
     }),
     [
       state,
+      problems,
+      enabledLanguages,
       reviewProgress,
       hydrated,
       storageScope,

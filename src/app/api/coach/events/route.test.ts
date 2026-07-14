@@ -51,6 +51,26 @@ describe('POST /api/coach/events', () => {
     ).not.toContain('guest_test_123');
   });
 
+  it.each(['language_selected', 'typescript_transpile_failed'] as const)(
+    'accepts the %s language funnel event',
+    async (name) => {
+      const response = await POST(
+        request({
+          id: `event_${name}`,
+          name,
+          timestamp: new Date().toISOString(),
+          problemSlug: 'first-unique-position',
+        })
+      );
+
+      expect(response.status).toBe(202);
+      expect(mocks.recordOperationalEvent).toHaveBeenCalledWith({
+        event: 'anonymous_product_funnel',
+        properties: expect.objectContaining({ productEvent: name }),
+      });
+    }
+  );
+
   it('rejects missing identities and non-whitelisted event names', async () => {
     const missingIdentity = await POST(
       request(

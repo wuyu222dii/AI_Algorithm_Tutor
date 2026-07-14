@@ -1,3 +1,4 @@
+import { hydrateCoachCatalogRequest } from '@/features/algorithm-coach/coach-request.server';
 import { canUseCoachDemoFallback } from '@/features/algorithm-coach/demo-fallback';
 import { createDemoChatResponse } from '@/features/algorithm-coach/fixtures';
 import {
@@ -24,7 +25,7 @@ import {
   getCoachRuntimeConfig,
   streamLiveCoachChat,
 } from '@/features/algorithm-coach/server';
-import { CoachChatRequest } from '@/features/algorithm-coach/types';
+import { CoachChatRequest, Problem } from '@/features/algorithm-coach/types';
 
 import { recordOperationalEvent } from '@/shared/lib/observability';
 
@@ -79,7 +80,8 @@ function coachModelErrorResponse(error: CoachModelError, traceId: string) {
 function localCoachChatResponse(
   chatRequest: CoachChatRequest,
   traceId: string,
-  reason: 'not_configured' | 'provider_failed'
+  reason: 'not_configured' | 'provider_failed',
+  problem?: Problem
 ) {
   void recordOperationalEvent({
     event: 'coach_chat_started',
@@ -90,7 +92,7 @@ function localCoachChatResponse(
       reason,
     },
   });
-  return new Response(createDemoChatResponse(chatRequest), {
+  return new Response(createDemoChatResponse(chatRequest, problem), {
     headers: {
       'cache-control': 'no-store',
       'content-type': 'text/plain; charset=utf-8',
@@ -123,15 +125,23 @@ export async function POST(request: Request) {
       );
     }
 
-    const chatRequest = normalizeCoachChatRequest(parsed.data);
+    const hydrated = await hydrateCoachCatalogRequest(
+      normalizeCoachChatRequest(parsed.data)
+    );
+    const chatRequest = hydrated.request;
     const config = await getCoachRuntimeConfig('chat');
     if (!config.apiKey) {
       const fallbackRequest = {
         action: 'hint' as const,
         ...chatRequest,
       };
-      if (canUseCoachDemoFallback(fallbackRequest)) {
-        return localCoachChatResponse(chatRequest, traceId, 'not_configured');
+      if (canUseCoachDemoFallback(fallbackRequest, Boolean(hydrated.problem))) {
+        return localCoachChatResponse(
+          chatRequest,
+          traceId,
+          'not_configured',
+          hydrated.problem
+        );
       }
       throw new CoachHttpError(
         503,
@@ -171,7 +181,7 @@ export async function POST(request: Request) {
       if (
         error instanceof CoachModelError &&
         error.code === 'provider_failed' &&
-        canUseCoachDemoFallback(fallbackRequest)
+        canUseCoachDemoFallback(fallbackRequest, Boolean(hydrated.problem))
       ) {
         void recordOperationalEvent({
           event: 'coach_chat_provider_fallback',
@@ -180,7 +190,12 @@ export async function POST(request: Request) {
           properties: { model: config.model },
           error,
         });
-        return localCoachChatResponse(chatRequest, traceId, 'provider_failed');
+        return localCoachChatResponse(
+          chatRequest,
+          traceId,
+          'provider_failed',
+          hydrated.problem
+        );
       }
       throw error;
     }

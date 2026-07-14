@@ -17,6 +17,7 @@ export interface HealthStatus {
     configuration: HealthCheckResult;
     database: HealthCheckResult;
     migrations: HealthCheckResult;
+    catalog: HealthCheckResult;
     redis: HealthCheckResult;
     authentication: HealthCheckResult;
     ai: HealthCheckResult;

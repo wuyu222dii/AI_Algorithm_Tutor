@@ -3,15 +3,21 @@ import {
   clearImportedDrafts,
   hasImportedDrafts,
 } from './imported-drafts';
+import { isLanguage, LANGUAGE_REGISTRY } from './languages';
 import {
   claimGuestReviewProgress,
   hasReviewProgress,
 } from './learning-progress';
-import { compactCoachSyncQueue } from './sync';
+import {
+  compactCoachSyncQueue,
+  getPracticeSessionKey,
+  normalizeProblemContentVersion,
+} from './sync';
 import {
   AssessmentResult,
   CoachState,
   CoachSyncMutation,
+  CodeRunResult,
   LearningArtifact,
   LearningProfile,
   PracticeSession,
@@ -19,7 +25,7 @@ import {
   ProductEvent,
 } from './types';
 
-export const COACH_STORAGE_VERSION = 2;
+export const COACH_STORAGE_VERSION = 3;
 export const COACH_STORAGE_KEY = `algocoach:state:v${COACH_STORAGE_VERSION}`;
 export const COACH_ANALYTICS_KEY = 'algocoach:events:v1';
 export const COACH_SESSION_KEY = 'algocoach:session-id';
@@ -31,7 +37,11 @@ export const COACH_GUEST_CLAIM_KEY = 'algocoach:guest-claimed-by:v1';
 export const GUEST_COACH_STORAGE_SCOPE = 'guest';
 export type CoachStorageScope = 'guest' | `user:${string}`;
 
-const LEGACY_STORAGE_KEYS = ['algocoach:state:v1', 'algocoach:state'];
+const LEGACY_STORAGE_KEYS = [
+  'algocoach:state:v2',
+  'algocoach:state:v1',
+  'algocoach:state',
+];
 
 export function createCoachStorageScope(
   userId?: string | null
@@ -66,32 +76,99 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function migrateState(value: unknown): CoachState {
+function migrateRun(
+  run: CodeRunResult,
+  fallbackContentVersion = 1,
+  fallbackProblemSlug?: string
+): CodeRunResult {
+  const language = isLanguage(run.language) ? run.language : 'javascript';
+  const definition = LANGUAGE_REGISTRY[language];
+  return {
+    ...run,
+    problemSlug: run.problemSlug || fallbackProblemSlug || 'unknown',
+    language,
+    problemContentVersion: normalizeProblemContentVersion(
+      run.problemContentVersion ?? fallbackContentVersion
+    ),
+    runtimeVersion: run.runtimeVersion ?? definition.runtimeVersion,
+    runnerMode:
+      run.runnerMode ??
+      (definition.runner === 'remote' ? 'remote-judge' : 'browser-worker'),
+  };
+}
+
+function migrateSession(session: PracticeSession): PracticeSession {
+  const problemContentVersion = normalizeProblemContentVersion(
+    session.problemContentVersion
+  );
+  return {
+    ...session,
+    problemContentVersion,
+    runs: Array.isArray(session.runs)
+      ? session.runs
+          .map((run) =>
+            migrateRun(run, problemContentVersion, session.problemSlug)
+          )
+          .filter((run) => run.problemContentVersion === problemContentVersion)
+      : [],
+  };
+}
+
+export function normalizeCoachState(value: unknown): CoachState {
   const initial = createInitialCoachState();
   if (!isRecord(value)) return initial;
 
   const rawSessions = value.sessions ?? value.practiceSessions;
-  let sessions: Record<string, PracticeSession> = {};
+  const sessions: Record<string, PracticeSession> = {};
+  const canonicalKeyByRawKey = new Map<string, string>();
   if (Array.isArray(rawSessions)) {
-    sessions = Object.fromEntries(
-      rawSessions
-        .filter(isRecord)
-        .filter((session) => typeof session.problemSlug === 'string')
-        .map((session) => [
-          session.problemSlug,
-          session as unknown as PracticeSession,
-        ])
-    );
+    for (const rawSession of rawSessions.filter(isRecord)) {
+      if (typeof rawSession.problemSlug !== 'string') continue;
+      const session = migrateSession(rawSession as unknown as PracticeSession);
+      const key = getPracticeSessionKey(
+        session.problemSlug,
+        session.problemContentVersion
+      );
+      sessions[key] = session;
+      canonicalKeyByRawKey.set(session.problemSlug, key);
+    }
   } else if (isRecord(rawSessions)) {
-    sessions = rawSessions as Record<string, PracticeSession>;
+    for (const [rawKey, rawSession] of Object.entries(rawSessions)) {
+      if (!isRecord(rawSession)) continue;
+      const problemSlug =
+        typeof rawSession.problemSlug === 'string'
+          ? rawSession.problemSlug
+          : rawKey;
+      const session = migrateSession({
+        ...(rawSession as unknown as PracticeSession),
+        problemSlug,
+      });
+      const key = getPracticeSessionKey(
+        session.problemSlug,
+        session.problemContentVersion
+      );
+      sessions[key] = session;
+      canonicalKeyByRawKey.set(rawKey, key);
+    }
   }
 
-  const derivedCode = Object.fromEntries(
+  const code: CoachState['code'] = Object.fromEntries(
     Object.entries(sessions).map(([problemSlug, session]) => [
       problemSlug,
       session.code,
     ])
   );
+  if (isRecord(value.code)) {
+    for (const [rawKey, rawCode] of Object.entries(value.code)) {
+      if (!isRecord(rawCode)) continue;
+      const key = canonicalKeyByRawKey.get(rawKey) ?? rawKey;
+      code[key] = {
+        ...code[key],
+        ...(rawCode as CoachState['code'][string]),
+      };
+      if (sessions[key]) sessions[key] = { ...sessions[key], code: code[key] };
+    }
+  }
   const derivedRuns = Object.values(sessions).flatMap(
     (session) => session.runs
   );
@@ -99,29 +176,62 @@ function migrateState(value: unknown): CoachState {
     .filter((session) => Boolean(session.completedAt))
     .map((session) => session.problemSlug);
 
+  const rawProfile = value.profile ?? value.learningProfile;
+  const profile = isRecord(rawProfile)
+    ? ({
+        ...rawProfile,
+        preferredLanguage: isLanguage(rawProfile.preferredLanguage)
+          ? rawProfile.preferredLanguage
+          : 'javascript',
+      } as unknown as LearningProfile)
+    : null;
+
   return {
     version: COACH_STORAGE_VERSION,
-    profile: (value.profile ??
-      value.learningProfile ??
-      null) as LearningProfile | null,
+    profile,
     sessions,
     artifacts: Array.isArray(value.artifacts)
-      ? (value.artifacts as LearningArtifact[]).slice(-100)
+      ? (value.artifacts as LearningArtifact[])
+          .map((artifact) => ({
+            ...artifact,
+            problemContentVersion: artifact.problemContentVersion ?? 1,
+          }))
+          .slice(-100)
       : [],
     events: Array.isArray(value.events)
       ? (value.events as ProductEvent[]).slice(-300)
       : [],
     activeAssessment: isRecord(value.activeAssessment)
-      ? (value.activeAssessment as unknown as CoachState['activeAssessment'])
+      ? ({
+          ...value.activeAssessment,
+          problemVersions: Array.isArray(value.activeAssessment.problemVersions)
+            ? value.activeAssessment.problemVersions
+            : Array.isArray(value.activeAssessment.problemSlugs)
+              ? value.activeAssessment.problemSlugs.map((slug) => ({
+                  slug: String(slug),
+                  contentVersion: 1,
+                }))
+              : [],
+        } as unknown as CoachState['activeAssessment'])
       : null,
     assessments: Array.isArray(value.assessments)
-      ? (value.assessments as AssessmentResult[]).slice(-20)
+      ? (value.assessments as AssessmentResult[])
+          .map((assessment) => ({
+            ...assessment,
+            problemVersions:
+              assessment.problemVersions ??
+              assessment.problemSlugs.map((slug) => ({
+                slug,
+                contentVersion: 1,
+              })),
+          }))
+          .slice(-20)
       : [],
-    code: isRecord(value.code)
-      ? (value.code as CoachState['code'])
-      : derivedCode,
+    code,
     runs: Array.isArray(value.runs)
-      ? (value.runs as CoachState['runs']).slice(-200)
+      ? (value.runs as CoachState['runs'])
+          .map((run) => migrateRun(run))
+          .slice(-200)
       : derivedRuns.slice(-200),
     completedProblemIds: Array.isArray(value.completedProblemIds)
       ? value.completedProblemIds.map(String)
@@ -143,47 +253,59 @@ export function mergeCoachStates(
   current: CoachState,
   inherited: CoachState
 ): CoachState {
-  const code = { ...inherited.code };
-  for (const [problemSlug, languageCode] of Object.entries(current.code)) {
+  const normalizedCurrent = normalizeCoachState(current);
+  const normalizedInherited = normalizeCoachState(inherited);
+  const code = { ...normalizedInherited.code };
+  for (const [problemSlug, languageCode] of Object.entries(
+    normalizedCurrent.code
+  )) {
     code[problemSlug] = {
-      ...inherited.code[problemSlug],
+      ...normalizedInherited.code[problemSlug],
       ...languageCode,
     };
   }
 
   return {
     version: COACH_STORAGE_VERSION,
-    profile: current.profile ?? inherited.profile,
-    sessions: { ...inherited.sessions, ...current.sessions },
+    profile: normalizedCurrent.profile ?? normalizedInherited.profile,
+    sessions: {
+      ...normalizedInherited.sessions,
+      ...normalizedCurrent.sessions,
+    },
     artifacts: uniqueBy(
-      [...inherited.artifacts, ...current.artifacts],
+      [...normalizedInherited.artifacts, ...normalizedCurrent.artifacts],
       (artifact) => artifact.id
     ).slice(-100),
     events: uniqueBy(
-      [...inherited.events, ...current.events],
+      [...normalizedInherited.events, ...normalizedCurrent.events],
       (event) => event.id
     ).slice(-300),
     activeAssessment:
-      current.activeAssessment ?? inherited.activeAssessment ?? null,
+      normalizedCurrent.activeAssessment ??
+      normalizedInherited.activeAssessment ??
+      null,
     assessments: uniqueBy(
-      [...inherited.assessments, ...current.assessments],
+      [...normalizedInherited.assessments, ...normalizedCurrent.assessments],
       (assessment) => assessment.id
     ).slice(-20),
     code,
-    runs: uniqueBy([...inherited.runs, ...current.runs], (run) =>
-      [
-        run.problemSlug,
-        run.language,
-        run.executedAt,
-        run.status,
-        run.passedTests,
-        run.totalTests,
-      ].join('|')
+    runs: uniqueBy(
+      [...normalizedInherited.runs, ...normalizedCurrent.runs],
+      (run) =>
+        [
+          run.problemSlug,
+          normalizeProblemContentVersion(run.problemContentVersion),
+          run.language,
+          run.executedAt,
+          run.status,
+          run.passedTests,
+          run.totalTests,
+        ].join('|')
     ).slice(-200),
     completedProblemIds: Array.from(
       new Set([
-        ...inherited.completedProblemIds,
-        ...current.completedProblemIds,
+        ...normalizedInherited.completedProblemIds,
+        ...normalizedCurrent.completedProblemIds,
       ])
     ),
   };
@@ -211,10 +333,21 @@ function getStorage(storage?: Storage): Storage | undefined {
 
 export function deserializeCoachState(serialized: string): CoachState {
   try {
-    return migrateState(JSON.parse(serialized));
+    return normalizeCoachState(JSON.parse(serialized));
   } catch {
     return createInitialCoachState();
   }
+}
+
+function getLegacyStorageKeys(scope: CoachStorageScope): string[] {
+  return LEGACY_STORAGE_KEYS.map((key) => getScopedStorageKey(key, scope));
+}
+
+function clearLegacyStorageKeys(
+  storage: Storage,
+  scope: CoachStorageScope
+): void {
+  for (const key of getLegacyStorageKeys(scope)) storage.removeItem(key);
 }
 
 export function loadCoachState(
@@ -228,16 +361,22 @@ export function loadCoachState(
     const current = target.getItem(
       getScopedStorageKey(COACH_STORAGE_KEY, scope)
     );
-    if (current) return deserializeCoachState(current);
+    if (current) {
+      const migrated = deserializeCoachState(current);
+      clearLegacyStorageKeys(target, scope);
+      return migrated;
+    }
 
-    if (scope === GUEST_COACH_STORAGE_SCOPE) {
-      for (const key of LEGACY_STORAGE_KEYS) {
-        const legacy = target.getItem(key);
-        if (!legacy) continue;
-        const migrated = deserializeCoachState(legacy);
-        saveCoachState(migrated, target, scope);
-        return migrated;
-      }
+    for (const key of getLegacyStorageKeys(scope)) {
+      const legacy = target.getItem(key);
+      if (!legacy) continue;
+      const migrated = deserializeCoachState(legacy);
+      target.setItem(
+        getScopedStorageKey(COACH_STORAGE_KEY, scope),
+        JSON.stringify(migrated)
+      );
+      clearLegacyStorageKeys(target, scope);
+      return migrated;
     }
   } catch {
     return createInitialCoachState();
@@ -271,9 +410,7 @@ export function clearCoachState(
   try {
     target.removeItem(getScopedStorageKey(COACH_STORAGE_KEY, scope));
     clearImportedDrafts(target, scope);
-    if (scope === GUEST_COACH_STORAGE_SCOPE) {
-      for (const key of LEGACY_STORAGE_KEYS) target.removeItem(key);
-    }
+    clearLegacyStorageKeys(target, scope);
   } catch {
     // Reset still clears in-memory state when browser storage is restricted.
   }

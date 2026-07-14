@@ -10,6 +10,15 @@ type MigrationRow = {
 };
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const READ_ONLY_CATALOG_TABLES = [
+  'coach_catalog_source',
+  'coach_catalog_sync_run',
+  'coach_problem_candidate',
+  'coach_problem_revision',
+  'coach_problem_origin',
+  'coach_catalog_review_audit',
+  'coach_test_case',
+] as const;
 
 function validatedIdentifier(value: string, label: string): string {
   if (!IDENTIFIER.test(value)) {
@@ -255,6 +264,13 @@ export async function migrateDatabase(options?: {
         );
         await transaction.unsafe(
           `ALTER DEFAULT PRIVILEGES IN SCHEMA ${applicationSchemaSql} GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO ${applicationRoleSql}`
+        );
+        const readOnlyCatalogTablesSql = READ_ONLY_CATALOG_TABLES.map(
+          (tableName) =>
+            `${applicationSchemaSql}.${quotedIdentifier(tableName)}`
+        ).join(', ');
+        await transaction.unsafe(
+          `REVOKE INSERT, UPDATE, DELETE ON ${readOnlyCatalogTablesSql} FROM ${applicationRoleSql}`
         );
         await transaction.unsafe(
           `GRANT USAGE ON SCHEMA ${migrationSchemaSql} TO ${applicationRoleSql}`

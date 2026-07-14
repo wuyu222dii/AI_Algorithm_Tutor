@@ -1,4 +1,6 @@
-export type Language = 'javascript' | 'python';
+import type { Language, LanguageRunner } from './languages';
+
+export type { Language } from './languages';
 
 export type CoachLocale = 'zh' | 'en';
 
@@ -25,6 +27,58 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
+export type TypeSpec =
+  | { kind: 'unknown' }
+  | { kind: 'integer' }
+  | { kind: 'number' }
+  | { kind: 'string' }
+  | { kind: 'boolean' }
+  | { kind: 'null' }
+  | { kind: 'array'; items: TypeSpec }
+  | { kind: 'tuple'; items: TypeSpec[] }
+  | {
+      kind: 'object';
+      fields: Record<string, TypeSpec>;
+      additionalProperties?: boolean;
+    }
+  | { kind: 'union'; options: TypeSpec[] };
+
+export interface ProblemFunctionParameter {
+  name: string;
+  type: TypeSpec;
+}
+
+export interface ProblemFunctionSignature {
+  parameters: ProblemFunctionParameter[];
+  returns: TypeSpec;
+}
+
+export interface ProblemLanguageConfig {
+  entryPoint: string;
+  template: string;
+  signature?: ProblemFunctionSignature;
+  monacoId?: string;
+  runner?: LanguageRunner;
+  runtimeVersion?: string;
+}
+
+export interface ResolvedProblemLanguageConfig extends ProblemLanguageConfig {
+  signature: ProblemFunctionSignature;
+  monacoId: string;
+  runner: LanguageRunner;
+  runtimeVersion: string;
+}
+
+export interface ProblemVersionMetadata {
+  contentVersion: number;
+  catalogVersion?: string;
+  sourceRevision?: string;
+  runtimeVersions?: Partial<Record<Language, string>>;
+}
+
+export type ProblemTemplates = Record<'javascript' | 'python', string> &
+  Partial<Record<Language, string>>;
+
 export interface ProblemExample {
   id: string;
   input: JsonValue;
@@ -48,8 +102,13 @@ export interface Problem {
   description: LocalizedText;
   difficulty: Difficulty;
   topics: string[];
-  entryPoint: string;
-  templates: Record<Language, string>;
+  /** @deprecated Normalize legacy fixtures into languageConfigs at the boundary. */
+  entryPoint?: string;
+  /** @deprecated Normalize legacy fixtures into languageConfigs at the boundary. */
+  templates?: ProblemTemplates;
+  languageConfigs?: Partial<Record<Language, ProblemLanguageConfig>>;
+  signature?: ProblemFunctionSignature;
+  version?: ProblemVersionMetadata;
   tests: TestCase[];
   examples: ProblemExample[];
   constraints: LocalizedText[];
@@ -85,6 +144,13 @@ export type CodeRunStatus =
   | 'runtime_error'
   | 'timeout';
 
+export type RunnerMode = 'browser-worker' | 'remote-judge';
+
+export interface ProblemVersionRef {
+  slug: string;
+  contentVersion: number;
+}
+
 export interface TestCaseResult {
   testId: string;
   passed: boolean;
@@ -109,6 +175,9 @@ export interface CodeRunResult {
   codeSnapshot?: string;
   testScope?: 'sample' | 'full' | 'unknown';
   submitted?: boolean;
+  problemContentVersion?: number;
+  runtimeVersion?: string;
+  runnerMode?: RunnerMode;
 }
 
 export type LearningGoal = 'foundation' | 'interview' | 'contest';
@@ -155,6 +224,7 @@ export interface ReviewScheduleResult {
 
 export interface PracticeSession {
   problemSlug: string;
+  problemContentVersion?: number;
   code: Partial<Record<Language, string>>;
   runs: CodeRunResult[];
   hintLevel: 0 | 1 | 2 | 3;
@@ -170,8 +240,11 @@ export interface ParsedProblemDraft {
   description: string;
   difficulty: Difficulty;
   constraints: string[];
-  entryPoint: string;
-  templates: Record<Language, string>;
+  entryPoint?: string;
+  templates?: ProblemTemplates;
+  languageConfigs?: Partial<Record<Language, ProblemLanguageConfig>>;
+  signature?: ProblemFunctionSignature;
+  version?: ProblemVersionMetadata;
   tests: TestCase[];
   testCoverage: 'none';
   warnings: string[];
@@ -224,6 +297,7 @@ export interface LearningArtifact {
   locale: CoachLocale;
   problemSlug?: string;
   runId?: string;
+  problemContentVersion?: number;
   title: string;
   summary: string;
   details: string[];
@@ -247,6 +321,7 @@ export interface AssessmentResult {
   version?: string;
   verificationToken?: string;
   problemSlugs: string[];
+  problemVersions?: ProblemVersionRef[];
   startedAt: string;
   completedAt: string;
   score: number;
@@ -259,6 +334,7 @@ export interface AssessmentResult {
 export interface AssessmentState {
   id: string;
   problemSlugs: string[];
+  problemVersions?: ProblemVersionRef[];
   startedAt: string;
   durationMinutes: number;
 }
@@ -328,6 +404,12 @@ export type ProductEventName =
   | 'guest_data_claimed'
   | 'sync_succeeded'
   | 'sync_failed'
+  | 'language_selected'
+  | 'typescript_transpile_failed'
+  | 'catalog_sync_completed'
+  | 'catalog_candidate_rejected'
+  | 'catalog_revision_published'
+  | 'catalog_revision_rolled_back'
   | 'experiment_exposed'
   | 'imported_problem_saved'
   | 'coach_chat_message'
@@ -378,6 +460,7 @@ export interface CoachRequest {
   action: CoachAction;
   locale?: CoachLocale;
   problemSlug?: string;
+  problemContentVersion?: number;
   problem?: CoachProblemContext;
   statement?: string;
   language?: Language;
@@ -429,6 +512,7 @@ export interface CoachChatRequest {
   messages: CoachChatMessage[];
   locale?: CoachLocale;
   problemSlug?: string;
+  problemContentVersion?: number;
   problem?: CoachProblemContext;
   language?: Language;
   code?: string;

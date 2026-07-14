@@ -1,3 +1,4 @@
+import { hydrateCoachCatalogRequest } from '@/features/algorithm-coach/coach-request.server';
 import { canUseCoachDemoFallback } from '@/features/algorithm-coach/demo-fallback';
 import { createDemoArtifact } from '@/features/algorithm-coach/fixtures';
 import {
@@ -24,7 +25,11 @@ import {
   generateLiveArtifact,
   getCoachRuntimeConfig,
 } from '@/features/algorithm-coach/server';
-import { CoachRequest, CoachResponse } from '@/features/algorithm-coach/types';
+import {
+  CoachRequest,
+  CoachResponse,
+  Problem,
+} from '@/features/algorithm-coach/types';
 
 import { recordOperationalEvent } from '@/shared/lib/observability';
 
@@ -80,10 +85,11 @@ function localCoachResponse(
   coachRequest: CoachRequest,
   traceId: string,
   startedAt: number,
-  reason: 'not_configured' | 'provider_failed'
+  reason: 'not_configured' | 'provider_failed',
+  problem?: Problem
 ) {
   const artifact = {
-    ...createDemoArtifact(coachRequest),
+    ...createDemoArtifact(coachRequest, problem),
     generationMode: 'local' as const,
     model: 'deterministic-demo',
     promptVersion: COACH_PROMPT_VERSION,
@@ -134,7 +140,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const coachRequest = normalizeCoachRequest(parsed.data);
+    const hydrated = await hydrateCoachCatalogRequest(
+      normalizeCoachRequest(parsed.data)
+    );
+    const coachRequest = hydrated.request;
     const limited = await enforceCoachRateLimits(request, 'artifact');
     if (limited) {
       limited.headers.set('x-coach-trace-id', traceId);
@@ -143,12 +152,13 @@ export async function POST(request: Request) {
 
     const config = await getCoachRuntimeConfig(coachRequest.action);
     if (!config.apiKey) {
-      if (canUseCoachDemoFallback(coachRequest)) {
+      if (canUseCoachDemoFallback(coachRequest, Boolean(hydrated.problem))) {
         return localCoachResponse(
           coachRequest,
           traceId,
           startedAt,
-          'not_configured'
+          'not_configured',
+          hydrated.problem
         );
       }
       throw new CoachHttpError(
@@ -190,7 +200,7 @@ export async function POST(request: Request) {
       if (
         error instanceof CoachModelError &&
         error.code === 'provider_failed' &&
-        canUseCoachDemoFallback(coachRequest)
+        canUseCoachDemoFallback(coachRequest, Boolean(hydrated.problem))
       ) {
         void recordOperationalEvent({
           event: 'coach_provider_fallback',
@@ -203,7 +213,8 @@ export async function POST(request: Request) {
           coachRequest,
           traceId,
           startedAt,
-          'provider_failed'
+          'provider_failed',
+          hydrated.problem
         );
       }
       throw error;

@@ -46,19 +46,25 @@ import { Textarea } from '@/shared/components/ui/textarea';
 import { cn } from '@/shared/lib/utils';
 
 import { getExperimentVariant } from '../analytics';
-import { getProblemBySlug } from '../data/problems';
 import { isImportedDraftSlug } from '../imported-drafts';
+import {
+  getProblemContentVersion,
+  getProblemEntryPoint,
+  getProblemTemplate,
+  LANGUAGE_REGISTRY,
+  problemSupportsLanguage,
+} from '../languages';
 import { TOPIC_LABELS } from '../learning-progress';
 import { loadPracticeContext, savePracticeContext } from '../practice-context';
 import { runCode } from '../runner';
 import { useCoachStore } from '../store';
+import { getPracticeSessionKey } from '../sync';
 import type { CoachResponse, CodeRunResult, Language, Problem } from '../types';
 import { CodeEditor } from './code-editor';
 import {
   artifactText,
   difficultyLabel,
   getPreferredLanguage,
-  getSavedCode,
   getTestResults,
   localeKey,
   localizedProblem,
@@ -76,7 +82,7 @@ const copy = {
     sample: '样例',
     constraints: '约束条件',
     run: '运行样例',
-    submit: '提交测试',
+    submit: '提交本地测试',
     running: '运行中',
     reset: '重置代码',
     console: '运行结果',
@@ -137,7 +143,7 @@ const copy = {
     sample: 'Example',
     constraints: 'Constraints',
     run: 'Run examples',
-    submit: 'Submit tests',
+    submit: 'Run local tests',
     running: 'Running',
     reset: 'Reset code',
     console: 'Run results',
@@ -236,7 +242,9 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
   const loaded = coach.hydrated;
   const imported = isImportedDraftSlug(slug);
   const problem: Problem | null = useMemo(() => {
-    if (!imported) return getProblemBySlug(slug) ?? null;
+    if (!imported) {
+      return coach.problems.find((item) => item.slug === slug) ?? null;
+    }
     if (!coach.storageScope) return null;
     const stored = coach.importedDrafts.find(
       (record) => record.problem.slug === slug
@@ -246,13 +254,28 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
   }, [
     coach.importedDrafts,
     coach.importedProblem,
+    coach.problems,
     coach.storageScope,
     imported,
     slug,
   ]);
-  const [language, setLanguage] = useState<Language>(
+  const [selectedLanguage, setLanguage] = useState<Language>(
     getPreferredLanguage(state)
   );
+  const availableLanguages = useMemo(
+    () =>
+      problem
+        ? coach.enabledLanguages.filter((languageId) =>
+            problemSupportsLanguage(problem, languageId)
+          )
+        : [],
+    [coach.enabledLanguages, problem]
+  );
+  const language = availableLanguages.some(
+    (languageId) => languageId === selectedLanguage
+  )
+    ? selectedLanguage
+    : (availableLanguages[0] ?? 'javascript');
   const [code, setCode] = useState('');
   const [result, setResult] = useState<CodeRunResult | null>(null);
   const [running, setRunning] = useState<'sample' | 'all' | null>(null);
@@ -268,12 +291,19 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
   const codeInitializedFor = useRef('');
   const contextInitializedFor = useRef('');
   const chatAbortRef = useRef<AbortController | null>(null);
+  const problemContentVersion = problem ? getProblemContentVersion(problem) : 1;
+  const sessionKey = problem
+    ? getPracticeSessionKey(problem.slug, problemContentVersion)
+    : '';
+
   const artifacts = useMemo<ArtifactView[]>(() => {
     if (!problem) return [];
     const coachArtifacts = state.artifacts
       .filter(
         (artifact) =>
-          artifact.problemSlug === problem.slug && artifact.locale === locale
+          artifact.problemSlug === problem.slug &&
+          (artifact.problemContentVersion ?? 1) === problemContentVersion &&
+          artifact.locale === locale
       )
       .map((artifact) => ({
         id: artifact.id,
@@ -286,12 +316,17 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
       .filter((artifact) => artifact.content);
 
     const uniqueRuns = new Map<string, CodeRunResult>();
-    const sessionRuns = state.sessions[problem.slug]?.runs ?? [];
+    const sessionRuns = state.sessions[sessionKey]?.runs ?? [];
     for (const run of [...state.runs, ...sessionRuns]) {
-      if (run.problemSlug !== problem.slug) continue;
+      if (
+        run.problemSlug !== problem.slug ||
+        (run.problemContentVersion ?? 1) !== problemContentVersion
+      ) {
+        continue;
+      }
       const key =
         run.id ??
-        `${run.executedAt}:${run.language}:${run.testScope ?? 'unknown'}`;
+        `${problemContentVersion}:${run.executedAt}:${run.language}:${run.testScope ?? 'unknown'}`;
       uniqueRuns.set(key, run);
     }
     const chronologicalRuns = [...uniqueRuns.values()].sort(
@@ -326,6 +361,8 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
   }, [
     locale,
     problem,
+    problemContentVersion,
+    sessionKey,
     state.artifacts,
     state.runs,
     state.sessions,
@@ -335,15 +372,16 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
 
   useEffect(() => {
     if (!problem) return;
-    const key = `${problem.id}:${language}`;
+    const key = `${sessionKey}:${language}`;
     if (codeInitializedFor.current === key) return;
     setCode(
-      getSavedCode(state, problem.slug, language) ||
-        problem.templates[language] ||
+      state.sessions[sessionKey]?.code[language] ||
+        state.code[sessionKey]?.[language] ||
+        getProblemTemplate(problem, language) ||
         ''
     );
     codeInitializedFor.current = key;
-  }, [language, problem, state]);
+  }, [language, problem, sessionKey, state.code, state.sessions]);
 
   useEffect(() => {
     if (!problem || !codeInitializedFor.current) return;
@@ -361,14 +399,14 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
 
   useEffect(() => {
     if (!loaded || !problem || !coach.storageScope) return;
-    const contextKey = `${coach.storageScope}:${problem.slug}:${locale}`;
+    const contextKey = `${coach.storageScope}:${sessionKey}:${locale}`;
     if (contextInitializedFor.current === contextKey) return;
 
-    const session = state.sessions[problem.slug];
+    const session = state.sessions[sessionKey];
     setHintLevel(session?.hintLevel ?? 0);
     setResult(session?.runs.at(-1) ?? null);
     const saved = loadPracticeContext(
-      problem.slug,
+      sessionKey,
       undefined,
       coach.storageScope
     );
@@ -388,6 +426,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
     loaded,
     locale,
     problem,
+    sessionKey,
     state.sessions,
     t.aiWelcome,
   ]);
@@ -398,14 +437,14 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
     }
     const timeout = window.setTimeout(() => {
       savePracticeContext(
-        problem.slug,
+        sessionKey,
         messages,
         undefined,
         coach.storageScope ?? undefined
       );
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [coach.storageScope, messages, problem]);
+  }, [coach.storageScope, messages, problem, sessionKey]);
 
   useEffect(
     () => () => {
@@ -434,7 +473,13 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
     setActiveMobileTab('code');
     try {
       coach.saveCode(problem.slug, language, code);
-      const rawResult = await runCode({ problem, language, code, scope });
+      const rawResult = await runCode({
+        problem,
+        language,
+        enabledLanguages: coach.enabledLanguages,
+        code,
+        scope,
+      });
       const nextResult: CodeRunResult = {
         ...rawResult,
         id: rawResult.id ?? crypto.randomUUID(),
@@ -442,6 +487,14 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
         testScope: scope === 'all' ? 'full' : 'sample',
         submitted: scope === 'all',
       };
+      if (language === 'typescript' && nextResult.status === 'syntax_error') {
+        coach.trackEvent('typescript_transpile_failed', {
+          problemSlug: problem.slug,
+          properties: {
+            problemContentVersion: getProblemContentVersion(problem),
+          },
+        });
+      }
       setResult(nextResult);
       coach.recordRun(problem.slug, nextResult, {
         submitted: scope === 'all',
@@ -487,6 +540,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
         body: JSON.stringify({
           action,
           problemSlug: problem.slug,
+          problemContentVersion: getProblemContentVersion(problem),
           problem: {
             slug: problem.slug,
             title: text?.titleText ?? problem.slug,
@@ -494,7 +548,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
             difficulty: problem.difficulty,
             topics: problem.topics,
             constraints: text?.constraintsText ?? [],
-            entryPoint: problem.entryPoint,
+            entryPoint: getProblemEntryPoint(problem, language),
           },
           language,
           code,
@@ -517,6 +571,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
         ...artifact,
         type: action,
         problemSlug: problem.slug,
+        problemContentVersion: getProblemContentVersion(problem),
         runId: runResult?.id,
         generationMode: payload.mode,
         model: payload.model,
@@ -527,6 +582,9 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
       if (action === 'counterexample') {
         coach.trackEvent('counterexample_requested', {
           problemSlug: problem.slug,
+          properties: {
+            problemContentVersion: getProblemContentVersion(problem),
+          },
         });
       } else if (action === 'review_card') {
         coach.trackEvent('review_card_created', {
@@ -581,6 +639,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           problemSlug: problem.slug,
+          problemContentVersion: getProblemContentVersion(problem),
           language,
           code,
           runResult: result,
@@ -592,7 +651,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
             difficulty: problem.difficulty,
             topics: problem.topics,
             constraints: text?.constraintsText ?? [],
-            entryPoint: problem.entryPoint,
+            entryPoint: getProblemEntryPoint(problem, language),
           },
           messages: nextMessages.map(({ role, content }) => ({
             role,
@@ -759,6 +818,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
       copy={t}
       problem={problem}
       language={language}
+      availableLanguages={availableLanguages}
       code={code}
       result={result}
       running={running}
@@ -767,7 +827,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
       onRun={() => execute('sample')}
       onSubmit={() => execute('all')}
       onReset={() => {
-        setCode(problem.templates[language] ?? '');
+        setCode(getProblemTemplate(problem, language));
         setResult(null);
       }}
     />
@@ -936,6 +996,7 @@ function EditorPanel({
   copy: t,
   problem,
   language,
+  availableLanguages,
   code,
   result,
   running,
@@ -948,6 +1009,7 @@ function EditorPanel({
   copy: (typeof copy)['zh'] | (typeof copy)['en'];
   problem: Problem;
   language: Language;
+  availableLanguages: readonly Language[];
   code: string;
   result: CodeRunResult | null;
   running: 'sample' | 'all' | null;
@@ -973,8 +1035,11 @@ function EditorPanel({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="javascript">{t.javascript}</SelectItem>
-            <SelectItem value="python">{t.python}</SelectItem>
+            {availableLanguages.map((languageId) => (
+              <SelectItem key={languageId} value={languageId}>
+                {LANGUAGE_REGISTRY[languageId].label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
         <Button

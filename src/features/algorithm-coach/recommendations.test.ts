@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import { problems } from './data/problems';
 import { getProblemRecommendations } from './recommendations';
 import { createInitialCoachState } from './storage';
+import { getPracticeSessionKey } from './sync';
 import type { CodeRunResult, PracticeSession } from './types';
 
 function run(
@@ -46,6 +48,7 @@ describe('adaptive problem recommendations', () => {
 
     const [first] = getProblemRecommendations(state, {
       now: new Date('2026-07-02T00:00:00.000Z'),
+      catalog: problems,
     });
 
     expect(first.problem.slug).toBe('dependency-cycle');
@@ -65,6 +68,7 @@ describe('adaptive problem recommendations', () => {
 
     const recommendations = getProblemRecommendations(state, {
       now: new Date('2026-07-05T00:00:00.000Z'),
+      catalog: problems,
     });
     const review = recommendations.find(
       (item) => item.problem.slug === 'maximum-bracket-depth'
@@ -86,6 +90,7 @@ describe('adaptive problem recommendations', () => {
 
     const recommendations = getProblemRecommendations(state, {
       now: new Date('2026-07-13T00:00:00.000Z'),
+      catalog: problems,
     });
 
     expect(recommendations[0].problem.slug).not.toBe('first-unique-position');
@@ -94,7 +99,7 @@ describe('adaptive problem recommendations', () => {
   it('fits the daily plan to the learner time budget', () => {
     const recommendations = getProblemRecommendations(
       createInitialCoachState(),
-      { limit: 3, maxMinutes: 45 }
+      { limit: 3, maxMinutes: 45, catalog: problems }
     );
 
     expect(recommendations.length).toBeGreaterThan(0);
@@ -122,8 +127,43 @@ describe('adaptive problem recommendations', () => {
       },
     ];
 
-    const [first] = getProblemRecommendations(state, { limit: 1 });
+    const [first] = getProblemRecommendations(state, {
+      limit: 1,
+      catalog: problems,
+    });
     expect(first.problem.topics).toContain('dynamic-programming');
     expect(first.reason).toBe('weak-topic');
+  });
+
+  it('bases retry recommendations on the current problem version', () => {
+    const slug = 'first-unique-position';
+    const currentCatalog = problems.map((problem) =>
+      problem.slug === slug
+        ? { ...problem, version: { contentVersion: 2 } }
+        : problem
+    );
+    const state = createInitialCoachState();
+    state.sessions[slug] = session(slug, 'passed', {
+      problemContentVersion: 1,
+      completedAt: '2026-07-01T00:00:00.000Z',
+    });
+    const currentRun = {
+      ...run(slug, 'failed'),
+      problemContentVersion: 2,
+      executedAt: '2026-07-02T00:00:00.000Z',
+    };
+    state.sessions[getPracticeSessionKey(slug, 2)] = session(slug, 'failed', {
+      problemContentVersion: 2,
+      runs: [currentRun],
+      updatedAt: currentRun.executedAt,
+    });
+
+    const recommendation = getProblemRecommendations(state, {
+      limit: currentCatalog.length,
+      now: new Date('2026-07-03T00:00:00.000Z'),
+      catalog: currentCatalog,
+    }).find((item) => item.problem.slug === slug);
+
+    expect(recommendation?.reason).toBe('retry');
   });
 });

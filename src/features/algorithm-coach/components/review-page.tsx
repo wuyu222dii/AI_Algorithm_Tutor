@@ -28,7 +28,6 @@ import {
 } from '@/shared/components/ui/tabs';
 import { cn } from '@/shared/lib/utils';
 
-import { problems } from '../data/problems';
 import {
   calculateTopicMasterySnapshots,
   ReviewRating,
@@ -127,6 +126,7 @@ export function ReviewPage() {
   const locale = localeKey(useLocale());
   const t = copy[locale];
   const coach = useCoachStore();
+  const problems = coach.problems;
   const [revealedCards, setRevealedCards] = useState<Set<string>>(
     () => new Set()
   );
@@ -155,8 +155,9 @@ export function ReviewPage() {
   );
 
   const masterySnapshots = useMemo(
-    () => calculateTopicMasterySnapshots(coach.state, coach.reviewItems),
-    [coach.reviewItems, coach.state]
+    () =>
+      calculateTopicMasterySnapshots(coach.state, coach.reviewItems, problems),
+    [coach.reviewItems, coach.state, problems]
   );
 
   const topicStats = useMemo(() => {

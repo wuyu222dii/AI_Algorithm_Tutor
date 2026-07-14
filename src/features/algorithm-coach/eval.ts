@@ -1,3 +1,4 @@
+import { getProblemBySlug } from './data/problems';
 import { coachEvalCases } from './eval-cases';
 import { createDemoArtifact } from './fixtures';
 
@@ -40,7 +41,12 @@ export function runOfflineCoachEval(): CoachEvalSummary {
 
   for (const sample of coachEvalCases) {
     const startedAt = performance.now();
-    const artifact = createDemoArtifact(sample.request);
+    const artifact = createDemoArtifact(
+      sample.request,
+      sample.request.problemSlug
+        ? getProblemBySlug(sample.request.problemSlug)
+        : undefined
+    );
     latencyTotal += performance.now() - startedAt;
 
     const isStructured = Boolean(

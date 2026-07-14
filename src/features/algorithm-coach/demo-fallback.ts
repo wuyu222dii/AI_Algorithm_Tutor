@@ -1,7 +1,9 @@
-import { getProblemBySlug } from './data/problems';
 import { CoachRequest } from './types';
 
-export function canUseCoachDemoFallback(request: CoachRequest): boolean {
+export function canUseCoachDemoFallback(
+  request: CoachRequest,
+  hasTrustedProblem = false
+): boolean {
   if (process.env.COACH_DEMO_FALLBACK_ENABLED !== 'true') return false;
   if (
     process.env.NODE_ENV === 'production' ||
@@ -11,7 +13,6 @@ export function canUseCoachDemoFallback(request: CoachRequest): boolean {
   }
   const problemSlug = request.problemSlug ?? request.problem?.slug;
   return (
-    request.action !== 'parse' &&
-    Boolean(problemSlug && getProblemBySlug(problemSlug))
+    request.action !== 'parse' && Boolean(problemSlug && hasTrustedProblem)
   );
 }

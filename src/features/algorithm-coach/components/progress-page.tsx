@@ -139,16 +139,16 @@ export function ProgressPage() {
   const topicMastery = useMemo(
     () =>
       Object.values(
-        calculateTopicMasterySnapshots(state, coach.reviewItems)
+        calculateTopicMasterySnapshots(state, coach.reviewItems, coach.problems)
       ).sort((a, b) => b.value - a.value),
-    [coach.reviewItems, state]
+    [coach.problems, coach.reviewItems, state]
   );
 
   const latestAssessment = state.assessments.at(-1);
   const weeklyGoal = Number(profile?.weeklyTarget ?? 5);
   const weeklyCompletedCount = useMemo(
-    () => countNaturalWeekCompletions(state),
-    [state]
+    () => countNaturalWeekCompletions(state, { catalog: coach.problems }),
+    [coach.problems, state]
   );
 
   function sendFeedback(value: 'up' | 'down') {

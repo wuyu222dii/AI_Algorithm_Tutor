@@ -1,5 +1,5 @@
-import { problems } from './data/problems';
 import type { CoachStorageScope } from './storage';
+import { getPracticeSessionKey, normalizeProblemContentVersion } from './sync';
 import type {
   CoachState,
   CodeRunResult,
@@ -59,6 +59,7 @@ export interface TopicMasterySnapshot {
 type WeekOptions = {
   now?: Date;
   timeZone?: string;
+  catalog?: readonly Problem[];
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -305,20 +306,100 @@ export function isPracticeSessionCompleted(
   );
 }
 
+function problemContentVersion(problem: Problem): number {
+  return normalizeProblemContentVersion(problem.version?.contentVersion);
+}
+
+function sessionContentVersion(session: PracticeSession): number {
+  return normalizeProblemContentVersion(session.problemContentVersion);
+}
+
+export function getProblemPracticeSession(
+  state: CoachState,
+  problem: Problem
+): PracticeSession | undefined {
+  const version = problemContentVersion(problem);
+  const aliases =
+    problem.id === problem.slug ? [problem.slug] : [problem.slug, problem.id];
+  for (const alias of aliases) {
+    const session = state.sessions[getPracticeSessionKey(alias, version)];
+    if (session && sessionContentVersion(session) === version) return session;
+  }
+  return Object.values(state.sessions).find(
+    (session) =>
+      aliases.includes(session.problemSlug) &&
+      sessionContentVersion(session) === version
+  );
+}
+
+function catalogVersions(catalog: readonly Problem[]): Map<string, number> {
+  const versions = new Map<string, number>();
+  for (const problem of catalog) {
+    const version = problemContentVersion(problem);
+    for (const alias of [problem.slug, problem.id]) {
+      versions.set(alias, Math.max(versions.get(alias) ?? 0, version));
+    }
+  }
+  return versions;
+}
+
+function catalogCanonicalSlugs(
+  catalog: readonly Problem[]
+): Map<string, string> {
+  const aliases = new Map<string, string>();
+  for (const problem of catalog) {
+    aliases.set(problem.slug, problem.slug);
+    aliases.set(problem.id, problem.slug);
+  }
+  return aliases;
+}
+
+/** Select one current (catalog) or highest known session per problem slug. */
+export function selectCurrentPracticeSessions(
+  state: CoachState,
+  catalog: readonly Problem[] = []
+): PracticeSession[] {
+  const requestedVersions = catalogVersions(catalog);
+  const canonicalSlugs = catalogCanonicalSlugs(catalog);
+  const selected = new Map<string, PracticeSession>();
+  for (const session of Object.values(state.sessions)) {
+    const version = sessionContentVersion(session);
+    const requestedVersion = requestedVersions.get(session.problemSlug);
+    if (requestedVersion !== undefined && version !== requestedVersion)
+      continue;
+    const canonicalSlug =
+      canonicalSlugs.get(session.problemSlug) ?? session.problemSlug;
+    const existing = selected.get(canonicalSlug);
+    if (
+      !existing ||
+      sessionContentVersion(existing) < version ||
+      (sessionContentVersion(existing) === version &&
+        Date.parse(existing.updatedAt) < Date.parse(session.updatedAt))
+    ) {
+      selected.set(canonicalSlug, session);
+    }
+  }
+  return [...selected.values()];
+}
+
 function runTimestamp(run: CodeRunResult): number {
   const timestamp = Date.parse(run.executedAt);
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function runsForProblem(state: CoachState, problem: Problem): CodeRunResult[] {
-  const sessionRuns = [
-    ...(state.sessions[problem.slug]?.runs ?? []),
-    ...(problem.id === problem.slug
-      ? []
-      : (state.sessions[problem.id]?.runs ?? [])),
-  ];
+  const version = problemContentVersion(problem);
+  const session = getProblemPracticeSession(state, problem);
+  const sessionRuns = (session?.runs ?? []).map((run) => ({
+    ...run,
+    problemContentVersion: normalizeProblemContentVersion(
+      run.problemContentVersion ?? session?.problemContentVersion
+    ),
+  }));
   const flatRuns = state.runs.filter(
-    (run) => run.problemSlug === problem.slug || run.problemSlug === problem.id
+    (run) =>
+      (run.problemSlug === problem.slug || run.problemSlug === problem.id) &&
+      normalizeProblemContentVersion(run.problemContentVersion) === version
   );
   const seen = new Set<string>();
   return [...sessionRuns, ...flatRuns]
@@ -327,6 +408,7 @@ function runsForProblem(state: CoachState, problem: Problem): CodeRunResult[] {
         run.id ??
         [
           run.problemSlug,
+          normalizeProblemContentVersion(run.problemContentVersion),
           run.language,
           run.executedAt,
           run.status,
@@ -347,7 +429,7 @@ function firstCompletionAt(state: CoachState, problem: Problem): string | null {
   if (runs.some((run) => runPassed(run) && run.testScope === 'sample')) {
     return null;
   }
-  const session = state.sessions[problem.slug] ?? state.sessions[problem.id];
+  const session = getProblemPracticeSession(state, problem);
   return session?.completedAt ?? null;
 }
 
@@ -360,7 +442,7 @@ export function countNaturalWeekCompletions(
   const start = mondayCalendarDay(now, timeZone);
   const end = start + 7 * DAY_MS;
 
-  return problems.filter((problem) => {
+  return (options.catalog ?? []).filter((problem) => {
     const completedAt = firstCompletionAt(state, problem);
     if (!completedAt) return false;
     const completed = new Date(completedAt);
@@ -377,9 +459,35 @@ export function calculateLearningStreak(
   const now = options.now ?? new Date();
   const timeZone = resolvedTimeZone(options.timeZone);
   const activeDays = new Set<number>();
+  const selectedSessions = selectCurrentPracticeSessions(
+    state,
+    options.catalog
+  );
+  const selectedVersions = new Map(
+    selectedSessions.map((session) => [
+      session.problemSlug,
+      sessionContentVersion(session),
+    ])
+  );
+  const requestedVersions = catalogVersions(options.catalog ?? []);
+  for (const run of state.runs) {
+    if (requestedVersions.has(run.problemSlug)) continue;
+    const version = normalizeProblemContentVersion(run.problemContentVersion);
+    selectedVersions.set(
+      run.problemSlug,
+      Math.max(selectedVersions.get(run.problemSlug) ?? 0, version)
+    );
+  }
   const runs = [
-    ...state.runs,
-    ...Object.values(state.sessions).flatMap((session) => session.runs),
+    ...state.runs.filter((run) => {
+      const requested = requestedVersions.get(run.problemSlug);
+      const selected = requested ?? selectedVersions.get(run.problemSlug);
+      return (
+        selected !== undefined &&
+        normalizeProblemContentVersion(run.problemContentVersion) === selected
+      );
+    }),
+    ...selectedSessions.flatMap((session) => session.runs),
   ];
 
   for (const run of runs) {
@@ -420,7 +528,7 @@ function problemScore(
   updatedAt: string | null;
 } | null {
   const runs = runsForProblem(state, problem);
-  const session = state.sessions[problem.slug] ?? state.sessions[problem.id];
+  const session = getProblemPracticeSession(state, problem);
   if (!runs.length && !session?.completedAt && !reviewItem) return null;
 
   const latest = runs.at(-1);
@@ -476,7 +584,8 @@ function problemScore(
 
 export function calculateTopicMasterySnapshots(
   state: CoachState,
-  reviewItems: Record<string, ReviewItem> = {}
+  reviewItems: Record<string, ReviewItem> = {},
+  catalog: readonly Problem[] = []
 ): Record<ProblemTopic, TopicMasterySnapshot> {
   const snapshots = Object.fromEntries(
     ALL_PROBLEM_TOPICS.map((topic) => [
@@ -487,7 +596,7 @@ export function calculateTopicMasterySnapshots(
         confidence: 0,
         evidenceCount: 0,
         completedCount: 0,
-        totalCount: problems.filter((problem) => problem.topics.includes(topic))
+        totalCount: catalog.filter((problem) => problem.topics.includes(topic))
           .length,
         updatedAt: null,
       } satisfies TopicMasterySnapshot,
@@ -495,9 +604,7 @@ export function calculateTopicMasterySnapshots(
   ) as Record<ProblemTopic, TopicMasterySnapshot>;
 
   for (const topic of ALL_PROBLEM_TOPICS) {
-    const related = problems.filter((problem) =>
-      problem.topics.includes(topic)
-    );
+    const related = catalog.filter((problem) => problem.topics.includes(topic));
     const evidence = related
       .map((problem) =>
         problemScore(
@@ -537,7 +644,7 @@ function initialReviewIntervalDays(
   state: CoachState,
   problem: Problem
 ): number {
-  const session = state.sessions[problem.slug] ?? state.sessions[problem.id];
+  const session = getProblemPracticeSession(state, problem);
   if ((session?.hintLevel ?? 0) >= 2) return 2;
   if (session?.hintLevel === 1) return 4;
   return 7;
@@ -549,7 +656,7 @@ function reviewEvidence(state: CoachState, problem: Problem) {
   const candidates = runs.filter((run) => !runPassed(run) || verifiedPass(run));
   const latest = candidates.at(-1);
   if (!latest) return null;
-  const session = state.sessions[problem.slug] ?? state.sessions[problem.id];
+  const session = getProblemPracticeSession(state, problem);
   const runAt = runTimestamp(latest);
   const completedAt = Date.parse(session?.completedAt ?? '');
   const evidenceAt =
@@ -568,14 +675,14 @@ function reviewEvidence(state: CoachState, problem: Problem) {
 export function reconcileReviewProgress(
   state: CoachState,
   current: ReviewProgressState,
-  options: { now?: Date } = {}
+  options: { now?: Date; catalog?: readonly Problem[] } = {}
 ): ReviewProgressState {
   const now = options.now ?? new Date();
   const nowIso = now.toISOString();
   let changed = false;
   const items = { ...current.items };
 
-  for (const problem of problems) {
+  for (const problem of options.catalog ?? []) {
     const evidence = reviewEvidence(state, problem);
     if (!evidence) continue;
     const existing = items[problem.slug] ?? items[problem.id];

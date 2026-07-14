@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { ENABLED_LANGUAGE_IDS } from './languages';
 import {
   CoachChatRequest,
   CoachProblemContext,
@@ -7,7 +8,7 @@ import {
   CodeRunResult,
 } from './types';
 
-export const languageSchema = z.enum(['javascript', 'python']);
+export const languageSchema = z.enum(ENABLED_LANGUAGE_IDS);
 export const localeSchema = z.enum(['zh', 'en']);
 export const difficultySchema = z.enum(['easy', 'medium', 'hard']);
 export const topicSchema = z.enum([
@@ -51,6 +52,9 @@ export const codeRunResultSchema = z.object({
   codeSnapshot: z.string().max(30_000).optional(),
   testScope: z.enum(['sample', 'full', 'unknown']).optional(),
   submitted: z.boolean().optional(),
+  problemContentVersion: z.number().int().min(1).max(1_000_000).optional(),
+  runtimeVersion: z.string().trim().min(1).max(200).optional(),
+  runnerMode: z.enum(['browser-worker', 'remote-judge']).optional(),
 });
 
 const localizedStringSchema = z.union([
@@ -73,6 +77,7 @@ export const problemContextSchema = z
 const commonRequestShape = {
   locale: localeSchema.default('zh'),
   problemSlug: z.string().max(120).optional(),
+  problemContentVersion: z.number().int().min(1).max(1_000_000).optional(),
   problemId: z.string().max(120).optional(),
   problem: problemContextSchema.optional(),
   language: languageSchema.optional(),
@@ -165,6 +170,7 @@ export const coachChatRequestSchema = z
       .max(12),
     locale: localeSchema.default('zh'),
     problemSlug: z.string().max(120).optional(),
+    problemContentVersion: z.number().int().min(1).max(1_000_000).optional(),
     problem: problemContextSchema.optional(),
     language: languageSchema.optional(),
     code: z.string().max(20_000).optional(),

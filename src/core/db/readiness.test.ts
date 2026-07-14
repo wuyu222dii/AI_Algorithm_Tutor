@@ -5,6 +5,7 @@ import migrationJournal from '@/config/db/migrations/meta/_journal.json';
 import {
   checkAiConfiguration,
   checkAuthenticationConfiguration,
+  checkCatalogReadiness,
   checkMigrationVersions,
   checkRedisReadiness,
   checkRequiredConfiguration,
@@ -55,6 +56,38 @@ describe('health checks', () => {
     ).toMatchObject({
       status: 'error',
       details: { invalid: ['TRUSTED_PROXY_HEADERS'] },
+    });
+  });
+
+  it('validates catalog rollout feature flags', () => {
+    expect(
+      checkRequiredConfiguration({
+        ...validProductionEnv,
+        DB_CATALOG_ENABLED: 'false',
+        CATALOG_SYNC_ENABLED: 'true',
+        TYPESCRIPT_ENABLED: 'sometimes',
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: {
+        invalid: [
+          'TYPESCRIPT_ENABLED',
+          'CATALOG_SYNC_ENABLED',
+          'DB_CATALOG_ENABLED',
+        ],
+      },
+    });
+  });
+
+  it('rejects an invalid catalog readiness floor', () => {
+    expect(
+      checkRequiredConfiguration({
+        ...validProductionEnv,
+        CATALOG_MIN_PUBLISHED_PROBLEMS: '0',
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: { invalid: ['CATALOG_MIN_PUBLISHED_PROBLEMS'] },
     });
   });
 
@@ -196,6 +229,35 @@ describe('health checks', () => {
     );
   });
 
+  it('requires every published catalog problem to have a valid current revision', () => {
+    expect(
+      checkCatalogReadiness({ publishedCount: 58, readyCount: 58 })
+    ).toMatchObject({
+      status: 'ok',
+      details: { publishedCount: 58, readyCount: 58 },
+    });
+    expect(
+      checkCatalogReadiness({ publishedCount: 58, readyCount: 57 })
+    ).toMatchObject({
+      status: 'error',
+      code: 'catalog_invalid',
+      details: { publishedCount: 58, readyCount: 57 },
+    });
+    expect(
+      checkCatalogReadiness({ publishedCount: 0, readyCount: 0 })
+    ).toMatchObject({ status: 'error', code: 'catalog_empty' });
+    expect(
+      checkCatalogReadiness({ publishedCount: 57, readyCount: 57 })
+    ).toMatchObject({ status: 'error', code: 'catalog_below_minimum' });
+    expect(
+      checkCatalogReadiness({
+        publishedCount: 20,
+        readyCount: 20,
+        minimumPublishedCount: 20,
+      })
+    ).toMatchObject({ status: 'ok' });
+  });
+
   it('fails readiness without attempting a connection when URL is absent', async () => {
     const status = await readyHealthStatus(
       {
@@ -211,6 +273,7 @@ describe('health checks', () => {
     expect(status.status).toBe('error');
     expect(status.checks?.database.code).toBe('database_url_missing');
     expect(status.checks?.migrations.code).toBe('database_unavailable');
+    expect(status.checks?.catalog.code).toBe('database_unavailable');
     expect(status.checks?.redis.status).toBe('ok');
   });
 });

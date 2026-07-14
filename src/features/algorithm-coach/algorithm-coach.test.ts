@@ -19,10 +19,15 @@ import {
 import { parseProblemDraft } from './parser';
 import { coachRequestSchema, normalizeCoachRequest } from './schemas';
 import {
+  clearCoachState,
+  COACH_STORAGE_KEY,
   COACH_STORAGE_VERSION,
+  createCoachStorageScope,
   createInitialCoachState,
-  deserializeCoachState,
+  getScopedStorageKey,
+  loadCoachState,
 } from './storage';
+import { getPracticeSessionKey } from './sync';
 import { CodeRunResult } from './types';
 
 const failedRun: CodeRunResult = {
@@ -47,6 +52,7 @@ const failedRun: CodeRunResult = {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  window.localStorage.clear();
 });
 
 describe('algorithm coach domain', () => {
@@ -163,23 +169,29 @@ describe('algorithm coach domain', () => {
   });
 
   it('grounds demo diagnosis in an observed failed test', () => {
-    const artifact = createDemoArtifact({
-      action: 'diagnose',
-      locale: 'zh',
-      problemSlug: 'dependency-cycle',
-      runResult: failedRun,
-    });
+    const artifact = createDemoArtifact(
+      {
+        action: 'diagnose',
+        locale: 'zh',
+        problemSlug: 'dependency-cycle',
+        runResult: failedRun,
+      },
+      getProblemBySlug('dependency-cycle')
+    );
     expect(artifact.diagnosisCategory).toBe('wrong-answer');
     expect(artifact.evidence.join(' ')).toContain('dfs-2');
     expect(artifact.evidence.join(' ')).toContain('期望 true');
   });
 
   it('returns curated counterexamples that map to a real test', () => {
-    const artifact = createDemoArtifact({
-      action: 'counterexample',
-      locale: 'en',
-      problemSlug: 'minimum-processing-rate',
-    });
+    const artifact = createDemoArtifact(
+      {
+        action: 'counterexample',
+        locale: 'en',
+        problemSlug: 'minimum-processing-rate',
+      },
+      getProblemBySlug('minimum-processing-rate')
+    );
     const counterexample = artifact.counterexample;
     expect(counterexample?.input.length).toBeGreaterThan(0);
     expect(counterexample?.expected).toBeDefined();
@@ -196,12 +208,15 @@ describe('algorithm coach domain', () => {
   });
 
   it('marks a counterexample as observed only when it matches a real failed test', () => {
-    const artifact = createDemoArtifact({
-      action: 'counterexample',
-      locale: 'zh',
-      problemSlug: 'dependency-cycle',
-      runResult: failedRun,
-    });
+    const artifact = createDemoArtifact(
+      {
+        action: 'counterexample',
+        locale: 'zh',
+        problemSlug: 'dependency-cycle',
+        runResult: failedRun,
+      },
+      getProblemBySlug('dependency-cycle')
+    );
 
     expect(artifact.counterexample).toMatchObject({
       verification: 'observed',
@@ -212,10 +227,11 @@ describe('algorithm coach domain', () => {
     expect(artifact.evidence.join(' ')).toContain('dfs-2');
   });
 
-  it('migrates legacy local state and restores compatibility views', () => {
-    const migrated = deserializeCoachState(
+  it('migrates v2 JavaScript and Python state without losing practice data', () => {
+    window.localStorage.setItem(
+      'algocoach:state:v2',
       JSON.stringify({
-        version: 1,
+        version: 2,
         learningProfile: {
           goal: 'interview',
           preferredLanguage: 'python',
@@ -225,7 +241,10 @@ describe('algorithm coach domain', () => {
         practiceSessions: [
           {
             problemSlug: 'dependency-cycle',
-            code: { python: 'def has_dependency_cycle(): pass' },
+            code: {
+              javascript: 'function hasDependencyCycle() {}',
+              python: 'def has_dependency_cycle(): pass',
+            },
             runs: [failedRun],
             hintLevel: 1,
             diagnosisCount: 0,
@@ -236,10 +255,95 @@ describe('algorithm coach domain', () => {
         ],
       })
     );
+    const migrated = loadCoachState(window.localStorage);
     expect(migrated.version).toBe(COACH_STORAGE_VERSION);
     expect(migrated.profile?.preferredLanguage).toBe('python');
     expect(migrated.code['dependency-cycle']?.python).toContain('def');
+    expect(migrated.code['dependency-cycle']?.javascript).toContain('function');
     expect(migrated.runs).toHaveLength(1);
+    expect(migrated.sessions['dependency-cycle']).toMatchObject({
+      problemContentVersion: 1,
+    });
+    expect(migrated.runs[0]).toMatchObject({
+      problemContentVersion: 1,
+      runnerMode: 'browser-worker',
+    });
+    expect(window.localStorage.getItem(COACH_STORAGE_KEY)).not.toBeNull();
+    window.localStorage.clear();
+  });
+
+  it('migrates and clears scoped legacy state keys for signed-in users', () => {
+    const scope = createCoachStorageScope('legacy-account');
+    const v2Key = getScopedStorageKey('algocoach:state:v2', scope);
+    const v1Key = getScopedStorageKey('algocoach:state:v1', scope);
+    window.localStorage.setItem(
+      v2Key,
+      JSON.stringify({
+        version: 2,
+        profile: {
+          goal: 'interview',
+          preferredLanguage: 'javascript',
+          weeklyTarget: 3,
+          onboardedAt: '2026-01-01T00:00:00.000Z',
+        },
+      })
+    );
+    window.localStorage.setItem(v1Key, JSON.stringify({ version: 1 }));
+
+    expect(loadCoachState(window.localStorage, scope).profile?.goal).toBe(
+      'interview'
+    );
+    expect(
+      window.localStorage.getItem(getScopedStorageKey(COACH_STORAGE_KEY, scope))
+    ).not.toBeNull();
+    expect(window.localStorage.getItem(v2Key)).toBeNull();
+    expect(window.localStorage.getItem(v1Key)).toBeNull();
+
+    window.localStorage.setItem(v2Key, JSON.stringify({ version: 2 }));
+    window.localStorage.setItem(v1Key, JSON.stringify({ version: 1 }));
+    clearCoachState(window.localStorage, scope);
+    expect(
+      window.localStorage.getItem(getScopedStorageKey(COACH_STORAGE_KEY, scope))
+    ).toBeNull();
+    expect(window.localStorage.getItem(v2Key)).toBeNull();
+    expect(window.localStorage.getItem(v1Key)).toBeNull();
+  });
+
+  it('normalizes a versioned session and code to the stable composite key', () => {
+    const sessionKey = getPracticeSessionKey('dependency-cycle', 2);
+    window.localStorage.setItem(
+      COACH_STORAGE_KEY,
+      JSON.stringify({
+        version: COACH_STORAGE_VERSION,
+        sessions: {
+          'dependency-cycle': {
+            problemSlug: 'dependency-cycle',
+            problemContentVersion: 2,
+            code: { javascript: 'version-two-session-code' },
+            runs: [{ ...failedRun, problemContentVersion: 2 }],
+            hintLevel: 2,
+            diagnosisCount: 1,
+            correctedAfterDiagnosis: false,
+            startedAt: '2026-01-02T00:00:00.000Z',
+            updatedAt: '2026-01-02T00:00:00.000Z',
+          },
+        },
+        code: { 'dependency-cycle': { javascript: 'version-two-flat-code' } },
+      })
+    );
+
+    const migrated = loadCoachState(window.localStorage);
+    expect(migrated.sessions['dependency-cycle']).toBeUndefined();
+    expect(migrated.sessions[sessionKey]).toMatchObject({
+      problemSlug: 'dependency-cycle',
+      problemContentVersion: 2,
+      hintLevel: 2,
+      code: { javascript: 'version-two-flat-code' },
+    });
+    expect(migrated.sessions[sessionKey].runs).toEqual([
+      expect.objectContaining({ problemContentVersion: 2 }),
+    ]);
+    expect(migrated.code[sessionKey]?.javascript).toBe('version-two-flat-code');
   });
 
   it('calculates completion, hint, correction, and topic metrics', () => {
@@ -261,7 +365,7 @@ describe('algorithm coach domain', () => {
       updatedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
     };
-    const metrics = calculateProductMetrics(state);
+    const metrics = calculateProductMetrics(state, {}, { catalog: problems });
     expect(metrics.activated).toBe(true);
     expect(metrics.practiceCompletionRate).toBe(1);
     expect(metrics.hintUsageRate).toBe(1);

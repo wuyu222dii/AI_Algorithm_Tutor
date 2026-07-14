@@ -39,6 +39,11 @@ const env = {
   GOOGLE_OAUTH_MOCK_ENABLED: 'true',
   GOOGLE_OAUTH_MOCK_SECRET: 'algocoach-e2e-google-oauth-mock-secret-2026',
   NEXT_PUBLIC_COACH_CLOUD_SYNC_ENABLED: 'false',
+  // Browser tests deliberately use the static catalog fixture; production
+  // readiness rejects an unavailable PostgreSQL catalog instead of falling back.
+  DB_CATALOG_ENABLED: 'false',
+  CATALOG_SYNC_ENABLED: 'false',
+  TYPESCRIPT_ENABLED: 'true',
   OPENROUTER_API_KEY: '',
   ALGO_COACH_MODEL: 'google/gemini-2.5-flash',
   COACH_DEMO_FALLBACK_ENABLED: 'true',

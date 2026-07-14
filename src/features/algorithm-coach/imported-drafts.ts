@@ -44,6 +44,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function hasLanguageContract(value: Record<string, unknown>): boolean {
+  const configs = value.languageConfigs;
+  if (
+    isRecord(configs) &&
+    Object.values(configs).some(
+      (config) =>
+        isRecord(config) &&
+        typeof config.entryPoint === 'string' &&
+        typeof config.template === 'string'
+    )
+  ) {
+    return true;
+  }
+
+  return Boolean(
+    typeof value.entryPoint === 'string' &&
+      isRecord(value.templates) &&
+      typeof value.templates.javascript === 'string' &&
+      typeof value.templates.python === 'string'
+  );
+}
+
 function isProblem(value: unknown): value is Problem {
   return Boolean(
     isRecord(value) &&
@@ -58,10 +80,7 @@ function isProblem(value: unknown): value is Problem {
       typeof value.description.en === 'string' &&
       ['easy', 'medium', 'hard'].includes(String(value.difficulty)) &&
       Array.isArray(value.topics) &&
-      typeof value.entryPoint === 'string' &&
-      isRecord(value.templates) &&
-      typeof value.templates.javascript === 'string' &&
-      typeof value.templates.python === 'string' &&
+      hasLanguageContract(value) &&
       Array.isArray(value.tests) &&
       Array.isArray(value.examples) &&
       Array.isArray(value.constraints) &&

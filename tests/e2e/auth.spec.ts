@@ -239,7 +239,7 @@ test.describe('desktop registration and login', () => {
     const claimed = await page.evaluate(() => {
       const scope = localStorage.getItem('algocoach:guest-claimed-by:v1');
       const state = scope
-        ? localStorage.getItem(`algocoach:state:v2:${scope}`)
+        ? localStorage.getItem(`algocoach:state:v3:${scope}`)
         : null;
       return { scope, state: state ? JSON.parse(state) : null };
     });

@@ -1,4 +1,3 @@
-import { getLocalizedProblem, getProblemBySlug } from './data/problems';
 import { parseProblemDraft } from './parser';
 import {
   CoachChatRequest,
@@ -9,6 +8,7 @@ import {
   JsonValue,
   LearningArtifact,
   LocalizedProblem,
+  Problem,
 } from './types';
 
 function artifactId(type: string): string {
@@ -28,9 +28,38 @@ function stringify(value: unknown): string {
   }
 }
 
-function resolveProblem(request: CoachRequest): LocalizedProblem | undefined {
-  const slug = request.problemSlug ?? request.problem?.slug;
-  return slug ? getLocalizedProblem(slug, request.locale ?? 'zh') : undefined;
+function resolveProblem(
+  request: CoachRequest | CoachChatRequest,
+  knownProblem?: Problem
+): LocalizedProblem | undefined {
+  const locale = request.locale ?? 'zh';
+  if (knownProblem) {
+    return {
+      ...knownProblem,
+      title: knownProblem.title[locale],
+      description: knownProblem.description[locale],
+      constraints: knownProblem.constraints.map((item) => item[locale]),
+      hints: knownProblem.hints[locale],
+      reviewPoints: knownProblem.reviewPoints.map((item) => item[locale]),
+    };
+  }
+  if (!request.problem) return undefined;
+  return {
+    id: request.problem.slug ?? 'custom',
+    slug: request.problem.slug ?? 'custom',
+    title: request.problem.title,
+    description: request.problem.description,
+    difficulty: request.problem.difficulty ?? 'medium',
+    topics: request.problem.topics ?? [],
+    languageConfigs: {},
+    version: { contentVersion: request.problemContentVersion ?? 1 },
+    tests: [],
+    examples: [],
+    constraints: request.problem.constraints ?? [],
+    hints: ['', '', ''],
+    reviewPoints: [],
+    estimatedMinutes: 20,
+  };
 }
 
 function baseArtifact(
@@ -133,9 +162,12 @@ function createDiagnosis(request: CoachRequest): LearningArtifact {
   };
 }
 
-function createHint(request: CoachRequest): LearningArtifact {
+function createHint(
+  request: CoachRequest,
+  knownProblem?: Problem
+): LearningArtifact {
   const locale = request.locale ?? 'zh';
-  const problem = resolveProblem(request);
+  const problem = resolveProblem(request, knownProblem);
   const level = request.hintLevel ?? 1;
   const generic = [
     locale === 'zh'
@@ -173,11 +205,12 @@ function createHint(request: CoachRequest): LearningArtifact {
   };
 }
 
-function createCounterexample(request: CoachRequest): LearningArtifact {
+function createCounterexample(
+  request: CoachRequest,
+  knownProblem?: Problem
+): LearningArtifact {
   const locale = request.locale ?? 'zh';
   const failed = firstFailedTest(request.runResult);
-  const problemSlug = request.problemSlug ?? request.problem?.slug;
-  const knownProblem = problemSlug ? getProblemBySlug(problemSlug) : undefined;
   const observedTest = failed
     ? knownProblem?.tests.find((test) => test.id === failed.testId)
     : undefined;
@@ -229,9 +262,12 @@ function createCounterexample(request: CoachRequest): LearningArtifact {
   };
 }
 
-function createReviewCard(request: CoachRequest): LearningArtifact {
+function createReviewCard(
+  request: CoachRequest,
+  knownProblem?: Problem
+): LearningArtifact {
   const locale = request.locale ?? 'zh';
-  const problem = resolveProblem(request);
+  const problem = resolveProblem(request, knownProblem);
   const title =
     problem?.title ??
     request.problem?.title ??
@@ -274,7 +310,10 @@ function createReviewCard(request: CoachRequest): LearningArtifact {
   };
 }
 
-export function createDemoArtifact(request: CoachRequest): LearningArtifact {
+export function createDemoArtifact(
+  request: CoachRequest,
+  knownProblem?: Problem
+): LearningArtifact {
   const locale = request.locale ?? 'zh';
   if (request.action === 'parse') {
     const draft = parseProblemDraft(request.statement ?? '', locale);
@@ -296,17 +335,19 @@ export function createDemoArtifact(request: CoachRequest): LearningArtifact {
     };
   }
   if (request.action === 'diagnose') return createDiagnosis(request);
-  if (request.action === 'hint') return createHint(request);
-  if (request.action === 'counterexample') return createCounterexample(request);
-  return createReviewCard(request);
+  if (request.action === 'hint') return createHint(request, knownProblem);
+  if (request.action === 'counterexample') {
+    return createCounterexample(request, knownProblem);
+  }
+  return createReviewCard(request, knownProblem);
 }
 
-export function createDemoChatResponse(request: CoachChatRequest): string {
+export function createDemoChatResponse(
+  request: CoachChatRequest,
+  knownProblem?: Problem
+): string {
   const locale: CoachLocale = request.locale ?? 'zh';
-  const problemSlug = request.problemSlug ?? request.problem?.slug;
-  const problem = problemSlug
-    ? getLocalizedProblem(problemSlug, locale)
-    : undefined;
+  const problem = resolveProblem(request, knownProblem);
   const lastMessage = request.messages.at(-1)?.content.toLowerCase() ?? '';
   const failed = firstFailedTest(request.runResult);
 

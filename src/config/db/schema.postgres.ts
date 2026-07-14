@@ -1,8 +1,10 @@
 import { sql } from 'drizzle-orm';
 import {
+  AnyPgColumn,
   boolean,
   check,
   doublePrecision,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -566,6 +568,210 @@ export const chatMessage = table(
 
 // AlgoCoach learning domain. These tables live beside the authentication tables
 // in the configured application schema and are only accessed by the server.
+export const coachCatalogSource = table(
+  'coach_catalog_source',
+  {
+    id: text('id').primaryKey(),
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    adapter: text('adapter').notNull(),
+    baseUrl: text('base_url').notNull(),
+    status: text('status').notNull().default('paused'),
+    syncEnabled: boolean('sync_enabled').notNull().default(false),
+    syncIntervalMinutes: integer('sync_interval_minutes')
+      .notNull()
+      .default(1440),
+    licensePolicy: jsonb('license_policy')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    lastSuccessfulRevision: text('last_successful_revision'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_coach_catalog_source_key').on(table.key),
+    index('idx_coach_catalog_source_sync').on(table.status, table.syncEnabled),
+    check(
+      'chk_coach_catalog_source_status',
+      sql`${table.status} in ('active', 'paused', 'disabled')`
+    ),
+    check(
+      'chk_coach_catalog_source_interval',
+      sql`${table.syncIntervalMinutes} between 5 and 10080`
+    ),
+  ]
+);
+
+export const coachCatalogSyncRun = table(
+  'coach_catalog_sync_run',
+  {
+    id: text('id').primaryKey(),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => coachCatalogSource.id, { onDelete: 'restrict' }),
+    trigger: text('trigger').notNull(),
+    status: text('status').notNull().default('queued'),
+    upstreamRevision: text('upstream_revision'),
+    cursor: text('cursor'),
+    statistics: jsonb('statistics')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    errorCode: text('error_code'),
+    errorMessage: text('error_message'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index('idx_coach_catalog_sync_source_created').on(
+      table.sourceId,
+      table.createdAt.desc()
+    ),
+    index('idx_coach_catalog_sync_status_created').on(
+      table.status,
+      table.createdAt.asc()
+    ),
+    check(
+      'chk_coach_catalog_sync_trigger',
+      sql`${table.trigger} in ('scheduled', 'manual', 'webhook')`
+    ),
+    check(
+      'chk_coach_catalog_sync_status',
+      sql`${table.status} in ('queued', 'running', 'succeeded', 'partial', 'failed', 'cancelled')`
+    ),
+  ]
+);
+
+export const coachProblemCandidate = table(
+  'coach_problem_candidate',
+  {
+    id: text('id').primaryKey(),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => coachCatalogSource.id, { onDelete: 'restrict' }),
+    syncRunId: text('sync_run_id').references(() => coachCatalogSyncRun.id, {
+      onDelete: 'set null',
+    }),
+    externalId: text('external_id').notNull(),
+    upstreamUrl: text('upstream_url').notNull(),
+    sourceRevision: text('source_revision').notNull(),
+    contentHash: text('content_hash').notNull(),
+    licenseSpdx: text('license_spdx').notNull(),
+    attribution: text('attribution').notNull(),
+    normalizedProblem: jsonb('normalized_problem').notNull(),
+    validation: jsonb('validation')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    status: text('status').notNull().default('quarantined'),
+    rejectionReason: text('rejection_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_coach_problem_candidate_content').on(
+      table.sourceId,
+      table.externalId,
+      table.contentHash
+    ),
+    index('idx_coach_problem_candidate_review').on(
+      table.status,
+      table.updatedAt.asc()
+    ),
+    index('idx_coach_problem_candidate_sync').on(table.syncRunId),
+    check(
+      'chk_coach_problem_candidate_status',
+      sql`${table.status} in ('discovered', 'quarantined', 'validated', 'approved', 'rejected', 'published', 'archived')`
+    ),
+  ]
+);
+
+export const coachProblemRevision = table(
+  'coach_problem_revision',
+  {
+    id: text('id').primaryKey(),
+    problemId: text('problem_id')
+      .notNull()
+      .references((): AnyPgColumn => coachProblem.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    title: jsonb('title').notNull(),
+    description: jsonb('description').notNull(),
+    difficulty: text('difficulty').notNull(),
+    topics: text('topics')
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    entryPoint: text('entry_point').notNull(),
+    templates: jsonb('templates').notNull(),
+    languageConfigs: jsonb('language_configs').notNull(),
+    signature: jsonb('signature'),
+    examples: jsonb('examples')
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    constraints: jsonb('constraints')
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    hints: jsonb('hints').notNull(),
+    reviewPoints: jsonb('review_points')
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    estimatedMinutes: smallint('estimated_minutes').notNull().default(20),
+    sourceStatement: text('source_statement'),
+    sourceUrl: text('source_url'),
+    sourceRevision: text('source_revision'),
+    catalogVersion: text('catalog_version'),
+    contentHash: text('content_hash').notNull(),
+    status: text('status').notNull().default('draft'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('uq_coach_problem_revision_version').on(
+      table.problemId,
+      table.version
+    ),
+    uniqueIndex('uq_coach_problem_revision_content').on(
+      table.problemId,
+      table.contentHash
+    ),
+    uniqueIndex('uq_coach_problem_revision_id_problem').on(
+      table.id,
+      table.problemId
+    ),
+    index('idx_coach_problem_revision_status').on(
+      table.problemId,
+      table.status,
+      table.version.desc()
+    ),
+    check('chk_coach_problem_revision_version', sql`${table.version} > 0`),
+    check(
+      'chk_coach_problem_revision_difficulty',
+      sql`${table.difficulty} in ('easy', 'medium', 'hard')`
+    ),
+    check(
+      'chk_coach_problem_revision_status',
+      sql`${table.status} in ('draft', 'published', 'archived')`
+    ),
+    check(
+      'chk_coach_problem_revision_estimated_minutes',
+      sql`${table.estimatedMinutes} between 1 and 180`
+    ),
+  ]
+);
+
 export const coachProblem = table(
   'coach_problem',
   {
@@ -584,6 +790,10 @@ export const coachProblem = table(
       .default(sql`ARRAY[]::text[]`),
     entryPoint: text('entry_point').notNull(),
     templates: jsonb('templates').notNull(),
+    languageConfigs: jsonb('language_configs')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    signature: jsonb('signature'),
     examples: jsonb('examples')
       .notNull()
       .default(sql`'[]'::jsonb`),
@@ -600,6 +810,7 @@ export const coachProblem = table(
     sourceStatement: text('source_statement'),
     sourceUrl: text('source_url'),
     contentVersion: integer('content_version').notNull().default(1),
+    currentRevisionId: text('current_revision_id'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -615,11 +826,17 @@ export const coachProblem = table(
     uniqueIndex('uq_coach_problem_owner_slug')
       .on(table.ownerUserId, table.slug)
       .where(sql`${table.ownerUserId} is not null`),
+    uniqueIndex('uq_coach_problem_id_owner').on(table.id, table.ownerUserId),
     uniqueIndex('uq_coach_problem_owner_active')
       .on(table.ownerUserId)
       .where(
         sql`${table.ownerUserId} is not null and ${table.isActive} = true`
       ),
+    foreignKey({
+      columns: [table.currentRevisionId, table.id],
+      foreignColumns: [coachProblemRevision.id, coachProblemRevision.problemId],
+      name: 'fk_coach_problem_current_revision_ownership',
+    }),
     index('idx_coach_problem_status_difficulty').on(
       table.status,
       table.difficulty
@@ -631,7 +848,7 @@ export const coachProblem = table(
     ),
     check(
       'chk_coach_problem_source',
-      sql`${table.source} in ('curated', 'imported')`
+      sql`${table.source} in ('curated', 'imported', 'external')`
     ),
     check(
       'chk_coach_problem_difficulty',
@@ -648,6 +865,90 @@ export const coachProblem = table(
   ]
 );
 
+export const coachProblemOrigin = table(
+  'coach_problem_origin',
+  {
+    id: text('id').primaryKey(),
+    problemId: text('problem_id')
+      .notNull()
+      .references(() => coachProblem.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => coachCatalogSource.id, { onDelete: 'restrict' }),
+    externalId: text('external_id').notNull(),
+    upstreamUrl: text('upstream_url').notNull(),
+    licenseSpdx: text('license_spdx').notNull(),
+    attribution: text('attribution').notNull(),
+    sourceRevision: text('source_revision').notNull(),
+    contentHash: text('content_hash').notNull(),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_coach_problem_origin_problem').on(table.problemId),
+    uniqueIndex('uq_coach_problem_origin_external').on(
+      table.sourceId,
+      table.externalId
+    ),
+    index('idx_coach_problem_origin_revision').on(
+      table.sourceId,
+      table.sourceRevision
+    ),
+  ]
+);
+
+export const coachCatalogReviewAudit = table(
+  'coach_catalog_review_audit',
+  {
+    id: text('id').primaryKey(),
+    candidateId: text('candidate_id').references(
+      () => coachProblemCandidate.id,
+      { onDelete: 'set null' }
+    ),
+    problemId: text('problem_id').references(() => coachProblem.id, {
+      onDelete: 'set null',
+    }),
+    revisionId: text('revision_id').references(() => coachProblemRevision.id, {
+      onDelete: 'set null',
+    }),
+    reviewerUserId: text('reviewer_user_id').references(() => user.id, {
+      onDelete: 'set null',
+    }),
+    action: text('action').notNull(),
+    notes: text('notes'),
+    metadata: jsonb('metadata')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index('idx_coach_catalog_review_candidate').on(
+      table.candidateId,
+      table.createdAt.desc()
+    ),
+    index('idx_coach_catalog_review_problem').on(
+      table.problemId,
+      table.createdAt.desc()
+    ),
+    check(
+      'chk_coach_catalog_review_action',
+      sql`${table.action} in ('submitted', 'approved', 'rejected', 'published', 'archived', 'rolled_back')`
+    ),
+    check(
+      'chk_coach_catalog_review_subject',
+      sql`${table.candidateId} is not null or ${table.problemId} is not null or ${table.revisionId} is not null`
+    ),
+  ]
+);
+
 export const coachTestCase = table(
   'coach_test_case',
   {
@@ -655,6 +956,7 @@ export const coachTestCase = table(
     problemId: text('problem_id')
       .notNull()
       .references(() => coachProblem.id, { onDelete: 'cascade' }),
+    revisionId: text('revision_id').notNull(),
     ordinal: smallint('ordinal').notNull(),
     args: jsonb('args').notNull(),
     expected: jsonb('expected').notNull(),
@@ -670,10 +972,14 @@ export const coachTestCase = table(
       .notNull(),
   },
   (table) => [
-    uniqueIndex('uq_coach_test_case_problem_ordinal').on(
-      table.problemId,
-      table.ordinal
-    ),
+    uniqueIndex('uq_coach_test_case_revision_ordinal')
+      .on(table.revisionId, table.ordinal)
+      .where(sql`${table.revisionId} is not null`),
+    foreignKey({
+      columns: [table.revisionId, table.problemId],
+      foreignColumns: [coachProblemRevision.id, coachProblemRevision.problemId],
+      name: 'fk_coach_test_case_revision_ownership',
+    }).onDelete('cascade'),
     index('idx_coach_test_case_problem_sample').on(
       table.problemId,
       table.isSample,
@@ -686,6 +992,47 @@ export const coachTestCase = table(
     ),
     check(
       'chk_coach_test_case_timeout',
+      sql`${table.timeoutMs} between 100 and 10000`
+    ),
+  ]
+);
+
+export const coachImportedTestCase = table(
+  'coach_imported_test_case',
+  {
+    id: text('id').primaryKey(),
+    problemId: text('problem_id').notNull(),
+    ownerUserId: text('owner_user_id').notNull(),
+    ordinal: smallint('ordinal').notNull(),
+    args: jsonb('args').notNull(),
+    expected: jsonb('expected').notNull(),
+    isSample: boolean('is_sample').notNull().default(false),
+    label: jsonb('label'),
+    timeoutMs: integer('timeout_ms').notNull().default(3000),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_coach_imported_test_case_problem_ordinal').on(
+      table.problemId,
+      table.ordinal
+    ),
+    index('idx_coach_imported_test_case_owner_problem').on(
+      table.ownerUserId,
+      table.problemId
+    ),
+    foreignKey({
+      columns: [table.problemId, table.ownerUserId],
+      foreignColumns: [coachProblem.id, coachProblem.ownerUserId],
+      name: 'fk_coach_imported_test_case_problem_owner',
+    }).onDelete('cascade'),
+    check(
+      'chk_coach_imported_test_case_timeout',
       sql`${table.timeoutMs} between 100 and 10000`
     ),
   ]
@@ -721,7 +1068,7 @@ export const coachLearningProfile = table(
     ),
     check(
       'chk_coach_learning_profile_language',
-      sql`${table.preferredLanguage} in ('javascript', 'python')`
+      sql`${table.preferredLanguage} in ('javascript', 'python', 'typescript')`
     ),
     check(
       'chk_coach_learning_profile_weekly_target',
@@ -853,6 +1200,9 @@ export const coachPracticeSession = table(
       onDelete: 'set null',
     }),
     problemSlugSnapshot: text('problem_slug_snapshot').notNull(),
+    problemContentVersion: integer('problem_content_version')
+      .notNull()
+      .default(1),
     code: jsonb('code')
       .notNull()
       .default(sql`'{}'::jsonb`),
@@ -874,7 +1224,8 @@ export const coachPracticeSession = table(
   (table) => [
     uniqueIndex('uq_coach_practice_session_user_problem').on(
       table.userId,
-      table.problemSlugSnapshot
+      table.problemSlugSnapshot,
+      table.problemContentVersion
     ),
     index('idx_coach_practice_session_user_updated').on(
       table.userId,
@@ -891,6 +1242,10 @@ export const coachPracticeSession = table(
     check(
       'chk_coach_practice_session_diagnosis_count',
       sql`${table.diagnosisCount} >= 0`
+    ),
+    check(
+      'chk_coach_practice_session_problem_version',
+      sql`${table.problemContentVersion} > 0`
     ),
     check(
       'chk_coach_practice_session_status',
@@ -910,7 +1265,12 @@ export const coachCodeRun = table(
       onDelete: 'set null',
     }),
     problemSlugSnapshot: text('problem_slug_snapshot').notNull(),
+    problemContentVersion: integer('problem_content_version')
+      .notNull()
+      .default(1),
     language: text('language').notNull(),
+    runtimeVersion: text('runtime_version').notNull().default('unknown'),
+    runnerMode: text('runner_mode').notNull().default('browser-worker'),
     codeSnapshot: text('code_snapshot').notNull().default(''),
     status: text('status').notNull(),
     passedTests: smallint('passed_tests').notNull(),
@@ -939,7 +1299,7 @@ export const coachCodeRun = table(
     ),
     check(
       'chk_coach_code_run_language',
-      sql`${table.language} in ('javascript', 'python')`
+      sql`${table.language} in ('javascript', 'python', 'typescript')`
     ),
     check(
       'chk_coach_code_run_status',
@@ -950,6 +1310,14 @@ export const coachCodeRun = table(
       sql`${table.passedTests} >= 0 and ${table.totalTests} >= 0 and ${table.passedTests} <= ${table.totalTests}`
     ),
     check('chk_coach_code_run_duration', sql`${table.durationMs} >= 0`),
+    check(
+      'chk_coach_code_run_problem_version',
+      sql`${table.problemContentVersion} > 0`
+    ),
+    check(
+      'chk_coach_code_run_runner_mode',
+      sql`${table.runnerMode} in ('browser-worker', 'remote-judge')`
+    ),
     check(
       'chk_coach_code_run_test_scope',
       sql`${table.testScope} in ('sample', 'full', 'unknown')`
@@ -974,6 +1342,9 @@ export const coachLearningArtifact = table(
       onDelete: 'set null',
     }),
     problemSlugSnapshot: text('problem_slug_snapshot'),
+    problemContentVersion: integer('problem_content_version')
+      .notNull()
+      .default(1),
     type: text('type').notNull(),
     locale: text('locale').notNull(),
     title: text('title').notNull(),
@@ -1037,6 +1408,10 @@ export const coachLearningArtifact = table(
       'chk_coach_learning_artifact_latency',
       sql`${table.latencyMs} is null or ${table.latencyMs} >= 0`
     ),
+    check(
+      'chk_coach_learning_artifact_problem_version',
+      sql`${table.problemContentVersion} > 0`
+    ),
   ]
 );
 
@@ -1051,6 +1426,9 @@ export const coachAssessment = table(
       .array()
       .notNull()
       .default(sql`ARRAY[]::text[]`),
+    problemVersions: jsonb('problem_versions')
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     status: text('status').notNull().default('active'),
     durationMinutes: smallint('duration_minutes').notNull().default(20),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
@@ -1098,6 +1476,10 @@ export const coachAssessment = table(
       'chk_coach_assessment_counts',
       sql`(${table.correctCount} is null and ${table.totalCount} is null) or (${table.correctCount} >= 0 and ${table.totalCount} >= 0 and ${table.correctCount} <= ${table.totalCount})`
     ),
+    check(
+      'chk_coach_assessment_problem_versions',
+      sql`jsonb_typeof(${table.problemVersions}) = 'array'`
+    ),
   ]
 );
 
@@ -1143,7 +1525,7 @@ export const coachProductEvent = table(
     ),
     check(
       'chk_coach_product_event_name',
-      sql`${table.name} in ('activated', 'visitor_started', 'onboarding_started', 'practice_started', 'first_code_run', 'first_problem_passed', 'code_run', 'code_submitted', 'hint_revealed', 'diagnosis_requested', 'corrected_after_diagnosis', 'assessment_started', 'assessment_completed', 'counterexample_requested', 'review_card_created', 'review_completed', 'coach_chat_message', 'csat_submitted', 'guest_data_claimed', 'sync_succeeded', 'sync_failed', 'experiment_exposed', 'imported_problem_saved')`
+      sql`${table.name} in ('activated', 'visitor_started', 'onboarding_started', 'practice_started', 'first_code_run', 'first_problem_passed', 'code_run', 'code_submitted', 'hint_revealed', 'diagnosis_requested', 'corrected_after_diagnosis', 'assessment_started', 'assessment_completed', 'counterexample_requested', 'review_card_created', 'review_completed', 'coach_chat_message', 'csat_submitted', 'guest_data_claimed', 'sync_succeeded', 'sync_failed', 'language_selected', 'typescript_transpile_failed', 'experiment_exposed', 'imported_problem_saved', 'catalog_sync_completed', 'catalog_candidate_rejected', 'catalog_revision_published', 'catalog_revision_rolled_back')`
     ),
     check(
       'chk_coach_product_event_experiment',

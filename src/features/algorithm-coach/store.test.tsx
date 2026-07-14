@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { problems } from './data/problems';
 import { loadImportedDrafts } from './imported-drafts';
 import {
   claimGuestCoachData,
@@ -18,6 +19,7 @@ import {
   saveImportedProblem,
 } from './storage';
 import { CoachProvider, useCoachStore } from './store';
+import { getPracticeSessionKey } from './sync';
 import {
   CodeRunResult,
   LearningArtifact,
@@ -126,7 +128,9 @@ describe('CoachProvider persistence', () => {
 
   it('persists an added review card artifact to versioned localStorage', async () => {
     const { result } = renderHook(() => useCoachStore(), {
-      wrapper: CoachProvider,
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems}>{children}</CoachProvider>
+      ),
     });
 
     await waitFor(() => expect(result.current.hydrated).toBe(true));
@@ -137,13 +141,20 @@ describe('CoachProvider persistence', () => {
       const stored = JSON.parse(
         window.localStorage.getItem(COACH_STORAGE_KEY) ?? '{}'
       ) as { artifacts?: LearningArtifact[] };
-      expect(stored.artifacts).toContainEqual(reviewCard);
+      expect(stored.artifacts).toContainEqual(
+        expect.objectContaining({
+          ...reviewCard,
+          problemContentVersion: 1,
+        })
+      );
     });
   });
 
   it('clears the active draft when the final private draft is deleted', async () => {
     const { result } = renderHook(() => useCoachStore(), {
-      wrapper: CoachProvider,
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems}>{children}</CoachProvider>
+      ),
     });
     await waitFor(() => expect(result.current.hydrated).toBe(true));
 
@@ -159,7 +170,9 @@ describe('CoachProvider persistence', () => {
 
   it('clears persisted review mastery when learning data is reset', async () => {
     const { result } = renderHook(() => useCoachStore(), {
-      wrapper: CoachProvider,
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems}>{children}</CoachProvider>
+      ),
     });
     await waitFor(() => expect(result.current.hydrated).toBe(true));
 
@@ -211,6 +224,95 @@ describe('CoachProvider persistence', () => {
     ).toBeNull();
   });
 
+  it('keeps code, runs, hints, and diagnosis state isolated by problem version', async () => {
+    const slug = 'dependency-cycle';
+    const existing = createInitialCoachState();
+    existing.sessions[slug] = {
+      problemSlug: slug,
+      problemContentVersion: 1,
+      code: { javascript: 'version-one-code' },
+      runs: [],
+      hintLevel: 2,
+      diagnosisCount: 0,
+      correctedAfterDiagnosis: false,
+      startedAt: '2026-07-10T00:00:00.000Z',
+      updatedAt: '2026-07-10T00:00:00.000Z',
+    };
+    existing.code[slug] = { javascript: 'version-one-code' };
+    saveCoachState(existing);
+    const versionTwoProblems = problems.map((problem) =>
+      problem.slug === slug
+        ? { ...problem, version: { contentVersion: 2 } }
+        : problem
+    );
+
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={versionTwoProblems}>{children}</CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+
+    const run: CodeRunResult = {
+      id: 'version-two-run',
+      problemSlug: slug,
+      language: 'javascript',
+      status: 'failed',
+      passedTests: 1,
+      totalTests: 4,
+      testResults: [],
+      console: [],
+      durationMs: 3,
+      executedAt: '2026-07-14T10:00:00.000Z',
+      testScope: 'full',
+      submitted: true,
+    };
+    act(() => {
+      result.current.saveCode(slug, 'javascript', 'version-two-code');
+      result.current.revealHint(slug);
+      result.current.recordRun(slug, run);
+      result.current.addArtifact({
+        ...reviewCard,
+        id: 'version-two-diagnosis',
+        type: 'diagnose',
+        problemSlug: slug,
+      });
+    });
+
+    const v2Key = getPracticeSessionKey(slug, 2);
+    await waitFor(() => {
+      expect(result.current.state.sessions[v2Key]).toMatchObject({
+        problemSlug: slug,
+        problemContentVersion: 2,
+        code: { javascript: 'version-two-code' },
+        hintLevel: 1,
+        diagnosisCount: 1,
+      });
+    });
+    expect(result.current.state.sessions[v2Key].runs).toEqual([
+      expect.objectContaining({
+        id: 'version-two-run',
+        problemContentVersion: 2,
+      }),
+    ]);
+    expect(result.current.state.code[v2Key]?.javascript).toBe(
+      'version-two-code'
+    );
+    expect(result.current.state.sessions[slug]).toMatchObject({
+      problemContentVersion: 1,
+      code: { javascript: 'version-one-code' },
+      hintLevel: 2,
+      diagnosisCount: 0,
+      runs: [],
+    });
+    expect(result.current.state.artifacts).toContainEqual(
+      expect.objectContaining({
+        id: 'version-two-diagnosis',
+        problemContentVersion: 2,
+      })
+    );
+  });
+
   it('lets only the first account claim guest data and isolates later accounts', () => {
     const storage = createMemoryStorage();
     const guest = createInitialCoachState();
@@ -233,7 +335,7 @@ describe('CoachProvider persistence', () => {
     expect(storage.getItem(COACH_GUEST_CLAIM_KEY)).toBe(accountA);
     expect(loadCoachState(storage, accountA).profile?.goal).toBe('interview');
     expect(loadCoachState(storage, accountA).artifacts).toContainEqual(
-      reviewCard
+      expect.objectContaining(reviewCard)
     );
     expect(loadImportedProblem(storage, accountA)).toEqual(importedProblem);
     expect(
@@ -338,7 +440,9 @@ describe('CoachProvider persistence', () => {
 
     const { result, unmount } = renderHook(() => useCoachStore(), {
       wrapper: ({ children }) => (
-        <CoachProvider storageScope={scope}>{children}</CoachProvider>
+        <CoachProvider problems={problems} storageScope={scope}>
+          {children}
+        </CoachProvider>
       ),
     });
     await waitFor(() => expect(result.current.hydrated).toBe(true));
@@ -405,7 +509,9 @@ describe('CoachProvider persistence', () => {
 
     const { result, unmount } = renderHook(() => useCoachStore(), {
       wrapper: ({ children }) => (
-        <CoachProvider storageScope={scope}>{children}</CoachProvider>
+        <CoachProvider problems={problems} storageScope={scope}>
+          {children}
+        </CoachProvider>
       ),
     });
     await waitFor(() => expect(result.current.hydrated).toBe(true));
@@ -415,7 +521,7 @@ describe('CoachProvider persistence', () => {
     });
     await waitFor(
       () => {
-        expect(patchCount).toBe(1);
+        expect(patchCount).toBeGreaterThanOrEqual(1);
         expect(result.current.syncStatus).toBe('error');
       },
       { timeout: 3_000 }

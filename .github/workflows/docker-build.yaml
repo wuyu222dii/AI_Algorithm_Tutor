@@ -95,6 +95,9 @@ jobs:
     timeout-minutes: 20
     env:
       AUTH_SECRET: ci-only-auth-secret-with-at-least-32-characters
+      DB_CATALOG_ENABLED: 'true'
+      CATALOG_SYNC_ENABLED: 'false'
+      TYPESCRIPT_ENABLED: 'true'
       GOOGLE_AUTH_ENABLED: 'false'
       GOOGLE_ONE_TAP_ENABLED: 'false'
       OPENROUTER_API_KEY: ci-only-openrouter-key
@@ -198,6 +201,9 @@ jobs:
           --env DATABASE_APPLICATION_ROLE=algocoach_app
           --env DATABASE_URL=postgresql://algocoach_app:application-test-password@host.docker.internal:5432/algocoach_test
           --env DB_AUTO_MIGRATE=false
+          --env DB_CATALOG_ENABLED=true
+          --env CATALOG_SYNC_ENABLED=false
+          --env TYPESCRIPT_ENABLED=true
           --env AUTH_URL=http://localhost:3200
           --env AUTH_SECRET=ci-only-auth-secret-with-at-least-32-characters
           --env OPENROUTER_API_KEY=ci-only-openrouter-key

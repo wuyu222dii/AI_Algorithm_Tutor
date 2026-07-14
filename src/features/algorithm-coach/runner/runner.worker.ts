@@ -4,6 +4,7 @@ import type {
   CodeRunResult,
   Language,
   Problem,
+  ProblemLanguageConfig,
   TestCase,
   TestCaseResult,
 } from '../types';
@@ -11,6 +12,7 @@ import type {
 type WorkerPayload = {
   problem: Problem;
   language: Language;
+  languageConfig: ProblemLanguageConfig;
   code: string;
   scope: 'sample' | 'all';
 };
@@ -112,17 +114,44 @@ function javascriptHarness(
   ].join('\n');
 }
 
-async function executeJavaScript(
+async function executeEcmaScript(
   payload: WorkerPayload
 ): Promise<RunnerPayload> {
+  if (payload.language !== 'javascript' && payload.language !== 'typescript') {
+    throw new Error(`Unsupported QuickJS language: ${payload.language}`);
+  }
   const tests = selectedTests(payload.problem, payload.scope);
   const startedAt = performance.now();
-  const QuickJS = await getQuickJS();
+  const [QuickJS, typeScriptCompiler] = await Promise.all([
+    getQuickJS(),
+    payload.language === 'typescript' ? import('./typescript') : undefined,
+  ]);
   workerScope.postMessage({ type: 'ready' });
 
   try {
+    let executableCode = payload.code;
+    if (typeScriptCompiler) {
+      const compiled = typeScriptCompiler.compileTypeScript(payload.code);
+      if (!compiled.ok) {
+        return {
+          status: 'syntax_error',
+          passedTests: 0,
+          totalTests: tests.length,
+          testResults: [],
+          console: [],
+          error: compiled.error,
+          durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+        };
+      }
+      executableCode = compiled.code;
+    }
+
     const result = QuickJS.evalCode(
-      javascriptHarness(payload.code, payload.problem.entryPoint, tests),
+      javascriptHarness(
+        executableCode,
+        payload.languageConfig.entryPoint,
+        tests
+      ),
       {
         memoryLimitBytes: 32 * 1024 * 1024,
         shouldInterrupt: shouldInterruptAfterDeadline(Date.now() + 2_800),
@@ -160,7 +189,7 @@ async function executeJavaScript(
 
 workerScope.onmessage = async (event) => {
   try {
-    const result = await executeJavaScript(event.data);
+    const result = await executeEcmaScript(event.data);
     workerScope.postMessage({ type: 'result', payload: result });
   } catch (error) {
     workerScope.postMessage({

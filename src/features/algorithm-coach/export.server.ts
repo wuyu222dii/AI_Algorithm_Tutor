@@ -1,11 +1,12 @@
 import 'server-only';
 
-import { asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 
 import { dbPostgres } from '@/core/db';
 import {
   coachAssessment,
   coachCodeRun,
+  coachImportedTestCase,
   coachLearningArtifact,
   coachLearningProfile,
   coachPracticeSession,
@@ -14,7 +15,6 @@ import {
   coachReviewItem,
   coachSyncMutation,
   coachSyncState,
-  coachTestCase,
 } from '@/config/db/schema.postgres';
 
 export const COACH_ACCOUNT_EXPORT_VERSION = 3;
@@ -88,9 +88,17 @@ export async function exportCoachLearningData(userId: string) {
       ownedProblemIds.length
         ? tx
             .select()
-            .from(coachTestCase)
-            .where(inArray(coachTestCase.problemId, ownedProblemIds))
-            .orderBy(asc(coachTestCase.problemId), asc(coachTestCase.ordinal))
+            .from(coachImportedTestCase)
+            .where(
+              and(
+                eq(coachImportedTestCase.ownerUserId, userId),
+                inArray(coachImportedTestCase.problemId, ownedProblemIds)
+              )
+            )
+            .orderBy(
+              asc(coachImportedTestCase.problemId),
+              asc(coachImportedTestCase.ordinal)
+            )
         : Promise.resolve([]),
     ]);
 

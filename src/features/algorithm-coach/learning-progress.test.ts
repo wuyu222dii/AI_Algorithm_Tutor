@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { getCompletedProblemIds } from './components/domain-adapter';
+import { problems } from './data/problems';
 import {
   calculateLearningStreak,
   calculateTopicMasterySnapshots,
@@ -17,6 +18,7 @@ import {
 import { calculateProductMetrics, calculateTopicMastery } from './metrics';
 import { getProblemRecommendations } from './recommendations';
 import { createInitialCoachState } from './storage';
+import { getPracticeSessionKey } from './sync';
 import type { CodeRunResult, PracticeSession } from './types';
 
 function createMemoryStorage(): Storage {
@@ -117,6 +119,7 @@ describe('learning progress', () => {
       countNaturalWeekCompletions(state, {
         now: new Date('2026-07-13T00:30:00.000Z'),
         timeZone: 'Pacific/Auckland',
+        catalog: problems,
       })
     ).toBe(1);
   });
@@ -136,6 +139,7 @@ describe('learning progress', () => {
       countNaturalWeekCompletions(state, {
         now: new Date('2026-07-14T12:00:00.000Z'),
         timeZone: 'UTC',
+        catalog: problems,
       })
     ).toBe(0);
   });
@@ -159,6 +163,7 @@ describe('learning progress', () => {
       countNaturalWeekCompletions(state, {
         now: new Date('2026-07-14T12:00:00.000Z'),
         timeZone: 'UTC',
+        catalog: problems,
       })
     ).toBe(0);
     expect(calculateProductMetrics(state).completedProblems).toBe(0);
@@ -166,7 +171,7 @@ describe('learning progress', () => {
       false
     );
     expect(
-      getProblemRecommendations(state, { limit: 38 }).find(
+      getProblemRecommendations(state, { limit: 38, catalog: problems }).find(
         (item) => item.problem.slug === 'first-unique-position'
       )?.score
     ).toBeGreaterThan(0);
@@ -182,13 +187,91 @@ describe('learning progress', () => {
     const progress = reconcileReviewProgress(
       state,
       createInitialReviewProgress(),
-      { now: new Date('2026-07-14T12:00:00.000Z') }
+      { now: new Date('2026-07-14T12:00:00.000Z'), catalog: problems }
     );
-    const snapshots = calculateTopicMasterySnapshots(state, progress.items);
-    const metrics = calculateTopicMastery(state, progress.items);
+    const snapshots = calculateTopicMasterySnapshots(
+      state,
+      progress.items,
+      problems
+    );
+    const metrics = calculateTopicMastery(state, progress.items, problems);
 
     expect(snapshots['array-hash'].evidenceCount).toBeGreaterThan(0);
     expect(metrics['array-hash']).toBe(snapshots['array-hash'].value);
+  });
+
+  it('uses only the current catalog version across metrics and review evidence', () => {
+    const slug = 'first-unique-position';
+    const currentCatalog = problems.map((problem) =>
+      problem.slug === slug
+        ? { ...problem, version: { contentVersion: 2 } }
+        : problem
+    );
+    const oldPass = {
+      ...run(slug, 'passed', '2026-07-13T10:00:00.000Z'),
+      problemContentVersion: 1,
+    };
+    const currentFailure = {
+      ...run(slug, 'failed', '2026-07-14T10:00:00.000Z'),
+      problemContentVersion: 2,
+    };
+    const state = createInitialCoachState();
+    state.sessions[slug] = session(slug, [oldPass], {
+      problemContentVersion: 1,
+      hintLevel: 3,
+      completedAt: oldPass.executedAt,
+    });
+    const currentKey = getPracticeSessionKey(slug, 2);
+    state.sessions[currentKey] = session(slug, [currentFailure], {
+      problemContentVersion: 2,
+    });
+    state.runs = [oldPass, currentFailure];
+
+    const metrics = calculateProductMetrics(
+      state,
+      {},
+      {
+        now: new Date('2026-07-14T12:00:00.000Z'),
+        timeZone: 'UTC',
+        catalog: currentCatalog,
+      }
+    );
+    expect(metrics).toMatchObject({
+      attemptedProblems: 1,
+      completedProblems: 0,
+      hintedProblems: 0,
+      currentStreak: 1,
+    });
+    expect(calculateProductMetrics(state)).toMatchObject({
+      attemptedProblems: 1,
+      completedProblems: 0,
+    });
+    expect(
+      countNaturalWeekCompletions(state, {
+        now: new Date('2026-07-14T12:00:00.000Z'),
+        timeZone: 'UTC',
+        catalog: currentCatalog,
+      })
+    ).toBe(0);
+
+    const progress = reconcileReviewProgress(
+      state,
+      createInitialReviewProgress(),
+      {
+        now: new Date('2026-07-14T12:00:00.000Z'),
+        catalog: currentCatalog,
+      }
+    );
+    expect(progress.items[slug]).toMatchObject({
+      status: 'due',
+      lastObservedRunAt: currentFailure.executedAt,
+      lastFailureAt: currentFailure.executedAt,
+    });
+    expect(
+      calculateTopicMasterySnapshots(state, progress.items, currentCatalog)[
+        'array-hash'
+      ].evidenceCount
+    ).toBe(1);
   });
 
   it('closes a failed item after a later full pass and schedules review', () => {
@@ -201,7 +284,7 @@ describe('learning progress', () => {
     const progress = reconcileReviewProgress(
       state,
       createInitialReviewProgress(),
-      { now: new Date('2026-07-14T11:00:00.000Z') }
+      { now: new Date('2026-07-14T11:00:00.000Z'), catalog: problems }
     );
 
     expect(progress.items['dependency-cycle']).toMatchObject({
@@ -223,7 +306,7 @@ describe('learning progress', () => {
     const resolved = reconcileReviewProgress(
       firstState,
       createInitialReviewProgress(),
-      { now: new Date('2026-07-13T11:00:00.000Z') }
+      { now: new Date('2026-07-13T11:00:00.000Z'), catalog: problems }
     );
     const mastered = markReviewItemMastered(
       resolved,
@@ -239,6 +322,7 @@ describe('learning progress', () => {
       '2026-07-14T10:00:00.000Z';
     const reopened = reconcileReviewProgress(failedState, mastered, {
       now: new Date('2026-07-14T11:00:00.000Z'),
+      catalog: problems,
     });
 
     expect(reopened.items['dependency-cycle'].status).toBe('due');
@@ -274,6 +358,7 @@ describe('learning progress', () => {
     ]);
     const due = reconcileReviewProgress(state, createInitialReviewProgress(), {
       now: new Date('2026-07-14T11:00:00.000Z'),
+      catalog: problems,
     });
     const rated = rateReviewItem(
       due,

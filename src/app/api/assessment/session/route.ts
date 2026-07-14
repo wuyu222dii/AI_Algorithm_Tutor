@@ -1,7 +1,12 @@
 import {
   completeSignedAssessment,
   createSignedAssessmentSession,
+  readSignedAssessmentSession,
 } from '@/features/algorithm-coach/assessment.server';
+import {
+  getRuntimeProblem,
+  listRuntimeProblems,
+} from '@/features/algorithm-coach/catalog-runtime.server';
 import { z } from 'zod';
 
 import { enforceDistributedWindowRateLimit } from '@/shared/lib/rate-limit';
@@ -46,15 +51,31 @@ export async function POST(request: Request) {
   }
 
   try {
-    const data =
-      parsed.data.action === 'start'
-        ? createSignedAssessmentSession({
-            id: `assessment_${crypto.randomUUID()}`,
-          })
-        : completeSignedAssessment({
-            token: parsed.data.token,
-            runs: parsed.data.runs,
-          });
+    let data;
+    if (parsed.data.action === 'start') {
+      const problems = await listRuntimeProblems();
+      data = createSignedAssessmentSession({
+        id: `assessment_${crypto.randomUUID()}`,
+        problems,
+      });
+    } else {
+      const session = readSignedAssessmentSession(parsed.data.token);
+      const historicalProblems = await Promise.all(
+        session.problemVersions.map((reference) =>
+          getRuntimeProblem(reference.slug, reference.contentVersion)
+        )
+      );
+      if (historicalProblems.some((problem) => !problem)) {
+        throw new Error('Assessment problem version is unavailable');
+      }
+      data = completeSignedAssessment({
+        token: parsed.data.token,
+        runs: parsed.data.runs,
+        problems: historicalProblems.filter(
+          (problem): problem is NonNullable<typeof problem> => Boolean(problem)
+        ),
+      });
+    }
     return Response.json(
       { data },
       { headers: { 'cache-control': 'private, no-store, max-age=0' } }

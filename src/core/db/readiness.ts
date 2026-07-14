@@ -31,6 +31,11 @@ const COACH_MODEL_ENV_NAMES = [
     `ALGO_COACH_${action}_FALLBACK_MODEL`,
   ]),
 ] as const;
+const BOOLEAN_FEATURE_FLAGS = [
+  'DB_CATALOG_ENABLED',
+  'CATALOG_SYNC_ENABLED',
+  'TYPESCRIPT_ENABLED',
+] as const;
 
 type ReadinessFetch = (
   input: string | URL | Request,
@@ -53,6 +58,11 @@ function boundedTimeout(value: string | undefined): number {
   return Number.isInteger(parsed) && parsed >= 500 && parsed <= 30_000
     ? parsed
     : 5_000;
+}
+
+function catalogMinimumPublishedProblems(value: string | undefined): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 58;
 }
 
 function isHttpUrl(value: string | undefined): boolean {
@@ -120,6 +130,27 @@ export function checkRequiredConfiguration(
 
   if (env.GOOGLE_ONE_TAP_ENABLED === 'true') {
     invalid.push('GOOGLE_ONE_TAP_ENABLED');
+  }
+
+  for (const name of BOOLEAN_FEATURE_FLAGS) {
+    const value = env[name]?.trim();
+    if (value && value !== 'true' && value !== 'false') invalid.push(name);
+  }
+  if (
+    env.CATALOG_MIN_PUBLISHED_PROBLEMS?.trim() &&
+    (!Number.isInteger(Number(env.CATALOG_MIN_PUBLISHED_PROBLEMS)) ||
+      Number(env.CATALOG_MIN_PUBLISHED_PROBLEMS) < 1)
+  ) {
+    invalid.push('CATALOG_MIN_PUBLISHED_PROBLEMS');
+  }
+  if (
+    env.CATALOG_SYNC_ENABLED === 'true' &&
+    env.DB_CATALOG_ENABLED === 'false'
+  ) {
+    invalid.push('CATALOG_SYNC_ENABLED');
+  }
+  if (production && env.DB_CATALOG_ENABLED === 'false') {
+    invalid.push('DB_CATALOG_ENABLED');
   }
 
   if (production) {
@@ -336,6 +367,28 @@ export function checkMigrationVersions(
       });
 }
 
+export function checkCatalogReadiness(counts: {
+  publishedCount: number;
+  readyCount: number;
+  minimumPublishedCount?: number;
+}): HealthCheckResult {
+  const minimumPublishedCount = counts.minimumPublishedCount ?? 58;
+  const details = {
+    publishedCount: counts.publishedCount,
+    readyCount: counts.readyCount,
+    minimumPublishedCount,
+  };
+  if (counts.publishedCount === 0) {
+    return error('catalog_empty', undefined, details);
+  }
+  if (counts.publishedCount < minimumPublishedCount) {
+    return error('catalog_below_minimum', undefined, details);
+  }
+  return counts.readyCount === counts.publishedCount
+    ? ok(undefined, details)
+    : error('catalog_invalid', undefined, details);
+}
+
 export function liveHealthStatus(now = new Date()): HealthStatus {
   return {
     status: 'ok',
@@ -360,14 +413,17 @@ export async function readyHealthStatus(
   );
   let database: HealthCheckResult;
   let migrations: HealthCheckResult;
+  let catalog: HealthCheckResult;
   const databaseUrl = env.DATABASE_URL?.trim();
 
   if (!databaseUrl) {
     database = error('database_url_missing');
     migrations = error('database_unavailable');
+    catalog = error('database_unavailable');
   } else if ((env.DATABASE_PROVIDER ?? 'postgresql') !== 'postgresql') {
     database = error('unsupported_database_provider');
     migrations = error('unsupported_database_provider');
+    catalog = error('unsupported_database_provider');
   } else {
     const timeoutMs = boundedTimeout(env.HEALTH_DATABASE_TIMEOUT_MS);
     const startedAt = Date.now();
@@ -384,6 +440,7 @@ export async function readyHealthStatus(
         {
           current_role: string;
           owns_schema: boolean;
+          catalog_write: boolean;
           rolcreatedb: boolean;
           rolcreaterole: boolean;
           rolsuper: boolean;
@@ -399,7 +456,32 @@ export async function readyHealthStatus(
             from pg_namespace
             where nspname = ${env.DB_SCHEMA ?? 'algocoach'}
               and pg_get_userbyid(nspowner) = current_user
-          ) as owns_schema
+          ) as owns_schema,
+          exists(
+            select 1
+            from unnest(array[
+              'coach_catalog_source',
+              'coach_catalog_sync_run',
+              'coach_problem_candidate',
+              'coach_problem_revision',
+              'coach_problem_origin',
+              'coach_catalog_review_audit',
+              'coach_test_case'
+            ]::text[]) as catalog_table(table_name)
+            where has_table_privilege(
+              current_user,
+              format('%I.%I', ${env.DB_SCHEMA ?? 'algocoach'}::text, table_name),
+              'INSERT'
+            ) or has_table_privilege(
+              current_user,
+              format('%I.%I', ${env.DB_SCHEMA ?? 'algocoach'}::text, table_name),
+              'UPDATE'
+            ) or has_table_privilege(
+              current_user,
+              format('%I.%I', ${env.DB_SCHEMA ?? 'algocoach'}::text, table_name),
+              'DELETE'
+            )
+          ) as catalog_write
       `;
       const expectedRole = env.DATABASE_APPLICATION_ROLE?.trim();
       if (expectedRole && role?.current_role !== expectedRole) {
@@ -407,6 +489,7 @@ export async function readyHealthStatus(
       } else if (
         env.NODE_ENV === 'production' &&
         (role?.owns_schema ||
+          role?.catalog_write ||
           role?.rolsuper ||
           role?.rolcreatedb ||
           role?.rolcreaterole)
@@ -432,10 +515,87 @@ export async function readyHealthStatus(
       } catch {
         migrations = error('migration_history_unavailable');
       }
+
+      if (env.DB_CATALOG_ENABLED === 'false') {
+        catalog = ok(undefined, { mode: 'disabled' });
+      } else {
+        try {
+          const applicationSchema = quotedIdentifier(
+            env.DB_SCHEMA ?? 'algocoach'
+          );
+          const [row] = await client.unsafe<
+            { published_count: number; ready_count: number }[]
+          >(`
+            SELECT
+              count(*)::int AS published_count,
+              count(*) FILTER (
+                WHERE revision.id IS NOT NULL
+                  AND revision.status = 'published'
+                  AND problem.content_version = revision.version
+                  AND jsonb_typeof(revision.language_configs) = 'object'
+                  AND nullif(btrim(revision.language_configs->'javascript'->>'entryPoint'), '') IS NOT NULL
+                  AND nullif(btrim(revision.language_configs->'javascript'->>'template'), '') IS NOT NULL
+                  AND revision.language_configs->'javascript'->>'monacoId' = 'javascript'
+                  AND revision.language_configs->'javascript'->>'runner' = 'quickjs'
+                  AND revision.language_configs->'javascript'->>'runtimeVersion' = 'quickjs-emscripten@0.32.0'
+                  AND jsonb_typeof(revision.language_configs->'javascript'->'signature') = 'object'
+                  AND nullif(btrim(revision.language_configs->'typescript'->>'entryPoint'), '') IS NOT NULL
+                  AND nullif(btrim(revision.language_configs->'typescript'->>'template'), '') IS NOT NULL
+                  AND revision.language_configs->'typescript'->>'monacoId' = 'typescript'
+                  AND revision.language_configs->'typescript'->>'runner' = 'typescript-quickjs'
+                  AND revision.language_configs->'typescript'->>'runtimeVersion' = 'typescript@5.9.2 / quickjs-emscripten@0.32.0'
+                  AND jsonb_typeof(revision.language_configs->'typescript'->'signature') = 'object'
+                  AND nullif(btrim(revision.language_configs->'python'->>'entryPoint'), '') IS NOT NULL
+                  AND nullif(btrim(revision.language_configs->'python'->>'template'), '') IS NOT NULL
+                  AND revision.language_configs->'python'->>'monacoId' = 'python'
+                  AND revision.language_configs->'python'->>'runner' = 'pyodide'
+                  AND revision.language_configs->'python'->>'runtimeVersion' = 'pyodide@314.0.2'
+                  AND jsonb_typeof(revision.language_configs->'python'->'signature') = 'object'
+                  AND jsonb_typeof(revision.signature) = 'object'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM ${applicationSchema}.coach_test_case AS test_case
+                    WHERE test_case.problem_id = problem.id
+                      AND test_case.revision_id = revision.id
+                  )
+                  AND (
+                    problem.source <> 'external'
+                    OR EXISTS (
+                      SELECT 1
+                      FROM ${applicationSchema}.coach_problem_origin AS origin
+                      WHERE origin.problem_id = problem.id
+                        AND nullif(btrim(origin.license_spdx), '') IS NOT NULL
+                        AND nullif(btrim(origin.attribution), '') IS NOT NULL
+                        AND origin.source_revision = revision.source_revision
+                        AND origin.content_hash = revision.content_hash
+                    )
+                  )
+              )::int AS ready_count
+            FROM ${applicationSchema}.coach_problem AS problem
+            LEFT JOIN ${applicationSchema}.coach_problem_revision AS revision
+              ON revision.id = problem.current_revision_id
+             AND revision.problem_id = problem.id
+            WHERE problem.owner_user_id IS NULL
+              AND problem.status = 'published'
+          `);
+          const publishedCount = Number(row?.published_count ?? 0);
+          const readyCount = Number(row?.ready_count ?? 0);
+          catalog = checkCatalogReadiness({
+            publishedCount,
+            readyCount,
+            minimumPublishedCount: catalogMinimumPublishedProblems(
+              env.CATALOG_MIN_PUBLISHED_PROBLEMS
+            ),
+          });
+        } catch {
+          catalog = error('catalog_unavailable');
+        }
+      }
     } catch {
       const latencyMs = Date.now() - startedAt;
       database = error('database_unavailable', latencyMs);
       migrations = error('database_unavailable');
+      catalog = error('database_unavailable');
     } finally {
       await client.end({ timeout: 1 }).catch(() => undefined);
     }
@@ -446,6 +606,7 @@ export async function readyHealthStatus(
     configuration,
     database,
     migrations,
+    catalog,
     redis,
     authentication,
     ai,

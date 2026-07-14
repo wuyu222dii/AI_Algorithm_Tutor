@@ -31,7 +31,12 @@ import {
 } from '@/shared/components/ui/select';
 import { cn } from '@/shared/lib/utils';
 
-import { getProblemBySlug, problems } from '../data/problems';
+import {
+  getProblemContentVersion,
+  getProblemTemplate,
+  LANGUAGE_REGISTRY,
+  problemSupportsLanguage,
+} from '../languages';
 import { TOPIC_LABELS } from '../learning-progress';
 import { runCode } from '../runner';
 import { useCoachStore } from '../store';
@@ -55,6 +60,23 @@ import {
 
 const DURATION_SECONDS = 20 * 60;
 
+function createAssessmentCode(
+  assessmentProblems: Problem[],
+  languages: readonly Language[]
+): Record<string, Partial<Record<Language, string>>> {
+  return Object.fromEntries(
+    assessmentProblems.map((problem) => [
+      problem.id,
+      Object.fromEntries(
+        languages.map((language) => [
+          language,
+          getProblemTemplate(problem, language),
+        ])
+      ),
+    ])
+  );
+}
+
 const copy = {
   zh: {
     title: '算法能力测评',
@@ -68,13 +90,13 @@ const copy = {
       '测评期间可运行样例，但 AI 提示、错因诊断和自由追问将暂时关闭。',
     duration: '20 分钟',
     count: '2 道题',
-    languages: 'JavaScript / Python',
+    languages: 'JavaScript / Python / TypeScript',
     start: '开始测评',
     starting: '正在创建测评…',
     startFailed: '暂时无法创建安全测评，请稍后重试。',
     rules: '测评规则',
     rule1: '两道题可自由切换，代码会自动保留。',
-    rule2: '运行样例不计分，最终提交会运行完整测试。',
+    rule2: '运行样例不计分，最终提交会运行浏览器内的本地完整测试。',
     rule3: '倒计时结束时自动提交当前代码。',
     aiDisabled: '为保证结果可比较，测评中 AI 教练已关闭。',
     problem: '题目',
@@ -116,14 +138,14 @@ const copy = {
       'You can run examples, but hints, diagnosis, and AI chat are disabled during the assessment.',
     duration: '20 minutes',
     count: '2 problems',
-    languages: 'JavaScript / Python',
+    languages: 'JavaScript / Python / TypeScript',
     start: 'Start assessment',
     starting: 'Creating assessment…',
     startFailed: 'A secure assessment could not be created. Please try again.',
     rules: 'Assessment rules',
     rule1: 'Switch freely between both problems. Code is kept automatically.',
     rule2:
-      'Example runs are unscored. Final submission runs the complete tests.',
+      'Example runs are unscored. Final submission runs the complete local tests in your browser.',
     rule3: 'Your current code is submitted when the timer reaches zero.',
     aiDisabled:
       'AI coaching is disabled during the assessment so results remain comparable.',
@@ -166,10 +188,13 @@ export function AssessmentPage() {
   const defaultAssessmentProblems = useMemo(
     () =>
       [
-        getProblemBySlug('minimum-processing-rate') ?? problems[0],
-        getProblemBySlug('dependency-cycle') ?? problems[1],
+        coach.problems.find(
+          (problem) => problem.slug === 'minimum-processing-rate'
+        ) ?? coach.problems[0],
+        coach.problems.find((problem) => problem.slug === 'dependency-cycle') ??
+          coach.problems[1],
       ].filter(Boolean) as Problem[],
-    []
+    [coach.problems]
   );
   const [assessmentProblems, setAssessmentProblems] = useState<Problem[]>(
     defaultAssessmentProblems
@@ -177,21 +202,26 @@ export function AssessmentPage() {
   const [phase, setPhase] = useState<'intro' | 'active' | 'complete'>('intro');
   const [secondsLeft, setSecondsLeft] = useState(DURATION_SECONDS);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [language, setLanguage] = useState<Language>(
+  const [selectedLanguage, setLanguage] = useState<Language>(
     getPreferredLanguage(coach.state)
   );
-  const [codes, setCodes] = useState<Record<string, Record<Language, string>>>(
+  const availableLanguages = useMemo(
     () =>
-      Object.fromEntries(
-        assessmentProblems.map((problem) => [
-          problem.id,
-          {
-            javascript: problem.templates.javascript,
-            python: problem.templates.python,
-          },
-        ])
-      )
+      coach.enabledLanguages.filter((languageId) =>
+        assessmentProblems.every((problem) =>
+          problemSupportsLanguage(problem, languageId)
+        )
+      ),
+    [assessmentProblems, coach.enabledLanguages]
   );
+  const language = availableLanguages.some(
+    (languageId) => languageId === selectedLanguage
+  )
+    ? selectedLanguage
+    : (availableLanguages[0] ?? 'javascript');
+  const [codes, setCodes] = useState<
+    Record<string, Partial<Record<Language, string>>>
+  >(() => createAssessmentCode(assessmentProblems, coach.enabledLanguages));
   const [sampleResults, setSampleResults] = useState<
     Record<string, CodeRunResult>
   >({});
@@ -248,23 +278,13 @@ export function AssessmentPage() {
       };
       const data = payload.data;
       const selected = data?.problemSlugs
-        .map((slug) => getProblemBySlug(slug))
+        .map((slug) => coach.problems.find((problem) => problem.slug === slug))
         .filter(Boolean) as Problem[] | undefined;
       if (!data?.token || selected?.length !== 2)
         throw new Error(t.startFailed);
 
       setAssessmentProblems(selected);
-      setCodes(
-        Object.fromEntries(
-          selected.map((problem) => [
-            problem.id,
-            {
-              javascript: problem.templates.javascript,
-              python: problem.templates.python,
-            },
-          ])
-        )
-      );
+      setCodes(createAssessmentCode(selected, coach.enabledLanguages));
       setAssessmentToken(data.token);
       setSecondsLeft(data.durationMinutes * 60);
       setStartedAt(Date.parse(data.startedAt));
@@ -308,6 +328,7 @@ export function AssessmentPage() {
       const result = await runCode({
         problem: currentProblem,
         language,
+        enabledLanguages: coach.enabledLanguages,
         code: currentCode,
         scope: 'sample',
       });
@@ -332,8 +353,10 @@ export function AssessmentPage() {
             const result = await runCode({
               problem,
               language,
+              enabledLanguages: coach.enabledLanguages,
               code:
-                codes[problem.id]?.[language] ?? problem.templates[language],
+                codes[problem.id]?.[language] ??
+                getProblemTemplate(problem, language),
               scope: 'all',
             });
             return [problem.id, result] as const;
@@ -376,6 +399,10 @@ export function AssessmentPage() {
         durationSeconds: elapsedSeconds,
         problemIds: assessmentProblems.map((problem) => problem.id),
         problemSlugs: assessmentProblems.map((problem) => problem.slug),
+        problemVersions: assessmentProblems.map((problem) => ({
+          slug: problem.slug,
+          contentVersion: getProblemContentVersion(problem),
+        })),
         startedAt: startedAt
           ? new Date(startedAt).toISOString()
           : new Date(Date.now() - elapsedSeconds * 1000).toISOString(),
@@ -615,8 +642,11 @@ export function AssessmentPage() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="javascript">{t.javascript}</SelectItem>
-                <SelectItem value="python">{t.python}</SelectItem>
+                {availableLanguages.map((languageId) => (
+                  <SelectItem key={languageId} value={languageId}>
+                    {LANGUAGE_REGISTRY[languageId].label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <Button size="sm" onClick={submitAssessment} disabled={submitting}>
@@ -717,7 +747,7 @@ export function AssessmentPage() {
                 aria-label={t.reset}
                 onClick={() => {
                   if (currentProblem)
-                    updateCode(currentProblem.templates[language]);
+                    updateCode(getProblemTemplate(currentProblem, language));
                 }}
               >
                 <RotateCcw />

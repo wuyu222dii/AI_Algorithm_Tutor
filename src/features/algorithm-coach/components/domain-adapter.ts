@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- This boundary reads legacy versions of browser-persisted state. */
+import { isLanguage } from '../languages';
 import { isPracticeSessionCompleted } from '../learning-progress';
 import type {
   CodeRunResult,
@@ -58,7 +59,7 @@ export function getPreferredLanguage(
 ): Language {
   const value =
     getProfile(state)?.preferredLanguage ?? state?.preferredLanguage;
-  return value === 'python' ? 'python' : 'javascript';
+  return isLanguage(value) ? value : 'javascript';
 }
 
 export function getSavedCode(

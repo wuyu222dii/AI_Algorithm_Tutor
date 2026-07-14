@@ -1,7 +1,93 @@
 import { z } from 'zod';
 
+import { ENABLED_LANGUAGE_IDS } from './languages';
 import { COACH_STORAGE_VERSION } from './storage';
-import { JsonValue } from './types';
+import type { JsonValue, TypeSpec } from './types';
+
+const languageSchema = z.enum(ENABLED_LANGUAGE_IDS);
+
+const languageCodeSchema = z.object({
+  javascript: z.string().max(30_000).optional(),
+  typescript: z.string().max(30_000).optional(),
+  python: z.string().max(30_000).optional(),
+});
+
+const problemTemplatesSchema = z.object({
+  javascript: z.string().max(30_000),
+  typescript: z.string().max(30_000).optional(),
+  python: z.string().max(30_000),
+});
+
+const typeSpecSchema: z.ZodType<TypeSpec> = z.lazy(() =>
+  z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('unknown') }),
+    z.object({ kind: z.literal('integer') }),
+    z.object({ kind: z.literal('number') }),
+    z.object({ kind: z.literal('string') }),
+    z.object({ kind: z.literal('boolean') }),
+    z.object({ kind: z.literal('null') }),
+    z.object({ kind: z.literal('array'), items: typeSpecSchema }),
+    z.object({
+      kind: z.literal('tuple'),
+      items: z.array(typeSpecSchema).max(30),
+    }),
+    z.object({
+      kind: z.literal('object'),
+      fields: z.record(z.string().max(100), typeSpecSchema),
+      additionalProperties: z.boolean().optional(),
+    }),
+    z.object({
+      kind: z.literal('union'),
+      options: z.array(typeSpecSchema).min(1).max(10),
+    }),
+  ])
+);
+
+const functionSignatureSchema = z.object({
+  parameters: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(100),
+        type: typeSpecSchema,
+      })
+    )
+    .max(30),
+  returns: typeSpecSchema,
+});
+
+const problemLanguageConfigSchema = z.object({
+  entryPoint: z.string().min(1).max(100),
+  template: z.string().max(30_000),
+  signature: functionSignatureSchema.optional(),
+  runtimeVersion: z.string().max(100).optional(),
+});
+
+const languageConfigsSchema = z.object({
+  javascript: problemLanguageConfigSchema.optional(),
+  typescript: problemLanguageConfigSchema.optional(),
+  python: problemLanguageConfigSchema.optional(),
+  cpp: problemLanguageConfigSchema.optional(),
+  java: problemLanguageConfigSchema.optional(),
+  go: problemLanguageConfigSchema.optional(),
+  rust: problemLanguageConfigSchema.optional(),
+});
+
+const problemVersionSchema = z.object({
+  contentVersion: z.number().int().min(1),
+  catalogVersion: z.string().max(100).optional(),
+  sourceRevision: z.string().max(200).optional(),
+  runtimeVersions: z
+    .object({
+      javascript: z.string().max(100).optional(),
+      typescript: z.string().max(100).optional(),
+      python: z.string().max(100).optional(),
+      cpp: z.string().max(100).optional(),
+      java: z.string().max(100).optional(),
+      go: z.string().max(100).optional(),
+      rust: z.string().max(100).optional(),
+    })
+    .optional(),
+});
 
 export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
@@ -43,11 +129,11 @@ export const persistedProblemSchema = z
     description: localizedTextSchema,
     difficulty: z.enum(['easy', 'medium', 'hard']),
     topics: z.array(z.string().min(1).max(80)).max(12),
-    entryPoint: z.string().min(1).max(100),
-    templates: z.object({
-      javascript: z.string().max(30_000),
-      python: z.string().max(30_000),
-    }),
+    entryPoint: z.string().min(1).max(100).optional(),
+    templates: problemTemplatesSchema.optional(),
+    languageConfigs: languageConfigsSchema.optional(),
+    signature: functionSignatureSchema.optional(),
+    version: problemVersionSchema.optional(),
     tests: z.array(testCaseSchema).max(100),
     examples: z.array(problemExampleSchema).max(20),
     constraints: z.array(localizedTextSchema).max(30),
@@ -61,6 +147,17 @@ export const persistedProblemSchema = z
     sourceUrl: z.url().max(2_000).optional(),
   })
   .superRefine((problem, context) => {
+    if (
+      !Object.values(problem.languageConfigs ?? {}).some(Boolean) &&
+      !(problem.entryPoint && problem.templates)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['languageConfigs'],
+        message:
+          'at least one language config or a complete legacy template is required',
+      });
+    }
     const testIds = new Set<string>();
     problem.tests.forEach((test, index) => {
       if (testIds.has(test.id)) {
@@ -122,7 +219,7 @@ const testCaseResultSchema = z.object({
 const codeRunSchema = z.object({
   id: z.string().max(160).optional(),
   problemSlug: z.string().min(1).max(120),
-  language: z.enum(['javascript', 'python']),
+  language: languageSchema,
   status: z.enum([
     'passed',
     'failed',
@@ -140,14 +237,15 @@ const codeRunSchema = z.object({
   codeSnapshot: z.string().max(30_000).optional(),
   testScope: z.enum(['sample', 'full', 'unknown']).optional(),
   submitted: z.boolean().optional(),
+  problemContentVersion: z.number().int().min(1).optional().default(1),
+  runtimeVersion: z.string().max(100).optional(),
+  runnerMode: z.enum(['browser-worker', 'remote-judge']).optional(),
 });
 
 const practiceSessionSchema = z.object({
   problemSlug: z.string().min(1).max(120),
-  code: z.object({
-    javascript: z.string().max(30_000).optional(),
-    python: z.string().max(30_000).optional(),
-  }),
+  problemContentVersion: z.number().int().min(1).optional().default(1),
+  code: languageCodeSchema,
   runs: z.array(codeRunSchema).max(30),
   hintLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]),
   diagnosisCount: z.number().int().min(0).max(10_000),
@@ -159,7 +257,7 @@ const practiceSessionSchema = z.object({
 
 const learningProfileSchema = z.object({
   goal: z.enum(['foundation', 'interview', 'contest']),
-  preferredLanguage: z.enum(['javascript', 'python']),
+  preferredLanguage: languageSchema,
   weeklyTarget: z.number().int().min(1).max(14),
   dailyMinutes: z.number().int().min(10).max(180).optional().default(30),
   weeklyGoal: z.number().int().min(1).max(14).optional(),
@@ -173,11 +271,11 @@ const parsedDraftSchema = z.object({
   description: z.string().max(20_000),
   difficulty: z.enum(['easy', 'medium', 'hard']),
   constraints: z.array(z.string().max(1000)).max(30),
-  entryPoint: z.string().max(100),
-  templates: z.object({
-    javascript: z.string().max(30_000),
-    python: z.string().max(30_000),
-  }),
+  entryPoint: z.string().max(100).optional(),
+  templates: problemTemplatesSchema.optional(),
+  languageConfigs: languageConfigsSchema.optional(),
+  signature: functionSignatureSchema.optional(),
+  version: problemVersionSchema.optional(),
   tests: z.array(testCaseSchema).max(100),
   testCoverage: z.literal('none'),
   warnings: z.array(z.string().max(1000)).max(20),
@@ -192,6 +290,7 @@ const artifactSchema = z.object({
   locale: z.enum(['zh', 'en']),
   problemSlug: z.string().max(120).optional(),
   runId: z.string().max(240).optional(),
+  problemContentVersion: z.number().int().min(1).optional().default(1),
   title: z.string().max(300),
   summary: z.string().max(4000),
   details: z.array(z.string().max(4000)).max(20),
@@ -263,6 +362,12 @@ const productEventSchema = z.object({
     'guest_data_claimed',
     'sync_succeeded',
     'sync_failed',
+    'language_selected',
+    'typescript_transpile_failed',
+    'catalog_sync_completed',
+    'catalog_candidate_rejected',
+    'catalog_revision_published',
+    'catalog_revision_rolled_back',
     'experiment_exposed',
     'imported_problem_saved',
     'coach_chat_message',
@@ -279,6 +384,15 @@ const assessmentResultSchema = z.object({
   version: z.string().max(100).optional(),
   verificationToken: z.string().max(4096).optional(),
   problemSlugs: z.array(z.string().max(120)).max(20),
+  problemVersions: z
+    .array(
+      z.object({
+        slug: z.string().min(1).max(120),
+        contentVersion: z.number().int().min(1),
+      })
+    )
+    .max(20)
+    .optional(),
   startedAt: z.iso.datetime(),
   completedAt: z.iso.datetime(),
   score: z.number().int().min(0).max(100),
@@ -304,6 +418,15 @@ const assessmentResultSchema = z.object({
 const activeAssessmentSchema = z.object({
   id: z.string().min(1).max(160),
   problemSlugs: z.array(z.string().max(120)).max(20),
+  problemVersions: z
+    .array(
+      z.object({
+        slug: z.string().min(1).max(120),
+        contentVersion: z.number().int().min(1),
+      })
+    )
+    .max(20)
+    .optional(),
   startedAt: z.iso.datetime(),
   durationMinutes: z.number().int().min(1).max(180),
 });
@@ -361,13 +484,7 @@ export const persistedCoachStateSchema = z.object({
   events: z.array(productEventSchema).max(300),
   activeAssessment: activeAssessmentSchema.nullable(),
   assessments: z.array(assessmentResultSchema).max(20),
-  code: z.record(
-    z.string(),
-    z.object({
-      javascript: z.string().max(30_000).optional(),
-      python: z.string().max(30_000).optional(),
-    })
-  ),
+  code: z.record(z.string(), languageCodeSchema),
   runs: z.array(codeRunSchema).max(200),
   completedProblemIds: z.array(z.string().max(160)).max(500),
 });
@@ -440,13 +557,7 @@ export const coachSyncMutationSchema = z
         activeAssessment: activeAssessmentSchema.nullable().optional(),
         assessments: z.array(assessmentResultSchema).max(20).optional(),
         code: z
-          .record(
-            z.string().min(1).max(120),
-            z.object({
-              javascript: z.string().max(30_000).optional(),
-              python: z.string().max(30_000).optional(),
-            })
-          )
+          .record(z.string().min(1).max(120), languageCodeSchema)
           .optional(),
         runs: z.array(codeRunSchema).max(200).optional(),
         completedProblemIds: z

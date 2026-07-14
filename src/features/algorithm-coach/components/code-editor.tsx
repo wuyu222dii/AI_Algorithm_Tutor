@@ -5,6 +5,7 @@ import { useTheme } from 'next-themes';
 
 import { cn } from '@/shared/lib/utils';
 
+import { LANGUAGE_REGISTRY } from '../languages';
 import type { Language } from '../types';
 
 loader.config({ paths: { vs: '/monaco/vs' } });
@@ -30,7 +31,7 @@ export function CodeEditor({
     <div className={cn('min-h-0 overflow-hidden bg-[#1e1e1e]', className)}>
       <Editor
         height={height}
-        language={language === 'javascript' ? 'javascript' : 'python'}
+        language={LANGUAGE_REGISTRY[language].monacoId}
         theme={resolvedTheme === 'dark' ? 'vs-dark' : 'light'}
         value={value}
         onChange={(nextValue) => onChange(nextValue ?? '')}
