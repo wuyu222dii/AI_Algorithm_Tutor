@@ -24,6 +24,10 @@ const env = {
   AUTH_SECRET: 'algocoach-e2e-only-auth-secret-2026',
   AUTH_SOCIAL_SIGN_IN_RATE_WINDOW_MS: '60000',
   AUTH_SOCIAL_SIGN_IN_RATE_MAX: '20',
+  // The repeat-each CI gate creates 12 unique accounts from one runner IP.
+  // Keep production defaults strict while allowing the isolated E2E database.
+  AUTH_SIGN_UP_RATE_WINDOW_MS: '60000',
+  AUTH_SIGN_UP_RATE_MAX: '20',
   NEXT_PUBLIC_APP_URL: `http://localhost:${port}`,
   NEXT_PUBLIC_DEFAULT_LOCALE: 'zh',
   NEXT_PUBLIC_LOCALE_DETECT_ENABLED: 'false',

@@ -36,7 +36,17 @@ async function fillSignUp(page: Page, email: string) {
   await page.getByLabel('密码', { exact: true }).fill(PASSWORD);
   await page.getByLabel(/确认密码|Confirm password/i).fill(PASSWORD);
   await page.getByRole('checkbox').click();
+  const signUpResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname.endsWith('/api/auth/sign-up/email')
+  );
   await page.getByRole('button', { name: '注册', exact: true }).click();
+  const response = await signUpResponse;
+  expect(
+    response.status(),
+    `email sign-up returned HTTP ${response.status()}`
+  ).toBeLessThan(400);
 }
 
 async function fillSignIn(page: Page, email: string, password: string) {
