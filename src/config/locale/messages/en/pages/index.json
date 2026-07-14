@@ -39,19 +39,19 @@
         "show_avatars": false,
         "show_award": false,
         "image": {
-          "src": "https://picsum.photos/seed/algocoach-en-hero-main/1200/800.webp",
+          "src": "/imgs/algocoach/en/workspace-light.jpg",
           "alt": "AlgoCoach guided algorithm practice workspace",
-          "width": 1200,
+          "width": 1272,
           "height": 800
         },
         "image_invert": {
-          "src": "https://picsum.photos/seed/algocoach-en-hero-dark/1200/800.webp",
+          "src": "/imgs/algocoach/en/workspace-dark.jpg",
           "alt": "AlgoCoach guided algorithm practice workspace in dark mode",
-          "width": 1200,
+          "width": 1272,
           "height": 800
         },
         "background_image": {
-          "src": "https://picsum.photos/seed/algocoach-en-hero-background/1600/900.webp",
+          "src": "/imgs/algocoach/en/workspace-light.jpg",
           "alt": "AlgoCoach learning workspace background"
         }
       },
@@ -62,7 +62,7 @@
         "label": "Teach · Practice · Assess · Review",
         "description": "AlgoCoach keeps the explanation, coding environment, feedback, assessment, and review plan connected so each attempt produces a useful next action.",
         "image": {
-          "src": "https://picsum.photos/seed/algocoach-en-loop/1200/800.webp",
+          "src": "/imgs/algocoach/en/learning-loop.jpg",
           "alt": "The AlgoCoach learning loop"
         },
         "items": [
@@ -71,7 +71,7 @@
             "description": "Understand the pattern, constraints, and trade-offs before reaching for a finished answer.",
             "icon": "BookOpen",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-en-teach/960/640.webp",
+              "src": "/imgs/algocoach/en/learning-loop.jpg",
               "alt": "Guided algorithm explanation"
             }
           },
@@ -80,7 +80,7 @@
             "description": "Write and run JavaScript or Python, inspect test results, and locate the exact failing case.",
             "icon": "Code2",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-en-practice/960/640.webp",
+              "src": "/imgs/algocoach/en/workspace-light.jpg",
               "alt": "Browser-based code practice"
             }
           },
@@ -89,7 +89,7 @@
             "description": "Use timed, hint-free exercises to check whether the skill transfers without coaching.",
             "icon": "ListChecks",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-en-assess/960/640.webp",
+              "src": "/imgs/algocoach/en/progress.jpg",
               "alt": "Focused algorithm assessment"
             }
           },
@@ -98,7 +98,7 @@
             "description": "Turn mistakes and hint usage into focused review cards and a clearer next practice target.",
             "icon": "NotebookTabs",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-en-review/960/640.webp",
+              "src": "/imgs/algocoach/en/learner-control.jpg",
               "alt": "Personalized review cards"
             }
           }
@@ -117,7 +117,7 @@
             "description": "Difficulty, constraints, function signatures, and starter code reduce setup work without removing the thinking.",
             "icon": "Route",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-en-structure/960/640.webp",
+              "src": "/imgs/algocoach/en/learning-loop.jpg",
               "alt": "Structured problem setup"
             }
           },
@@ -126,7 +126,7 @@
             "description": "Diagnostics connect compiler errors or failed tests to a concrete cause, then suggest a targeted next check.",
             "icon": "Bug",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-en-diagnosis/960/640.webp",
+              "src": "/imgs/algocoach/en/diagnosis.jpg",
               "alt": "Code failure diagnosis"
             }
           },
@@ -135,7 +135,7 @@
             "description": "Counterexamples, assessments, and review cards expose weak spots and bring them back into the learning plan.",
             "icon": "BrainCircuit",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-en-recall/960/640.webp",
+              "src": "/imgs/algocoach/en/learner-control.jpg",
               "alt": "Focused knowledge review"
             }
           }

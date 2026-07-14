@@ -39,19 +39,19 @@
         "show_avatars": false,
         "show_award": false,
         "image": {
-          "src": "https://picsum.photos/seed/algocoach-zh-hero-main/1200/800.webp",
+          "src": "/imgs/algocoach/zh/workspace-light.jpg",
           "alt": "AI 算法教练引导式练习工作台",
-          "width": 1200,
+          "width": 1272,
           "height": 800
         },
         "image_invert": {
-          "src": "https://picsum.photos/seed/algocoach-zh-hero-dark/1200/800.webp",
+          "src": "/imgs/algocoach/zh/workspace-dark.jpg",
           "alt": "深色模式下的 AI 算法教练练习工作台",
-          "width": 1200,
+          "width": 1272,
           "height": 800
         },
         "background_image": {
-          "src": "https://picsum.photos/seed/algocoach-zh-hero-background/1600/900.webp",
+          "src": "/imgs/algocoach/zh/workspace-light.jpg",
           "alt": "AI 算法教练学习工作台背景"
         }
       },
@@ -62,7 +62,7 @@
         "label": "教 · 练 · 测 · 评",
         "description": "AI 算法教练把知识讲解、代码练习、即时反馈、独立测评和复习计划连接起来，让每次尝试都沉淀为明确的下一步。",
         "image": {
-          "src": "https://picsum.photos/seed/algocoach-zh-loop/1200/800.webp",
+          "src": "/imgs/algocoach/zh/learning-loop.jpg",
           "alt": "AI 算法教练学习闭环"
         },
         "items": [
@@ -71,7 +71,7 @@
             "description": "在查看完整答案前，先理解题型模式、约束条件和方案取舍。",
             "icon": "BookOpen",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-zh-teach/960/640.webp",
+              "src": "/imgs/algocoach/zh/learning-loop.jpg",
               "alt": "算法思路引导"
             }
           },
@@ -80,7 +80,7 @@
             "description": "编写并运行 JavaScript 或 Python，查看测试结果，定位具体失败用例。",
             "icon": "Code2",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-zh-practice/960/640.webp",
+              "src": "/imgs/algocoach/zh/workspace-light.jpg",
               "alt": "浏览器代码练习"
             }
           },
@@ -89,7 +89,7 @@
             "description": "通过限时、无提示的题目，验证知识是否真正迁移到独立解题。",
             "icon": "ListChecks",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-zh-assess/960/640.webp",
+              "src": "/imgs/algocoach/zh/progress.jpg",
               "alt": "算法专项测评"
             }
           },
@@ -98,7 +98,7 @@
             "description": "将错因和提示使用情况转成复习卡片，明确下一次练习重点。",
             "icon": "NotebookTabs",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-zh-review/960/640.webp",
+              "src": "/imgs/algocoach/zh/learner-control.jpg",
               "alt": "个性化复习卡片"
             }
           }
@@ -117,7 +117,7 @@
             "description": "题目难度、约束、函数签名和初始代码模板减少准备成本，但保留核心思考过程。",
             "icon": "Route",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-zh-structure/960/640.webp",
+              "src": "/imgs/algocoach/zh/learning-loop.jpg",
               "alt": "结构化题目解析"
             }
           },
@@ -126,7 +126,7 @@
             "description": "诊断会引用编译错误或失败测试，解释具体原因，并给出下一项检查建议。",
             "icon": "Bug",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-zh-diagnosis/960/640.webp",
+              "src": "/imgs/algocoach/zh/diagnosis.jpg",
               "alt": "代码错误诊断"
             }
           },
@@ -135,7 +135,7 @@
             "description": "通过反例、测评和复习卡片暴露薄弱点，并把它们重新带回学习计划。",
             "icon": "BrainCircuit",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-zh-recall/960/640.webp",
+              "src": "/imgs/algocoach/zh/learner-control.jpg",
               "alt": "知识点专项复习"
             }
           }

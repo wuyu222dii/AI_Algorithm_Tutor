@@ -33,13 +33,19 @@
           }
         ],
         "image": {
-          "src": "https://picsum.photos/seed/algocoach-about-zh-hero/1200/800.webp",
+          "src": "/imgs/algocoach/zh/workspace-light.jpg",
           "alt": "AI 算法教练学习工作台",
-          "width": 1200,
+          "width": 1272,
+          "height": 800
+        },
+        "image_invert": {
+          "src": "/imgs/algocoach/zh/workspace-dark.jpg",
+          "alt": "深色模式下的 AI 算法教练学习工作台",
+          "width": 1272,
           "height": 800
         },
         "background_image": {
-          "src": "https://picsum.photos/seed/algocoach-about-zh-background/1600/900.webp",
+          "src": "/imgs/algocoach/zh/workspace-light.jpg",
           "alt": "AI 算法教练产品背景"
         }
       },
@@ -49,45 +55,29 @@
         "title": "为练习真正失效的时刻而设计",
         "description": "很多学习者已经掌握语法，却仍然难以形成解题思路、读懂失败原因，也难以把一道做过的题连接成长期学习路径。",
         "image": {
-          "src": "https://picsum.photos/seed/algocoach-about-zh-purpose/1200/800.webp",
+          "src": "/imgs/algocoach/zh/learning-loop.jpg",
           "alt": "聚焦的算法学习路径"
         },
         "items": [
           {
             "title": "面对空白编辑器无从下手",
             "description": "逐级提示只给当前最小且有用的一步，同时让学习者继续对最终解法负责。",
-            "icon": "Lightbulb",
-            "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-zh-hints/800/600.webp",
-              "alt": "逐级算法提示"
-            }
+            "icon": "Lightbulb"
           },
           {
             "title": "反馈来得太慢",
             "description": "真实运行结果和基于证据的诊断，在思路仍然清晰时解释失败原因。",
-            "icon": "MessagesSquare",
-            "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-zh-feedback/800/600.webp",
-              "alt": "即时代码反馈"
-            }
+            "icon": "MessagesSquare"
           },
           {
             "title": "学习路径彼此割裂",
             "description": "目标、练习、测评和复习共享同一份学习记录，不再散落在多个工具中。",
-            "icon": "Route",
-            "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-zh-path/800/600.webp",
-              "alt": "连续的学习旅程"
-            }
+            "icon": "Route"
           },
           {
             "title": "做对不等于学会",
             "description": "反例和复习卡片持续检验假设，并在合适的时机重新带回薄弱模式。",
-            "icon": "BrainCircuit",
-            "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-zh-mastery/800/600.webp",
-              "alt": "知识掌握与复习"
-            }
+            "icon": "BrainCircuit"
           }
         ],
         "className": "bg-muted"
@@ -103,7 +93,7 @@
             "description": "诊断引用编译信息、运行错误或失败测试；当缺少证据时，教练会明确说明无法验证的部分。",
             "icon": "ScanSearch",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-zh-grounded/800/600.webp",
+              "src": "/imgs/algocoach/zh/diagnosis.jpg",
               "alt": "可追溯的诊断证据"
             }
           },
@@ -112,7 +102,7 @@
             "description": "提示从概念到方向再到伪代码逐级展开，为独立推理保留空间。",
             "icon": "Layers3",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-zh-progressive/800/600.webp",
+              "src": "/imgs/algocoach/zh/hint-ladder.jpg",
               "alt": "三级渐进式提示"
             }
           },
@@ -121,7 +111,7 @@
             "description": "用户可以检查反馈、纠正教练、重置本地数据，也可以不注册账户直接练习。",
             "icon": "SlidersHorizontal",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-zh-control/800/600.webp",
+              "src": "/imgs/algocoach/zh/learner-control.jpg",
               "alt": "由学习者控制的练习设置"
             }
           }

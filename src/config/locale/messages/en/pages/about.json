@@ -33,13 +33,19 @@
           }
         ],
         "image": {
-          "src": "https://picsum.photos/seed/algocoach-about-en-hero/1200/800.webp",
+          "src": "/imgs/algocoach/en/workspace-light.jpg",
           "alt": "AlgoCoach learning workspace",
-          "width": 1200,
+          "width": 1272,
+          "height": 800
+        },
+        "image_invert": {
+          "src": "/imgs/algocoach/en/workspace-dark.jpg",
+          "alt": "AlgoCoach learning workspace in dark mode",
+          "width": 1272,
           "height": 800
         },
         "background_image": {
-          "src": "https://picsum.photos/seed/algocoach-about-en-background/1600/900.webp",
+          "src": "/imgs/algocoach/en/workspace-light.jpg",
           "alt": "AlgoCoach product background"
         }
       },
@@ -49,45 +55,29 @@
         "title": "Built for the moments when practice breaks down",
         "description": "Algorithm learners often know the syntax but still struggle to form an approach, interpret failures, and connect one solved problem to a durable learning path.",
         "image": {
-          "src": "https://picsum.photos/seed/algocoach-about-en-purpose/1200/800.webp",
+          "src": "/imgs/algocoach/en/learning-loop.jpg",
           "alt": "A focused algorithm learning path"
         },
         "items": [
           {
             "title": "The blank-page problem",
             "description": "A progressive hint ladder gives the smallest useful nudge while keeping the learner responsible for the solution.",
-            "icon": "Lightbulb",
-            "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-en-hints/800/600.webp",
-              "alt": "Progressive algorithm hints"
-            }
+            "icon": "Lightbulb"
           },
           {
             "title": "Feedback that arrives too late",
             "description": "Real execution results and evidence-based diagnosis explain failures while the reasoning is still fresh.",
-            "icon": "MessagesSquare",
-            "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-en-feedback/800/600.webp",
-              "alt": "Immediate code feedback"
-            }
+            "icon": "MessagesSquare"
           },
           {
             "title": "Fragmented learning paths",
             "description": "Goals, practice, assessment, and review share one learning record instead of living in disconnected tools.",
-            "icon": "Route",
-            "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-en-path/800/600.webp",
-              "alt": "Connected learning journey"
-            }
+            "icon": "Route"
           },
           {
             "title": "Solved is not the same as learned",
             "description": "Counterexamples and review cards test assumptions and bring weak patterns back at the right moment.",
-            "icon": "BrainCircuit",
-            "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-en-mastery/800/600.webp",
-              "alt": "Knowledge mastery and review"
-            }
+            "icon": "BrainCircuit"
           }
         ],
         "className": "bg-muted"
@@ -103,7 +93,7 @@
             "description": "Diagnostics cite compiler messages, runtime errors, or failed tests. When evidence is missing, the coach says what it cannot verify.",
             "icon": "ScanSearch",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-en-grounded/800/600.webp",
+              "src": "/imgs/algocoach/en/diagnosis.jpg",
               "alt": "Traceable diagnostic evidence"
             }
           },
@@ -112,7 +102,7 @@
             "description": "Hints escalate from concept to direction to pseudocode, preserving space for independent reasoning.",
             "icon": "Layers3",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-en-progressive/800/600.webp",
+              "src": "/imgs/algocoach/en/hint-ladder.jpg",
               "alt": "Three progressive hint levels"
             }
           },
@@ -121,7 +111,7 @@
             "description": "Users can inspect feedback, correct the coach, reset local data, and practice without creating an account.",
             "icon": "SlidersHorizontal",
             "image": {
-              "src": "https://picsum.photos/seed/algocoach-about-en-control/800/600.webp",
+              "src": "/imgs/algocoach/en/learner-control.jpg",
               "alt": "Learner-controlled practice settings"
             }
           }

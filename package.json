@@ -38,6 +38,7 @@
     "budget:editor": "node scripts/check-editor-assets.mjs",
     "catalog:generate": "tsx scripts/generate-coach-catalog-migration.ts",
     "catalog:generate:hard": "tsx scripts/generate-coach-catalog-migration.ts --hard",
+    "assets:coach": "tsx scripts/capture-product-assets.ts",
     "check": "pnpm format:check && pnpm typecheck && pnpm lint:ci && pnpm test && pnpm eval:coach && pnpm eval:coach:live:corpus && pnpm budget:editor && pnpm build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
