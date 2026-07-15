@@ -40,6 +40,7 @@
     "catalog:generate:hard": "tsx scripts/generate-coach-catalog-migration.ts --hard",
     "catalog:generate:exercism": "tsx scripts/generate-coach-exercism-seed.ts",
     "catalog:bootstrap": "tsx scripts/with-env.ts --mode=production tsx scripts/coach-catalog.ts bootstrap",
+    "catalog:db:preflight": "tsx scripts/check-catalog-database-url.ts",
     "catalog:discover": "tsx scripts/with-env.ts --mode=production tsx scripts/coach-catalog.ts discover",
     "catalog:monitor": "tsx scripts/with-env.ts --mode=production tsx scripts/coach-catalog.ts monitor",
     "catalog:sync:dry-run": "tsx scripts/with-env.ts --mode=production tsx scripts/coach-catalog.ts dry-run",

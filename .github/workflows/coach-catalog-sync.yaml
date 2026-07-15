@@ -42,8 +42,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Require the restricted catalog writer URL
-        run: test -n "$DATABASE_URL"
+      - name: Validate the restricted catalog writer URL
+        run: pnpm catalog:db:preflight
       - name: Establish the one-time published baseline
         if: github.event_name == 'workflow_dispatch' && inputs.bootstrap == true
         env:
@@ -88,8 +88,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Require the restricted catalog writer URL
-        run: test -n "$DATABASE_URL"
+      - name: Validate the restricted catalog writer URL
+        run: pnpm catalog:db:preflight
       - name: Discover unreviewed exercises at a fixed commit
         run: pnpm catalog:discover -- --output "$DISCOVERY_REPORT" --ingest --reviewer "github:${GITHUB_ACTOR}"
       - name: Validate ingested discovery drafts
@@ -127,8 +127,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Require the restricted catalog URL
-        run: test -n "$DATABASE_URL"
+      - name: Validate the restricted catalog URL
+        run: pnpm catalog:db:preflight
       - name: Monitor catalog sync anomalies
         run: pnpm catalog:monitor
 

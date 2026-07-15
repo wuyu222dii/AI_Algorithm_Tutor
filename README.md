@@ -103,6 +103,8 @@ GRANT algocoach_catalog_reviewer, algocoach_catalog_publisher
 
 worker 连接串保存为 GitHub Environment Secret `CATALOG_DATABASE_URL`；admin 连接串仅保存为应用服务端 Secret `CATALOG_ADMIN_DATABASE_URL`。后台每次操作都会 `SET LOCAL ROLE` 到当前阶段，且候选记录要求批准者与发布者是两个不同的登录用户。不要让应用 `DATABASE_URL`、同步账号或浏览器获得发布权限。
 
+`CATALOG_DATABASE_URL` 的 Secret 值只能是裸 PostgreSQL URL，不要包含 `CATALOG_DATABASE_URL=`、`export`、引号、反引号或 `<PASSWORD>` 占位符；密码中的 `#`、`/`、`?` 等保留字符必须进行 URL 编码。Workflow 会先运行 `pnpm catalog:db:preflight`，以不输出连接串的方式验证 URL、登录身份、同步角色成员关系和最小表权限。
+
 Git Tree discovery 在解析 `main` 得到完整 commit SHA 后，所有 tree、LICENSE、题面和 canonical-data 请求都固定到该 SHA。单次请求限制 10 秒，LICENSE 限制 64 KiB，题面限制 256 KiB，canonical-data 限制 2 MiB 且 JSON 深度不超过 32；候选完整保留 LICENSE 原文、Git blob SHA、内容 SHA-256、原始题面与 canonical-data，供人工审核和构建测试。发现结果始终是 `publishable: false` 的结构化草稿；开启 `CATALOG_AI_DRAFT_ENABLED` 后，`CATALOG_AI_MODEL` 指定的白名单 OpenRouter 模型只能建议双语标题、描述、难度、知识点、学习目标和单函数签名。JavaScript、Python、TypeScript starter template 由本地代码根据签名确定性生成，只含 TODO、`pass` 或 `throw` 占位；解法、Hint 与权威测试仍为空。草稿入库后保持 quarantine，不能直接发布。定时任务每批优先发现新题，再发现上游 blob 已变化的既有题；未变化题不占批次上限，每批最多 10 道。这个数字只表示进入候选审核区的批次上限，不表示题目会自动发布。
 
 ```bash
