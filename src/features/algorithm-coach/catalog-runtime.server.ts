@@ -41,9 +41,16 @@ async function loadFixtureCatalog(): Promise<PublishedProblem[]> {
       'DB_CATALOG_ENABLED=false is not allowed in production; publish the versioned catalog first.'
     );
   }
-  const [{ problems }, { curatedExercismProblems }] = await Promise.all([
+  const [
+    { problems },
+    { curatedExercismProblems },
+    { p1LearningProblems },
+    { p1ProblemOrigin, p1ProblemSourceUrl },
+  ] = await Promise.all([
     import('./data/problems'),
     import('./catalog/curated-exercism-problems'),
+    import('./data/p1-learning-problems'),
+    import('./data/p1-learning-catalog'),
   ]);
   const external = curatedExercismProblems.map(
     (problem): PublishedProblem => ({
@@ -80,7 +87,15 @@ async function loadFixtureCatalog(): Promise<PublishedProblem[]> {
       },
     })
   );
-  return [...problems, ...external].map(normalizeCatalogProblem);
+  const p1 = p1LearningProblems.map(
+    (problem): PublishedProblem => ({
+      ...problem,
+      sourceStatement: problem.description.en,
+      sourceUrl: p1ProblemSourceUrl(problem.slug),
+      origin: p1ProblemOrigin(problem),
+    })
+  );
+  return [...problems, ...external, ...p1].map(normalizeCatalogProblem);
 }
 
 function filterFixtureCatalog(

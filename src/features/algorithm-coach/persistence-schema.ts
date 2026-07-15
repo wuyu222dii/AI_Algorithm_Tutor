@@ -142,6 +142,23 @@ export const persistedProblemSchema = z
       en: z.tuple([z.string(), z.string(), z.string()]),
     }),
     reviewPoints: z.array(localizedTextSchema).max(20),
+    learningObjectives: z.array(localizedTextSchema).max(20).optional(),
+    prerequisiteTopics: z
+      .array(
+        z.enum([
+          'array-hash',
+          'two-pointers',
+          'stack',
+          'binary-search',
+          'linked-list',
+          'dynamic-programming',
+          'bfs',
+          'dfs',
+        ])
+      )
+      .max(12)
+      .optional(),
+    solutionPatterns: z.array(z.string().min(1).max(160)).max(20).optional(),
     estimatedMinutes: z.number().int().min(1).max(180),
     sourceStatement: z.string().max(20_000).optional(),
     sourceUrl: z.url().max(2_000).optional(),
@@ -286,7 +303,14 @@ const parsedDraftSchema = z.object({
 
 const artifactSchema = z.object({
   id: z.string().min(1).max(160),
-  type: z.enum(['parse', 'diagnose', 'hint', 'counterexample', 'review_card']),
+  type: z.enum([
+    'parse',
+    'diagnose',
+    'hint',
+    'counterexample',
+    'review_card',
+    'review_grade',
+  ]),
   locale: z.enum(['zh', 'en']),
   problemSlug: z.string().max(120).optional(),
   runId: z.string().max(240).optional(),
@@ -331,6 +355,15 @@ const artifactSchema = z.object({
       tags: z.array(z.string().max(100)).max(20),
     })
     .optional(),
+  reviewGrade: z
+    .object({
+      hitConcepts: z.array(z.string().max(300)).max(8),
+      missedConcepts: z.array(z.string().max(300)).max(8),
+      feedback: z.string().max(1200),
+      suggestedRating: z.enum(['again', 'hard', 'good', 'easy']),
+      confidence: z.number().min(0).max(1),
+    })
+    .optional(),
   draft: parsedDraftSchema.optional(),
   generationMode: z.enum(['live', 'local']).optional(),
   model: z.string().max(160).optional(),
@@ -356,6 +389,17 @@ const productEventSchema = z.object({
     'corrected_after_diagnosis',
     'assessment_started',
     'assessment_completed',
+    'baseline_started',
+    'baseline_completed',
+    'checkpoint_completed',
+    'daily_plan_viewed',
+    'daily_plan_task_started',
+    'daily_plan_task_swapped',
+    'daily_plan_task_skipped',
+    'daily_plan_task_completed',
+    'review_answered',
+    'review_rating_overridden',
+    'correction_episode_completed',
     'counterexample_requested',
     'review_card_created',
     'review_completed',
@@ -381,6 +425,8 @@ const productEventSchema = z.object({
 
 const assessmentResultSchema = z.object({
   id: z.string().min(1).max(160),
+  kind: z.enum(['baseline', 'checkpoint', 'practice']).optional(),
+  baselineAssessmentId: z.string().max(160).optional(),
   version: z.string().max(100).optional(),
   verificationToken: z.string().max(4096).optional(),
   problemSlugs: z.array(z.string().max(120)).max(20),
@@ -413,10 +459,67 @@ const assessmentResultSchema = z.object({
     )
     .max(20),
   recommendation: z.string().max(4000),
+  averageDurationMs: z.number().int().min(0).max(10_800_000).optional(),
+  hintCount: z.number().int().min(0).max(10_000).optional(),
+  errorCategories: z
+    .array(
+      z.enum([
+        'syntax',
+        'runtime',
+        'timeout',
+        'wrong-answer',
+        'edge-case',
+        'unknown',
+      ])
+    )
+    .max(20)
+    .optional(),
+  comparison: z
+    .object({
+      baselineAssessmentId: z.string().min(1).max(160),
+      scoreDelta: z.number().int().min(-100).max(100),
+      correctCountDelta: z.number().int().min(-100).max(100),
+      averageDurationDeltaMs: z
+        .number()
+        .int()
+        .min(-10_800_000)
+        .max(10_800_000)
+        .optional(),
+      hintCountDelta: z.number().int().min(-10_000).max(10_000).optional(),
+      baselineErrorCategories: z
+        .array(
+          z.enum([
+            'syntax',
+            'runtime',
+            'timeout',
+            'wrong-answer',
+            'edge-case',
+            'unknown',
+          ])
+        )
+        .max(20)
+        .optional(),
+      checkpointErrorCategories: z
+        .array(
+          z.enum([
+            'syntax',
+            'runtime',
+            'timeout',
+            'wrong-answer',
+            'edge-case',
+            'unknown',
+          ])
+        )
+        .max(20)
+        .optional(),
+    })
+    .optional(),
 });
 
 const activeAssessmentSchema = z.object({
   id: z.string().min(1).max(160),
+  kind: z.enum(['baseline', 'checkpoint', 'practice']).optional(),
+  baselineAssessmentId: z.string().max(160).optional(),
   problemSlugs: z.array(z.string().max(120)).max(20),
   problemVersions: z
     .array(
@@ -476,6 +579,191 @@ export const reviewProgressSchema = z.object({
   items: reviewItemsSchema,
 });
 
+const problemTopicSchema = z.enum([
+  'array-hash',
+  'two-pointers',
+  'stack',
+  'binary-search',
+  'linked-list',
+  'dynamic-programming',
+  'bfs',
+  'dfs',
+]);
+
+const dailyPlanTaskSchema = z.object({
+  id: z.string().min(1).max(240),
+  kind: z.enum(['due-review', 'weak-topic', 'new-topic']),
+  status: z.enum(['pending', 'completed', 'skipped']),
+  problemId: z.string().min(1).max(160),
+  problemSlug: z.string().min(1).max(120),
+  problemContentVersion: z.number().int().min(1),
+  primaryTopic: problemTopicSchema,
+  difficulty: z.enum(['easy', 'medium', 'hard']),
+  reason: z.enum([
+    'review-due',
+    'assessment-weak',
+    'weak-mastery',
+    'new-topic',
+  ]),
+  estimatedMinutes: z.number().int().min(1).max(180),
+  dueAt: z.iso.datetime().optional(),
+  completedAt: z.iso.datetime().optional(),
+  skipReason: z.string().min(1).max(500).optional(),
+  skippedAt: z.iso.datetime().optional(),
+});
+
+const dailyLearningPlanSchema = z.object({
+  id: z.string().min(1).max(240),
+  localDate: z.iso.date(),
+  timeZone: z.string().min(1).max(100),
+  budgetMinutes: z.number().int().min(1).max(180),
+  estimatedMinutes: z.number().int().min(0).max(540),
+  preferredLanguage: languageSchema.optional(),
+  goal: z.enum(['foundation', 'interview', 'contest']),
+  tasks: z.array(dailyPlanTaskSchema).max(3),
+  changes: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(260),
+        action: z.enum(['skipped', 'swapped', 'swap-unavailable']),
+        taskId: z.string().min(1).max(240),
+        reason: z.string().min(1).max(500),
+        occurredAt: z.iso.datetime(),
+        fromProblemSlug: z.string().min(1).max(120),
+        fromProblemContentVersion: z.number().int().min(1),
+        toProblemSlug: z.string().min(1).max(120).optional(),
+        toProblemContentVersion: z.number().int().min(1).optional(),
+      })
+    )
+    .max(30),
+});
+
+const reviewGradeSchema = z.object({
+  suggestedRating: z.enum(['again', 'hard', 'good', 'easy']),
+  coverage: z.number().min(0).max(1),
+  matchedPoints: z.array(z.string().max(1000)).max(30),
+  missingPoints: z.array(z.string().max(1000)).max(30),
+  rationale: z.string().max(4000).optional(),
+  gradedAt: z.iso.datetime().optional(),
+});
+
+const reviewAttemptSchema = z.object({
+  id: z.string().min(1).max(160),
+  problemSlug: z.string().min(1).max(120),
+  problemContentVersion: z.number().int().min(1),
+  answer: z.string().max(10_000),
+  submittedAt: z.iso.datetime(),
+  grade: reviewGradeSchema.optional(),
+  selectedRating: z.enum(['again', 'hard', 'good', 'easy']).optional(),
+  ratingOverride: z.enum(['again', 'hard', 'good', 'easy']).optional(),
+  gradedArtifactId: z.string().max(160).optional(),
+});
+
+const lineDiffSchema = z.object({
+  beforeLines: z.number().int().min(0).max(100_000),
+  afterLines: z.number().int().min(0).max(100_000),
+  unchangedLines: z.number().int().min(0).max(100_000),
+  changedLines: z.number().int().min(0).max(100_000),
+  addedLines: z.number().int().min(0).max(100_000),
+  removedLines: z.number().int().min(0).max(100_000),
+  hasChanges: z.boolean(),
+});
+
+const correctionEpisodeSchema = z.object({
+  id: z.string().min(1).max(320),
+  problemSlug: z.string().min(1).max(120),
+  problemContentVersion: z.number().int().min(1),
+  startedAt: z.iso.datetime(),
+  diagnosedAt: z.iso.datetime(),
+  endedAt: z.iso.datetime(),
+  initialFailure: z.object({
+    runId: z.string().max(160).optional(),
+    executedAt: z.iso.datetime(),
+    status: z.enum([
+      'passed',
+      'failed',
+      'syntax_error',
+      'runtime_error',
+      'timeout',
+    ]),
+    error: z.string().max(20_000).optional(),
+    passedTests: z.number().int().min(0).max(1000),
+    totalTests: z.number().int().min(0).max(1000),
+    failedTests: z
+      .array(
+        z.object({
+          testId: z.string().max(120),
+          error: z.string().max(10_000).optional(),
+          expected: jsonValueSchema.optional(),
+          actual: jsonValueSchema.optional(),
+        })
+      )
+      .max(100),
+  }),
+  diagnosisCategory: z.enum([
+    'syntax',
+    'runtime',
+    'timeout',
+    'wrong-answer',
+    'edge-case',
+    'unknown',
+  ]),
+  diagnoses: z
+    .array(
+      z.object({
+        artifactId: z.string().max(160),
+        runId: z.string().max(160).optional(),
+        category: z.enum([
+          'syntax',
+          'runtime',
+          'timeout',
+          'wrong-answer',
+          'edge-case',
+          'unknown',
+        ]),
+        createdAt: z.iso.datetime(),
+      })
+    )
+    .max(30),
+  attempts: z
+    .array(
+      z.object({
+        runId: z.string().max(160).optional(),
+        executedAt: z.iso.datetime(),
+        language: languageSchema,
+        status: z.enum([
+          'passed',
+          'failed',
+          'syntax_error',
+          'runtime_error',
+          'timeout',
+        ]),
+        passedTests: z.number().int().min(0).max(1000),
+        totalTests: z.number().int().min(0).max(1000),
+        durationMs: z.number().min(0).max(60_000),
+        codeSnapshot: z.string().max(30_000).optional(),
+        diffFromPrevious: lineDiffSchema.optional(),
+      })
+    )
+    .max(30),
+  resolved: z.boolean(),
+  resolvedAt: z.iso.datetime().optional(),
+  passedWithinThreeRuns: z.boolean(),
+  repairDurationMs: z.number().int().min(0).max(31_536_000_000).optional(),
+  repeatedDiagnosisCategories: z
+    .array(
+      z.enum([
+        'syntax',
+        'runtime',
+        'timeout',
+        'wrong-answer',
+        'edge-case',
+        'unknown',
+      ])
+    )
+    .max(10),
+});
+
 export const persistedCoachStateSchema = z.object({
   version: z.number().int().default(COACH_STORAGE_VERSION),
   profile: learningProfileSchema.nullable(),
@@ -484,6 +772,16 @@ export const persistedCoachStateSchema = z.object({
   events: z.array(productEventSchema).max(300),
   activeAssessment: activeAssessmentSchema.nullable(),
   assessments: z.array(assessmentResultSchema).max(20),
+  dailyPlans: z
+    .record(z.string().max(240), dailyLearningPlanSchema)
+    .optional()
+    .default({}),
+  reviewAttempts: z.array(reviewAttemptSchema).max(200).optional().default([]),
+  correctionEpisodes: z
+    .array(correctionEpisodeSchema)
+    .max(100)
+    .optional()
+    .default([]),
   code: z.record(z.string(), languageCodeSchema),
   runs: z.array(codeRunSchema).max(200),
   completedProblemIds: z.array(z.string().max(160)).max(500),
@@ -556,6 +854,14 @@ export const coachSyncMutationSchema = z
         events: z.array(productEventSchema).max(300).optional(),
         activeAssessment: activeAssessmentSchema.nullable().optional(),
         assessments: z.array(assessmentResultSchema).max(20).optional(),
+        dailyPlans: z
+          .record(z.string().max(240), dailyLearningPlanSchema)
+          .optional(),
+        reviewAttempts: z.array(reviewAttemptSchema).max(200).optional(),
+        correctionEpisodes: z
+          .array(correctionEpisodeSchema)
+          .max(100)
+          .optional(),
         code: z
           .record(z.string().min(1).max(120), languageCodeSchema)
           .optional(),

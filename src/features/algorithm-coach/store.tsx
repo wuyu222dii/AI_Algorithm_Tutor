@@ -21,6 +21,12 @@ import {
   trackProductEvent,
 } from './analytics';
 import {
+  createDailyLearningPlan,
+  getDailyPlanDateKey,
+  skipDailyPlanTask as skipPlanTask,
+  swapDailyPlanTask as swapPlanTask,
+} from './daily-plan';
+import {
   consumeImportedDraftClaimDropCount,
   ImportedDraftRecord,
   initializeImportedDrafts,
@@ -31,6 +37,7 @@ import {
   upsertImportedDraftRecords,
 } from './imported-drafts';
 import type { EnabledLanguage } from './languages';
+import { buildCorrectionEpisodes } from './learning-evidence';
 import {
   clearReviewProgress,
   createInitialReviewProgress,
@@ -85,11 +92,13 @@ import {
   coachSyncFailureForResponse,
 } from './sync-error';
 import {
+  AssessmentKind,
   AssessmentResult,
   CoachState,
   CoachSyncMutation,
   CoachSyncResult,
   CodeRunResult,
+  DailyLearningPlan,
   JsonValue,
   Language,
   LearningArtifact,
@@ -98,6 +107,7 @@ import {
   Problem,
   ProductEventName,
   ProductMetrics,
+  ReviewAttempt,
 } from './types';
 
 const DEFAULT_ASSESSMENT_PROBLEMS = [
@@ -155,11 +165,24 @@ export interface CoachStoreValue {
   recordRun: RecordRun;
   revealHint: (problemSlug: string) => void;
   addArtifact: (artifact: LearningArtifact) => void;
-  startAssessment: (problemSlugs?: string[], durationMinutes?: number) => void;
+  startAssessment: (
+    problemSlugs?: string[],
+    durationMinutes?: number,
+    kind?: AssessmentKind,
+    baselineAssessmentId?: string
+  ) => void;
   completeAssessment: (result: AssessmentInput) => void;
   saveImportedProblem: (problem: Problem) => void;
   deleteImportedProblem: (slug: string) => void;
-  rateReview: (problemSlug: string, rating: ReviewRating) => void;
+  ensureDailyPlan: (timeZone: string) => void;
+  skipDailyPlanTask: (planId: string, taskId: string, reason: string) => void;
+  swapDailyPlanTask: (planId: string, taskId: string, reason: string) => void;
+  recordReviewAttempt: (attempt: ReviewAttempt) => void;
+  rateReview: (
+    problemSlug: string,
+    rating: ReviewRating,
+    options?: { attemptId?: string; suggestedRating?: ReviewRating }
+  ) => void;
   markReviewMastered: (problemSlug: string) => void;
   trackEvent: (
     name: ProductEventName,
@@ -188,6 +211,42 @@ function createSession(problemSlug: string, problemContentVersion = 1) {
     startedAt: timestamp,
     updatedAt: timestamp,
   };
+}
+
+function completeMatchingDailyPlanTasks(
+  plans: Record<string, DailyLearningPlan>,
+  problemSlug: string,
+  problemContentVersion: number,
+  completedAt: string,
+  allowedKinds?: Set<DailyLearningPlan['tasks'][number]['kind']>
+): {
+  plans: Record<string, DailyLearningPlan>;
+  completedTaskIds: string[];
+} {
+  const completedTaskIds: string[] = [];
+  const nextPlans = Object.fromEntries(
+    Object.entries(plans).map(([planId, plan]) => {
+      if (getDailyPlanDateKey(completedAt, plan.timeZone) !== plan.localDate) {
+        return [planId, plan];
+      }
+      let changed = false;
+      const tasks = plan.tasks.map((task) => {
+        if (
+          task.status !== 'pending' ||
+          task.problemSlug !== problemSlug ||
+          task.problemContentVersion !== problemContentVersion ||
+          (allowedKinds && !allowedKinds.has(task.kind))
+        ) {
+          return task;
+        }
+        changed = true;
+        completedTaskIds.push(task.id);
+        return { ...task, status: 'completed' as const, completedAt };
+      });
+      return [planId, changed ? { ...plan, tasks } : plan];
+    })
+  );
+  return { plans: nextPlans, completedTaskIds };
 }
 
 export function CoachProvider({
@@ -1039,6 +1098,45 @@ export function CoachProvider({
                 },
               })
             : null;
+        const allRuns = [...current.runs, storedResult].slice(-200);
+        const correctionEpisodes = buildCorrectionEpisodes(
+          allRuns,
+          current.artifacts
+        ).slice(-100);
+        const previouslyResolvedEpisodeIds = new Set(
+          current.correctionEpisodes
+            .filter((episode) => episode.resolved)
+            .map((episode) => episode.id)
+        );
+        const newlyResolvedEpisodes = correctionEpisodes.filter(
+          (episode) =>
+            episode.resolved && !previouslyResolvedEpisodeIds.has(episode.id)
+        );
+        const planCompletion = completedPass
+          ? completeMatchingDailyPlanTasks(
+              current.dailyPlans,
+              problemSlug,
+              contentVersion,
+              storedResult.executedAt
+            )
+          : { plans: current.dailyPlans, completedTaskIds: [] };
+        const planEvents = planCompletion.completedTaskIds.map((taskId) =>
+          trackProductEvent('daily_plan_task_completed', {
+            problemSlug,
+            properties: { taskId, completion: 'code_pass' },
+          })
+        );
+        const correctionEpisodeEvents = newlyResolvedEpisodes.map((episode) =>
+          trackProductEvent('correction_episode_completed', {
+            problemSlug,
+            properties: {
+              episodeId: episode.id,
+              diagnosisCategory: episode.diagnosisCategory,
+              passedWithinThreeRuns: episode.passedWithinThreeRuns,
+              repairDurationMs: episode.repairDurationMs ?? 0,
+            },
+          })
+        );
         return {
           ...current,
           sessions: {
@@ -1052,7 +1150,9 @@ export function CoachProvider({
               completedAt: completedPass ? now() : session.completedAt,
             },
           },
-          runs: [...current.runs, storedResult].slice(-200),
+          runs: allRuns,
+          dailyPlans: planCompletion.plans,
+          correctionEpisodes,
           completedProblemIds: completedPass
             ? Array.from(
                 new Set([
@@ -1068,6 +1168,8 @@ export function CoachProvider({
             runEvent,
             ...(correctionEvent ? [correctionEvent] : []),
             ...(firstPassEvent ? [firstPassEvent] : []),
+            ...planEvents,
+            ...correctionEpisodeEvents,
           ].slice(-300),
         };
       });
@@ -1132,9 +1234,14 @@ export function CoachProvider({
         const event = shouldCountDiagnosis
           ? trackProductEvent('diagnosis_requested', { problemSlug })
           : null;
+        const artifacts = [...current.artifacts, storedArtifact].slice(-100);
         return {
           ...current,
-          artifacts: [...current.artifacts, storedArtifact].slice(-100),
+          artifacts,
+          correctionEpisodes: buildCorrectionEpisodes(
+            current.runs,
+            artifacts
+          ).slice(-100),
           sessions:
             shouldCountDiagnosis && session
               ? {
@@ -1156,16 +1263,30 @@ export function CoachProvider({
   );
 
   const startAssessment = useCallback(
-    (problemSlugs = DEFAULT_ASSESSMENT_PROBLEMS, durationMinutes = 20) => {
+    (
+      problemSlugs = DEFAULT_ASSESSMENT_PROBLEMS,
+      durationMinutes = 20,
+      kind: AssessmentKind = 'practice',
+      baselineAssessmentId?: string
+    ) => {
       const startedAt = now();
       const id = `assessment_${crypto.randomUUID()}`;
-      const event = trackProductEvent('assessment_started', {
-        properties: { problemCount: problemSlugs.length, durationMinutes },
-      });
+      const event = trackProductEvent(
+        kind === 'baseline' ? 'baseline_started' : 'assessment_started',
+        {
+          properties: {
+            kind,
+            problemCount: problemSlugs.length,
+            durationMinutes,
+          },
+        }
+      );
       setState((current) => ({
         ...current,
         activeAssessment: {
           id,
+          kind,
+          baselineAssessmentId,
           problemSlugs,
           problemVersions: problemSlugs.map((slug) => ({
             slug,
@@ -1192,8 +1313,15 @@ export function CoachProvider({
       weakTopics: input.weakTopics ?? [],
       recommendation: input.recommendation ?? '',
     } as AssessmentResult;
-    const event = trackProductEvent('assessment_completed', {
+    const eventName =
+      result.kind === 'baseline'
+        ? 'baseline_completed'
+        : result.kind === 'checkpoint'
+          ? 'checkpoint_completed'
+          : 'assessment_completed';
+    const event = trackProductEvent(eventName, {
       properties: {
+        kind: result.kind ?? 'practice',
         score: result.score,
         correctCount: result.correctCount,
         totalCount: result.totalCount,
@@ -1202,7 +1330,7 @@ export function CoachProvider({
     setState((current) => ({
       ...current,
       activeAssessment: null,
-      assessments: [...current.assessments, result].slice(-20),
+      assessments: [...current.assessments, result].slice(-40),
       events: [...current.events, event].slice(-300),
     }));
   }, []);
@@ -1241,20 +1369,199 @@ export function CoachProvider({
     setImportedProblem(nextActive);
   }, []);
 
+  const ensureDailyPlan = useCallback(
+    (timeZone: string) => {
+      setState((current) => {
+        const timestamp = now();
+        const plan = createDailyLearningPlan({
+          state: current,
+          reviewItems: reviewProgressRef.current.items,
+          catalog: problems,
+          date: timestamp,
+          timeZone,
+        });
+        if (current.dailyPlans[plan.id]) return current;
+        const event = trackProductEvent('daily_plan_viewed', {
+          properties: {
+            planId: plan.id,
+            localDate: plan.localDate,
+            timeZone: plan.timeZone,
+            taskCount: plan.tasks.length,
+            estimatedMinutes: plan.estimatedMinutes,
+          },
+        });
+        return {
+          ...current,
+          dailyPlans: {
+            ...current.dailyPlans,
+            [plan.id]: plan,
+          },
+          events: [...current.events, event].slice(-300),
+        };
+      });
+    },
+    [problems]
+  );
+
+  const skipDailyPlanTask = useCallback(
+    (planId: string, taskId: string, reason: string) => {
+      setState((current) => {
+        const plan = current.dailyPlans[planId];
+        if (!plan) return current;
+        const task = plan.tasks.find((item) => item.id === taskId);
+        if (!task) return current;
+        const changed = skipPlanTask(plan, taskId, reason, new Date());
+        const event = trackProductEvent('daily_plan_task_skipped', {
+          problemSlug: task.problemSlug,
+          properties: { planId, taskId, reason },
+        });
+        return {
+          ...current,
+          dailyPlans: { ...current.dailyPlans, [planId]: changed },
+          events: [...current.events, event].slice(-300),
+        };
+      });
+    },
+    []
+  );
+
+  const swapDailyPlanTask = useCallback(
+    (planId: string, taskId: string, reason: string) => {
+      setState((current) => {
+        const plan = current.dailyPlans[planId];
+        if (!plan) return current;
+        const previousTask = plan.tasks.find((item) => item.id === taskId);
+        if (!previousTask) return current;
+        const changed = swapPlanTask(plan, taskId, reason, new Date(), {
+          state: current,
+          reviewItems: reviewProgressRef.current.items,
+          catalog: problems,
+          date: new Date(),
+          timeZone: plan.timeZone,
+        });
+        const nextTask = changed.tasks.find((item) => item.id === taskId);
+        const latestChange = changed.changes.at(-1);
+        const event = trackProductEvent('daily_plan_task_swapped', {
+          problemSlug: previousTask.problemSlug,
+          properties: {
+            planId,
+            taskId,
+            reason,
+            outcome: latestChange?.action ?? 'swap-unavailable',
+            replacementSlug: nextTask?.problemSlug ?? previousTask.problemSlug,
+          },
+        });
+        return {
+          ...current,
+          dailyPlans: { ...current.dailyPlans, [planId]: changed },
+          events: [...current.events, event].slice(-300),
+        };
+      });
+    },
+    [problems]
+  );
+
+  const recordReviewAttempt = useCallback((attempt: ReviewAttempt) => {
+    setState((current) => {
+      const byId = new Map(
+        current.reviewAttempts.map((item) => [item.id, item])
+      );
+      byId.set(attempt.id, { ...byId.get(attempt.id), ...attempt });
+      const event = trackProductEvent('review_answered', {
+        problemSlug: attempt.problemSlug,
+        properties: {
+          attemptId: attempt.id,
+          problemContentVersion: attempt.problemContentVersion,
+          answerLength: attempt.answer.trim().length,
+          ...(attempt.grade
+            ? {
+                suggestedRating: attempt.grade.suggestedRating,
+                coverage: attempt.grade.coverage,
+              }
+            : {}),
+        },
+      });
+      return {
+        ...current,
+        reviewAttempts: Array.from(byId.values()).slice(-200),
+        events: [...current.events, event].slice(-300),
+      };
+    });
+  }, []);
+
   const rateReview = useCallback(
-    (problemSlug: string, rating: ReviewRating) => {
+    (
+      problemSlug: string,
+      rating: ReviewRating,
+      options: { attemptId?: string; suggestedRating?: ReviewRating } = {}
+    ) => {
       setReviewProgress((current) =>
         rateReviewItem(current, problemSlug, rating)
       );
       setState((current) => {
+        const reviewedAt = now();
         const event = trackProductEvent('review_completed', {
           problemSlug,
-          properties: { rating },
+          properties: {
+            rating,
+            ...(options.attemptId ? { attemptId: options.attemptId } : {}),
+            ...(options.suggestedRating
+              ? { suggestedRating: options.suggestedRating }
+              : {}),
+          },
         });
-        return { ...current, events: [...current.events, event].slice(-300) };
+        const overrideEvent =
+          options.suggestedRating && options.suggestedRating !== rating
+            ? trackProductEvent('review_rating_overridden', {
+                problemSlug,
+                properties: {
+                  ...(options.attemptId
+                    ? { attemptId: options.attemptId }
+                    : {}),
+                  suggestedRating: options.suggestedRating,
+                  selectedRating: rating,
+                },
+              })
+            : null;
+        const reviewAttempts = current.reviewAttempts.map((attempt) =>
+          attempt.id === options.attemptId
+            ? {
+                ...attempt,
+                selectedRating: rating,
+                ratingOverride:
+                  options.suggestedRating && options.suggestedRating !== rating
+                    ? rating
+                    : undefined,
+              }
+            : attempt
+        );
+        const planCompletion = completeMatchingDailyPlanTasks(
+          current.dailyPlans,
+          problemSlug,
+          problemContentVersion(problemSlug),
+          reviewedAt,
+          new Set(['due-review'])
+        );
+        const planEvents = planCompletion.completedTaskIds.map((taskId) =>
+          trackProductEvent('daily_plan_task_completed', {
+            problemSlug,
+            properties: { taskId, completion: 'due_review' },
+          })
+        );
+        return {
+          ...current,
+          dailyPlans: planCompletion.plans,
+          reviewAttempts,
+          events: [
+            ...current.events,
+            event,
+            ...(overrideEvent ? [overrideEvent] : []),
+            ...planEvents,
+          ].slice(-300),
+        };
       });
     },
-    []
+    [problemContentVersion]
   );
 
   const markReviewMastered = useCallback((problemSlug: string) => {
@@ -1396,6 +1703,10 @@ export function CoachProvider({
       completeAssessment,
       saveImportedProblem,
       deleteImportedProblem,
+      ensureDailyPlan,
+      skipDailyPlanTask,
+      swapDailyPlanTask,
+      recordReviewAttempt,
       rateReview,
       markReviewMastered,
       trackEvent,
@@ -1423,6 +1734,10 @@ export function CoachProvider({
       completeAssessment,
       saveImportedProblem,
       deleteImportedProblem,
+      ensureDailyPlan,
+      skipDailyPlanTask,
+      swapDailyPlanTask,
+      recordReviewAttempt,
       rateReview,
       markReviewMastered,
       trackEvent,

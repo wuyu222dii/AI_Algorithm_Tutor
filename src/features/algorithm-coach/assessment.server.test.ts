@@ -8,6 +8,7 @@ import {
   verifyAssessmentSession,
 } from './assessment.server';
 import { problems } from './data/problems';
+import { problemSupportsLanguage } from './languages';
 
 describe('signed assessment sessions', () => {
   beforeEach(() => {
@@ -24,6 +25,82 @@ describe('signed assessment sessions', () => {
     const second = selectAssessmentProblems('assessment-test', problems);
     expect(first).toEqual(second);
     expect(new Set(first.map((problem) => problem.slug)).size).toBe(2);
+  });
+
+  it('creates an eight-minute language-aware baseline for the learning goal', () => {
+    const session = createSignedAssessmentSession({
+      id: 'baseline-interview-typescript',
+      kind: 'baseline',
+      preferredLanguage: 'typescript',
+      goal: 'interview',
+      problems,
+      now: new Date('2026-07-13T00:00:00.000Z'),
+    });
+
+    expect(session.kind).toBe('baseline');
+    expect(session.durationMinutes).toBe(8);
+    expect(session.problemVersions).toHaveLength(2);
+    for (const reference of session.problemVersions) {
+      const problem = problems.find((item) => item.slug === reference.slug)!;
+      expect(problem.difficulty).not.toBe('hard');
+      expect(problemSupportsLanguage(problem, 'typescript')).toBe(true);
+      expect(
+        problem.topics.some((topic) =>
+          [
+            'array-hash',
+            'two-pointers',
+            'binary-search',
+            'linked-list',
+            'dynamic-programming',
+          ].includes(topic)
+        )
+      ).toBe(true);
+    }
+  });
+
+  it('pins a checkpoint to comparable new revisions and its baseline id', () => {
+    const baseline = createSignedAssessmentSession({
+      id: 'baseline-for-checkpoint',
+      kind: 'baseline',
+      preferredLanguage: 'javascript',
+      goal: 'foundation',
+      problems,
+      now: new Date('2026-07-01T00:00:00.000Z'),
+    });
+    const checkpoint = createSignedAssessmentSession({
+      id: 'checkpoint-after-two-weeks',
+      kind: 'checkpoint',
+      preferredLanguage: 'javascript',
+      goal: 'foundation',
+      baselineAssessmentId: baseline.id,
+      baselineProblemVersions: baseline.problemVersions,
+      problems,
+      now: new Date('2026-07-15T00:00:00.000Z'),
+    });
+
+    expect(checkpoint.kind).toBe('checkpoint');
+    expect(checkpoint.baselineAssessmentId).toBe(baseline.id);
+    expect(checkpoint.durationMinutes).toBe(8);
+    expect(checkpoint.problemSlugs).not.toEqual(
+      expect.arrayContaining(baseline.problemSlugs)
+    );
+    const baselineProblems = baseline.problemVersions.map(
+      (reference) =>
+        problems.find((problem) => problem.slug === reference.slug)!
+    );
+    const baselineTopics = new Set(
+      baselineProblems.flatMap((problem) => problem.topics)
+    );
+    const baselineDifficulties = new Set(
+      baselineProblems.map((problem) => problem.difficulty)
+    );
+    for (const reference of checkpoint.problemVersions) {
+      const problem = problems.find((item) => item.slug === reference.slug)!;
+      expect(baselineDifficulties.has(problem.difficulty)).toBe(true);
+      expect(problem.topics.some((topic) => baselineTopics.has(topic))).toBe(
+        true
+      );
+    }
   });
 
   it('rejects a tampered or expired session token', () => {
@@ -60,6 +137,7 @@ describe('signed assessment sessions', () => {
         problemSlug,
         passed: index === 0,
         durationMs: 500,
+        status: index === 0 ? ('passed' as const) : ('syntax_error' as const),
       })),
       problems,
       now: new Date('2026-07-13T00:10:00.000Z'),
@@ -69,6 +147,7 @@ describe('signed assessment sessions', () => {
     expect(result.correctCount).toBe(1);
     expect(result.totalCount).toBe(2);
     expect(result.weakTopics.length).toBeGreaterThan(0);
+    expect(result.errorCategories).toEqual(['syntax']);
     expect(result.verificationToken).toContain('.');
   });
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import {
   AlarmClock,
   ArrowRight,
@@ -40,7 +41,14 @@ import {
 import { TOPIC_LABELS } from '../learning-progress';
 import { runCode } from '../runner';
 import { useCoachStore } from '../store';
-import type { CodeRunResult, Language, Problem, ProblemTopic } from '../types';
+import type {
+  AssessmentKind,
+  CodeRunResult,
+  DiagnosisCategory,
+  Language,
+  Problem,
+  ProblemTopic,
+} from '../types';
 import {
   CoachPage,
   InlineNotice,
@@ -51,6 +59,7 @@ import {
 import { CodeEditor } from './code-editor';
 import {
   getPreferredLanguage,
+  getProfile,
   getTestResults,
   localeKey,
   localizedProblem,
@@ -59,6 +68,8 @@ import {
 } from './domain-adapter';
 
 const DURATION_SECONDS = 20 * 60;
+const BASELINE_DURATION_SECONDS = 8 * 60;
+const currentTimeMs = () => Date.now();
 
 function createAssessmentCode(
   assessmentProblems: Problem[],
@@ -75,6 +86,17 @@ function createAssessmentCode(
       ),
     ])
   );
+}
+
+function errorCategoryForRun(
+  result: CodeRunResult | undefined
+): DiagnosisCategory | undefined {
+  if (!result || runPassed(result)) return undefined;
+  if (result.status === 'syntax_error') return 'syntax';
+  if (result.status === 'runtime_error') return 'runtime';
+  if (result.status === 'timeout') return 'timeout';
+  if (result.status === 'failed') return 'wrong-answer';
+  return 'unknown';
 }
 
 const copy = {
@@ -125,6 +147,22 @@ const copy = {
     minutes: '分钟',
     javascript: 'JavaScript',
     python: 'Python',
+    baselineTitle: '能力基线测评',
+    baselineDescription:
+      '用 8 分钟完成 2 道无 AI 题目，为每日计划建立初始能力基线。',
+    checkpointTitle: '两周阶段复测',
+    checkpointDescription:
+      '完成与基线难度和知识点相近的新题，比较两周内的学习变化。',
+    baselineDuration: '8 分钟',
+    checkpointResult: '相对能力基线',
+    scoreChange: '正确率变化',
+    timeChange: '平均用时变化',
+    hintChange: 'Hint 使用变化',
+    errorChange: '错误类型变化',
+    noErrors: '无错误',
+    hintUses: '次',
+    percentagePoints: '个百分点',
+    seconds: '秒',
   },
   en: {
     title: 'Algorithm Assessment',
@@ -178,13 +216,57 @@ const copy = {
     minutes: 'min',
     javascript: 'JavaScript',
     python: 'Python',
+    baselineTitle: 'Baseline assessment',
+    baselineDescription:
+      'Solve two no-AI problems in 8 minutes to calibrate your first learning plan.',
+    checkpointTitle: 'Two-week checkpoint',
+    checkpointDescription:
+      'Solve new problems with comparable topics and difficulty to measure progress.',
+    baselineDuration: '8 minutes',
+    checkpointResult: 'Compared with baseline',
+    scoreChange: 'Accuracy change',
+    timeChange: 'Average time change',
+    hintChange: 'Hint usage change',
+    errorChange: 'Error categories',
+    noErrors: 'No errors',
+    hintUses: 'uses',
+    percentagePoints: 'pp',
+    seconds: 'sec',
   },
 } as const;
 
 export function AssessmentPage() {
   const locale = localeKey(useLocale());
+  const searchParams = useSearchParams();
   const t = copy[locale];
   const coach = useCoachStore();
+  const requestedKind = searchParams.get('kind');
+  const requestedBaselineId = searchParams.get('baseline') ?? undefined;
+  const baselineResult =
+    coach.state.assessments.find(
+      (assessment) => assessment.id === requestedBaselineId
+    ) ??
+    [...coach.state.assessments]
+      .reverse()
+      .find((assessment) => assessment.kind === 'baseline');
+  const assessmentKind: AssessmentKind =
+    requestedKind === 'checkpoint' && baselineResult
+      ? 'checkpoint'
+      : requestedKind === 'baseline' || requestedKind === 'checkpoint'
+        ? 'baseline'
+        : 'practice';
+  const modeTitle =
+    assessmentKind === 'baseline'
+      ? t.baselineTitle
+      : assessmentKind === 'checkpoint'
+        ? t.checkpointTitle
+        : t.title;
+  const modeDescription =
+    assessmentKind === 'baseline'
+      ? t.baselineDescription
+      : assessmentKind === 'checkpoint'
+        ? t.checkpointDescription
+        : t.description;
   const defaultAssessmentProblems = useMemo(
     () =>
       [
@@ -201,6 +283,9 @@ export function AssessmentPage() {
   );
   const [phase, setPhase] = useState<'intro' | 'active' | 'complete'>('intro');
   const [secondsLeft, setSecondsLeft] = useState(DURATION_SECONDS);
+  const [durationSeconds, setDurationSeconds] = useState(
+    assessmentKind === 'practice' ? DURATION_SECONDS : BASELINE_DURATION_SECONDS
+  );
   const [activeIndex, setActiveIndex] = useState(0);
   const [selectedLanguage, setLanguage] = useState<Language>(
     getPreferredLanguage(coach.state)
@@ -250,14 +335,6 @@ export function AssessmentPage() {
     return () => window.clearInterval(timer);
   }, [phase]);
 
-  useEffect(() => {
-    if (phase === 'active' && secondsLeft === 0 && !submitting) {
-      void submitAssessment();
-    }
-    // submitAssessment intentionally uses the latest code snapshot when the timer expires.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secondsLeft, phase]);
-
   async function startAssessment() {
     if (starting) return;
     setStarting(true);
@@ -265,7 +342,14 @@ export function AssessmentPage() {
       const response = await fetch('/api/assessment/session', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'start' }),
+        body: JSON.stringify({
+          action: 'start',
+          kind: assessmentKind,
+          preferredLanguage: getPreferredLanguage(coach.state),
+          goal: getProfile(coach.state)?.goal,
+          baselineAssessmentId: baselineResult?.id,
+          baselineProblemVersions: baselineResult?.problemVersions,
+        }),
       });
       if (!response.ok) throw new Error(t.startFailed);
       const payload = (await response.json()) as {
@@ -286,21 +370,35 @@ export function AssessmentPage() {
       setAssessmentProblems(selected);
       setCodes(createAssessmentCode(selected, coach.enabledLanguages));
       setAssessmentToken(data.token);
-      setSecondsLeft(data.durationMinutes * 60);
+      const nextDurationSeconds = data.durationMinutes * 60;
+      setDurationSeconds(nextDurationSeconds);
+      setSecondsLeft(nextDurationSeconds);
       setStartedAt(Date.parse(data.startedAt));
       setActiveIndex(0);
       setPhase('active');
-      coach.startAssessment(data.problemSlugs, data.durationMinutes);
+      coach.startAssessment(
+        data.problemSlugs,
+        data.durationMinutes,
+        assessmentKind,
+        baselineResult?.id
+      );
     } catch (error) {
       if (process.env.NODE_ENV !== 'production') {
         setAssessmentProblems(defaultAssessmentProblems);
         setAssessmentToken('');
-        setSecondsLeft(DURATION_SECONDS);
-        setStartedAt(Date.now());
+        const fallbackDuration =
+          assessmentKind === 'practice'
+            ? DURATION_SECONDS
+            : BASELINE_DURATION_SECONDS;
+        setDurationSeconds(fallbackDuration);
+        setSecondsLeft(fallbackDuration);
+        setStartedAt(currentTimeMs());
         setPhase('active');
         coach.startAssessment(
           defaultAssessmentProblems.map((problem) => problem.slug),
-          20
+          fallbackDuration / 60,
+          assessmentKind,
+          baselineResult?.id
         );
       } else {
         toast.error(error instanceof Error ? error.message : t.startFailed);
@@ -364,6 +462,7 @@ export function AssessmentPage() {
             return [
               problem.id,
               {
+                status: 'runtime_error',
                 passed: false,
                 tests: [],
                 durationMs: 0,
@@ -379,16 +478,28 @@ export function AssessmentPage() {
       >;
       setFinalResults(results);
       const passedCount = Object.values(results).filter(runPassed).length;
+      const errorCategories = Array.from(
+        new Set(
+          Object.values(results)
+            .map(errorCategoryForRun)
+            .filter((category): category is DiagnosisCategory =>
+              Boolean(category)
+            )
+        )
+      );
       const elapsedSeconds = startedAt
         ? Math.min(
-            DURATION_SECONDS,
-            Math.round((Date.now() - startedAt) / 1000)
+            durationSeconds,
+            Math.round((currentTimeMs() - startedAt) / 1000)
           )
-        : DURATION_SECONDS - secondsLeft;
+        : durationSeconds - secondsLeft;
       const summary = {
         id:
           coach.state.activeAssessment?.id ??
           `assessment_${crypto.randomUUID()}`,
+        kind: assessmentKind,
+        baselineAssessmentId:
+          assessmentKind === 'checkpoint' ? baselineResult?.id : undefined,
         score: Math.round(
           (passedCount / Math.max(assessmentProblems.length, 1)) * 100
         ),
@@ -405,7 +516,7 @@ export function AssessmentPage() {
         })),
         startedAt: startedAt
           ? new Date(startedAt).toISOString()
-          : new Date(Date.now() - elapsedSeconds * 1000).toISOString(),
+          : new Date(currentTimeMs() - elapsedSeconds * 1000).toISOString(),
         weakTopics: Array.from(
           new Set(
             assessmentProblems
@@ -418,6 +529,33 @@ export function AssessmentPage() {
         results,
         completedAt: new Date().toISOString(),
       };
+      const averageDurationMs = Math.round(
+        Object.values(results).reduce(
+          (total, result) => total + runDuration(result),
+          0
+        ) / Math.max(assessmentProblems.length, 1)
+      );
+      Object.assign(summary, {
+        averageDurationMs,
+        hintCount: 0,
+        errorCategories,
+        comparison:
+          assessmentKind === 'checkpoint' && baselineResult
+            ? {
+                baselineAssessmentId: baselineResult.id,
+                scoreDelta: summary.score - Number(baselineResult.score ?? 0),
+                correctCountDelta:
+                  summary.correctCount -
+                  Number(baselineResult.correctCount ?? 0),
+                averageDurationDeltaMs:
+                  averageDurationMs -
+                  Number(baselineResult.averageDurationMs ?? 0),
+                hintCountDelta: 0 - Number(baselineResult.hintCount ?? 0),
+                baselineErrorCategories: baselineResult.errorCategories ?? [],
+                checkpointErrorCategories: errorCategories,
+              }
+            : undefined,
+      });
       let verifiedSummary = summary;
       if (assessmentToken) {
         const response = await fetch('/api/assessment/session', {
@@ -430,6 +568,8 @@ export function AssessmentPage() {
               problemSlug: problem.slug,
               passed: runPassed(results[problem.id]),
               durationMs: runDuration(results[problem.id]),
+              status: results[problem.id]?.status,
+              errorCategory: errorCategoryForRun(results[problem.id]),
             })),
           }),
         });
@@ -453,9 +593,17 @@ export function AssessmentPage() {
     }
   }
 
+  useEffect(() => {
+    if (phase !== 'active' || secondsLeft !== 0 || submitting) return;
+    const timer = window.setTimeout(() => void submitAssessment(), 0);
+    return () => window.clearTimeout(timer);
+    // submitAssessment intentionally uses the latest code snapshot when the timer expires.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secondsLeft, phase]);
+
   if (phase === 'intro') {
     return (
-      <CoachPage title={t.title} description={t.description}>
+      <CoachPage title={modeTitle} description={modeDescription}>
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
           <Panel>
             <div className="p-6 md:p-8">
@@ -475,7 +623,14 @@ export function AssessmentPage() {
                 {t.localModeNotice}
               </p>
               <div className="mt-6 grid gap-3 sm:grid-cols-3">
-                <IntroFact icon={<Clock3 />} value={t.duration} />
+                <IntroFact
+                  icon={<Clock3 />}
+                  value={
+                    assessmentKind === 'practice'
+                      ? t.duration
+                      : t.baselineDuration
+                  }
+                />
                 <IntroFact icon={<Target />} value={t.count} />
                 <IntroFact icon={<Code2 />} value={t.languages} />
               </div>
@@ -525,8 +680,34 @@ export function AssessmentPage() {
     );
     const elapsedMinutes = Math.max(
       1,
-      Math.round((DURATION_SECONDS - secondsLeft) / 60)
+      Math.round((durationSeconds - secondsLeft) / 60)
     );
+    const averageDurationMs = Math.round(
+      Object.values(finalResults).reduce(
+        (total, result) => total + runDuration(result),
+        0
+      ) / Math.max(assessmentProblems.length, 1)
+    );
+    const currentErrorCategories = Array.from(
+      new Set(
+        Object.values(finalResults)
+          .map(errorCategoryForRun)
+          .filter((category): category is DiagnosisCategory =>
+            Boolean(category)
+          )
+      )
+    );
+    const checkpointComparison =
+      assessmentKind === 'checkpoint' && baselineResult
+        ? {
+            scoreDelta: score - baselineResult.score,
+            averageDurationDeltaMs:
+              averageDurationMs - Number(baselineResult.averageDurationMs ?? 0),
+            hintCountDelta: 0 - Number(baselineResult.hintCount ?? 0),
+            baselineErrorCategories: baselineResult.errorCategories ?? [],
+            checkpointErrorCategories: currentErrorCategories,
+          }
+        : null;
 
     return (
       <CoachPage title={t.completeTitle} description={t.completeDescription}>
@@ -559,6 +740,61 @@ export function AssessmentPage() {
             accent={weakTopics.length ? 'danger' : 'success'}
           />
         </div>
+        {checkpointComparison ? (
+          <Panel className="mt-6 p-5">
+            <h2 className="font-semibold">{t.checkpointResult}</h2>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <div className="rounded-md border p-4">
+                <p className="text-muted-foreground text-xs">{t.scoreChange}</p>
+                <p
+                  className={cn(
+                    'mt-2 text-2xl font-semibold tabular-nums',
+                    checkpointComparison.scoreDelta >= 0
+                      ? 'text-emerald-600'
+                      : 'text-red-600'
+                  )}
+                >
+                  {checkpointComparison.scoreDelta >= 0 ? '+' : ''}
+                  {checkpointComparison.scoreDelta} {t.percentagePoints}
+                </p>
+              </div>
+              <div className="rounded-md border p-4">
+                <p className="text-muted-foreground text-xs">{t.timeChange}</p>
+                <p
+                  className={cn(
+                    'mt-2 text-2xl font-semibold tabular-nums',
+                    checkpointComparison.averageDurationDeltaMs <= 0
+                      ? 'text-emerald-600'
+                      : 'text-amber-600'
+                  )}
+                >
+                  {checkpointComparison.averageDurationDeltaMs > 0 ? '+' : ''}
+                  {Math.round(
+                    checkpointComparison.averageDurationDeltaMs / 1000
+                  )}{' '}
+                  {t.seconds}
+                </p>
+              </div>
+              <div className="rounded-md border p-4">
+                <p className="text-muted-foreground text-xs">{t.hintChange}</p>
+                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                  {checkpointComparison.hintCountDelta >= 0 ? '+' : ''}
+                  {checkpointComparison.hintCountDelta} {t.hintUses}
+                </p>
+              </div>
+              <div className="rounded-md border p-4">
+                <p className="text-muted-foreground text-xs">{t.errorChange}</p>
+                <p className="mt-2 text-sm font-semibold break-words">
+                  {checkpointComparison.baselineErrorCategories.join(', ') ||
+                    t.noErrors}
+                  {' → '}
+                  {checkpointComparison.checkpointErrorCategories.join(', ') ||
+                    t.noErrors}
+                </p>
+              </div>
+            </div>
+          </Panel>
+        ) : null}
         <Panel className="mt-6">
           <PanelHeading
             title={t.next}
@@ -590,7 +826,7 @@ export function AssessmentPage() {
                 variant="outline"
                 onClick={() => {
                   setPhase('intro');
-                  setSecondsLeft(DURATION_SECONDS);
+                  setSecondsLeft(durationSeconds);
                   setSampleResults({});
                   setFinalResults({});
                   setAssessmentToken('');
@@ -607,7 +843,7 @@ export function AssessmentPage() {
   }
 
   const progressValue =
-    ((DURATION_SECONDS - secondsLeft) / DURATION_SECONDS) * 100;
+    ((durationSeconds - secondsLeft) / durationSeconds) * 100;
   const sampleResult = currentProblem
     ? sampleResults[currentProblem.id]
     : undefined;

@@ -309,6 +309,26 @@ async function main() {
           });
         }
       }
+      if (sample.expected.reviewGradeRequired) {
+        actionPayloads += 1;
+        const grade = artifact.reviewGrade;
+        if (
+          grade &&
+          grade.hitConcepts.length + grade.missedConcepts.length > 0 &&
+          grade.feedback &&
+          grade.confidence >=
+            (sample.expected.minimumReviewGradeConfidence ?? 0) &&
+          (!sample.expected.reviewGradeRating ||
+            grade.suggestedRating === sample.expected.reviewGradeRating)
+        ) {
+          validActionPayloads += 1;
+        } else {
+          failures.push({
+            id: sample.id,
+            reason: 'review grade payload mismatch',
+          });
+        }
+      }
       if (sample.expected.noHiddenTests) {
         actionPayloads += 1;
         if (
@@ -394,6 +414,7 @@ async function main() {
     'hint',
     'counterexample',
     'review_card',
+    'review_grade',
     'chat',
   ];
   const coverageComplete =

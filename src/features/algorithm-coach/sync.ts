@@ -7,11 +7,14 @@ import {
   CoachState,
   CoachSyncMutation,
   CodeRunResult,
+  CorrectionEpisode,
+  DailyLearningPlan,
   ImportedDraftRecord,
   LearningArtifact,
   PracticeSession,
   Problem,
   ProductEvent,
+  ReviewAttempt,
   ReviewItem,
   ReviewProgressState,
 } from './types';
@@ -383,6 +386,20 @@ export function createCoachSyncMutation(
     next.state.assessments,
     (assessment) => assessment.id
   );
+  changes.dailyPlans = changedRecordValues(
+    previous.state.dailyPlans,
+    next.state.dailyPlans
+  );
+  changes.reviewAttempts = changedArrayValues(
+    previous.state.reviewAttempts,
+    next.state.reviewAttempts,
+    (attempt) => attempt.id
+  );
+  changes.correctionEpisodes = changedArrayValues(
+    previous.state.correctionEpisodes,
+    next.state.correctionEpisodes,
+    (episode) => episode.id
+  );
   changes.code = changedRecordValues(previous.state.code, next.state.code);
   changes.runs = changedArrayValues(
     previous.state.runs,
@@ -494,6 +511,9 @@ export function compactCoachSyncQueue(
   let artifacts: LearningArtifact[] = [];
   let events: ProductEvent[] = [];
   let assessments: AssessmentResult[] = [];
+  let dailyPlans: Record<string, DailyLearningPlan> = {};
+  let reviewAttempts: ReviewAttempt[] = [];
+  let correctionEpisodes: CorrectionEpisode[] = [];
   let runs: CodeRunResult[] = [];
   let completedProblemIds: string[] = [];
   let reviewItems: Record<string, ReviewItem> = {};
@@ -537,6 +557,22 @@ export function compactCoachSyncQueue(
       incoming.assessments,
       (assessment) => assessment.id,
       20
+    );
+    dailyPlans = {
+      ...dailyPlans,
+      ...(incoming.dailyPlans ?? {}),
+    };
+    reviewAttempts = upsertArray(
+      reviewAttempts,
+      incoming.reviewAttempts,
+      (attempt) => attempt.id,
+      200
+    );
+    correctionEpisodes = upsertArray(
+      correctionEpisodes,
+      incoming.correctionEpisodes,
+      (episode) => episode.id,
+      100
     );
     runs = mergeRuns(runs, incoming.runs ?? [], 200);
     completedProblemIds = upsertArray(
@@ -585,6 +621,11 @@ export function compactCoachSyncQueue(
     changes.activeAssessment = activeAssessment ?? null;
   }
   if (assessments.length) changes.assessments = assessments;
+  if (Object.keys(dailyPlans).length) changes.dailyPlans = dailyPlans;
+  if (reviewAttempts.length) changes.reviewAttempts = reviewAttempts;
+  if (correctionEpisodes.length) {
+    changes.correctionEpisodes = correctionEpisodes;
+  }
   if (codeWasSet || sessionsWereSet) changes.code = code;
   if (runs.length) changes.runs = runs;
   if (completedProblemIds.length) {
@@ -677,6 +718,22 @@ export function applyCoachSyncMutation(
       changes.assessments,
       (assessment) => assessment.id,
       20
+    ),
+    dailyPlans: {
+      ...document.state.dailyPlans,
+      ...(changes.dailyPlans ?? {}),
+    },
+    reviewAttempts: upsertArray<ReviewAttempt>(
+      document.state.reviewAttempts,
+      changes.reviewAttempts,
+      (attempt) => attempt.id,
+      200
+    ),
+    correctionEpisodes: upsertArray<CorrectionEpisode>(
+      document.state.correctionEpisodes,
+      changes.correctionEpisodes,
+      (episode) => episode.id,
+      100
     ),
     code: synchronizedSessionData.code,
     runs: mergeRuns(document.state.runs, changes.runs ?? [], 200),

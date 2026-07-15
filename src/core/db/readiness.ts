@@ -62,7 +62,7 @@ function boundedTimeout(value: string | undefined): number {
 
 function catalogMinimumPublishedProblems(value: string | undefined): number {
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : 58;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 73;
 }
 
 function isHttpUrl(value: string | undefined): boolean {
@@ -372,7 +372,7 @@ export function checkCatalogReadiness(counts: {
   readyCount: number;
   minimumPublishedCount?: number;
 }): HealthCheckResult {
-  const minimumPublishedCount = counts.minimumPublishedCount ?? 58;
+  const minimumPublishedCount = counts.minimumPublishedCount ?? 73;
   const details = {
     publishedCount: counts.publishedCount,
     readyCount: counts.readyCount,
@@ -552,6 +552,26 @@ export async function readyHealthStatus(
                   AND revision.language_configs->'python'->>'runtimeVersion' = 'pyodide@314.0.2'
                   AND jsonb_typeof(revision.language_configs->'python'->'signature') = 'object'
                   AND jsonb_typeof(revision.signature) = 'object'
+                  AND jsonb_typeof(revision.learning_objectives) = 'array'
+                  AND revision.prerequisite_topics IS NOT NULL
+                  AND revision.solution_patterns IS NOT NULL
+                  AND (
+                    revision.catalog_version <> 'p1-learning-v1'
+                    OR (
+                      jsonb_array_length(revision.learning_objectives) > 0
+                      AND cardinality(revision.prerequisite_topics) > 0
+                      AND cardinality(revision.solution_patterns) > 0
+                      AND EXISTS (
+                        SELECT 1
+                        FROM ${applicationSchema}.coach_problem_origin AS p1_origin
+                        WHERE p1_origin.problem_id = problem.id
+                          AND p1_origin.license_spdx = 'LicenseRef-AlgoCoach-Original'
+                          AND nullif(btrim(p1_origin.attribution), '') IS NOT NULL
+                          AND p1_origin.source_revision = revision.source_revision
+                          AND p1_origin.content_hash = revision.content_hash
+                      )
+                    )
+                  )
                   AND EXISTS (
                     SELECT 1
                     FROM ${applicationSchema}.coach_test_case AS test_case

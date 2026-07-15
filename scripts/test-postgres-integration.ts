@@ -89,6 +89,11 @@ async function verifyVersionedCatalog(
       external_test_count: number;
       external_origin_count: number;
       external_audit_count: number;
+      p1_count: number;
+      p1_revision_metadata_count: number;
+      p1_test_count: number;
+      p1_origin_count: number;
+      p1_audit_count: number;
     }[]
   >(`
     SELECT
@@ -136,7 +141,45 @@ async function verifyVersionedCatalog(
         SELECT count(*)::int
         FROM "${applicationSchema}"."coach_catalog_review_audit"
         WHERE metadata->>'reviewer' = 'migration:0015'
-      ) AS external_audit_count
+      ) AS external_audit_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_problem_revision"
+        WHERE catalog_version = 'p1-learning-v1'
+          AND status = 'published'
+      ) AS p1_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_problem_revision"
+        WHERE catalog_version = 'p1-learning-v1'
+          AND jsonb_array_length(learning_objectives) > 0
+          AND cardinality(prerequisite_topics) > 0
+          AND cardinality(solution_patterns) > 0
+          AND language_configs ?& array['javascript', 'python', 'typescript']
+          AND content_hash LIKE 'sha256:%'
+      ) AS p1_revision_metadata_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_test_case" AS p1_test
+        JOIN "${applicationSchema}"."coach_problem_revision" AS p1_revision
+          ON p1_revision.id = p1_test.revision_id
+        WHERE p1_revision.catalog_version = 'p1-learning-v1'
+      ) AS p1_test_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_problem_origin" AS p1_origin
+        JOIN "${applicationSchema}"."coach_problem_revision" AS p1_revision
+          ON p1_revision.problem_id = p1_origin.problem_id
+         AND p1_revision.catalog_version = 'p1-learning-v1'
+        WHERE p1_origin.license_spdx = 'LicenseRef-AlgoCoach-Original'
+          AND p1_origin.source_revision = p1_revision.source_revision
+          AND p1_origin.content_hash = p1_revision.content_hash
+      ) AS p1_origin_count,
+      (
+        SELECT count(*)::int
+        FROM "${applicationSchema}"."coach_catalog_review_audit"
+        WHERE metadata->>'reviewer' = 'migration:0018'
+      ) AS p1_audit_count
     FROM "${applicationSchema}"."coach_problem" AS problem
     LEFT JOIN "${applicationSchema}"."coach_problem_revision" AS revision
       ON revision.id = problem.current_revision_id
@@ -145,17 +188,22 @@ async function verifyVersionedCatalog(
   `);
   if (
     !catalog ||
-    catalog.curated_count < 38 ||
+    catalog.curated_count < 53 ||
     catalog.revision_count !== catalog.curated_count ||
     catalog.missing_pointer_count !== 0 ||
     catalog.missing_typescript_count !== 0 ||
     catalog.unversioned_test_count !== 0 ||
-    catalog.published_catalog_count < 58 ||
+    catalog.published_catalog_count < 73 ||
     catalog.external_count !== 20 ||
     catalog.external_current_revision_count !== 20 ||
     catalog.external_test_count < 60 ||
     catalog.external_origin_count !== 20 ||
-    catalog.external_audit_count !== 20
+    catalog.external_audit_count !== 20 ||
+    catalog.p1_count !== 15 ||
+    catalog.p1_revision_metadata_count !== 15 ||
+    catalog.p1_test_count !== 60 ||
+    catalog.p1_origin_count !== 15 ||
+    catalog.p1_audit_count !== 15
   ) {
     throw new Error(
       `Versioned catalog backfill is incomplete: ${JSON.stringify(catalog)}`
@@ -247,6 +295,14 @@ async function verifyCatalogOwnershipConstraints(
         [rows[0]!.revision_id]
       ),
     'Revision content update'
+  );
+  await expectImmutableRejection(
+    (tx) =>
+      tx.unsafe(
+        `UPDATE "${applicationSchema}"."coach_problem_revision" SET solution_patterns = ARRAY['tampered']::text[] WHERE id = $1`,
+        [rows[0]!.revision_id]
+      ),
+    'Revision learning metadata update'
   );
   await expectImmutableRejection(
     (tx) =>
@@ -597,6 +653,132 @@ async function verifyAuthAndLearningIsolation(
     }
     if (!invalidReviewRejected) {
       throw new Error('Invalid review schedule bypassed database constraints');
+    }
+
+    const planId = `daily_plan_${nonce}`;
+    const planClientId = `daily-plan:UTC:2026-07-15:${nonce}`;
+    const planTasks = [
+      {
+        id: `${planClientId}:weak-topic`,
+        kind: 'weak-topic',
+        status: 'pending',
+        problemId: 'minimum-processing-rate',
+        problemSlug: 'minimum-processing-rate',
+        problemContentVersion: 1,
+        primaryTopic: 'binary-search',
+        difficulty: 'medium',
+        reason: 'weak-mastery',
+        estimatedMinutes: 20,
+      },
+    ];
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_daily_learning_plan" (id, user_id, client_plan_id, local_date, time_zone, budget_minutes, estimated_minutes, preferred_language, goal, tasks, changes) VALUES ($1, $2, $3, '2026-07-15', 'UTC', 30, 20, 'python', 'interview', $4::jsonb, '[]'::jsonb) ON CONFLICT (id) DO UPDATE SET estimated_minutes = excluded.estimated_minutes, tasks = excluded.tasks, updated_at = now()`,
+      [planId, firstUserId, planClientId, planTasks]
+    );
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_daily_learning_plan" (id, user_id, client_plan_id, local_date, time_zone, budget_minutes, estimated_minutes, preferred_language, goal, tasks, changes) VALUES ($1, $2, $3, '2026-07-15', 'UTC', 30, 20, 'javascript', 'foundation', $4::jsonb, '[]'::jsonb)`,
+      [`daily_plan_other_${nonce}`, secondUserId, planClientId, planTasks]
+    );
+    const planRows = await app.unsafe<
+      { user_id: string; estimated_minutes: number }[]
+    >(
+      `SELECT user_id, estimated_minutes FROM "${applicationSchema}"."coach_daily_learning_plan" WHERE client_plan_id = $1 ORDER BY user_id`,
+      [planClientId]
+    );
+    if (planRows.length !== 2) {
+      throw new Error('Daily plans were not idempotent and user-isolated');
+    }
+
+    const reviewAttemptId = `review_attempt_${nonce}`;
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_review_attempt" (id, user_id, client_attempt_id, problem_slug_snapshot, problem_content_version, answer, grade, selected_rating, submitted_at) VALUES ($1, $2, $3, 'dependency-cycle', 1, 'Use DFS colors and detect a back edge.', $4::jsonb, 'good', now())`,
+      [
+        reviewAttemptId,
+        firstUserId,
+        `client_${reviewAttemptId}`,
+        {
+          suggestedRating: 'good',
+          coverage: 0.8,
+          matchedPoints: ['DFS colors'],
+          missingPoints: [],
+        },
+      ]
+    );
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_learning_artifact" (id, user_id, problem_slug_snapshot, problem_content_version, type, locale, title, summary, review_grade, created_at) VALUES ($1, $2, 'dependency-cycle', 1, 'review_grade', 'en', 'Recall grade', 'Good coverage', $3::jsonb, now())`,
+      [
+        `review_grade_artifact_${nonce}`,
+        firstUserId,
+        {
+          hitConcepts: ['DFS colors'],
+          missedConcepts: [],
+          feedback: 'Good coverage',
+          suggestedRating: 'good',
+          confidence: 0.9,
+        },
+      ]
+    );
+
+    const baselineId = `baseline_${nonce}`;
+    const checkpointId = `checkpoint_${nonce}`;
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_assessment" (id, user_id, kind, problem_slugs, problem_versions, status, duration_minutes, started_at, completed_at, score, correct_count, total_count, average_duration_ms) VALUES ($1, $2, 'baseline', ARRAY['dependency-cycle'], '[{"slug":"dependency-cycle","contentVersion":1}]'::jsonb, 'completed', 8, now() - interval '14 days', now() - interval '14 days', 50, 1, 2, 120000), ($3, $2, 'checkpoint', ARRAY['dependency-cycle'], '[{"slug":"dependency-cycle","contentVersion":1}]'::jsonb, 'completed', 8, now(), now(), 100, 2, 2, 90000)`,
+      [baselineId, firstUserId, checkpointId]
+    );
+    await app.unsafe(
+      `UPDATE "${applicationSchema}"."coach_assessment" SET baseline_assessment_id = $1, comparison = '{"baselineAssessmentId":"baseline","scoreDelta":50,"correctCountDelta":1,"averageDurationDeltaMs":-30000}'::jsonb WHERE id = $2`,
+      [baselineId, checkpointId]
+    );
+
+    const correctionEpisode = {
+      id: `episode_${nonce}`,
+      problemSlug: versionedSessionSlug,
+      problemContentVersion: 1,
+      startedAt: new Date().toISOString(),
+      diagnosedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      initialFailure: {
+        executedAt: new Date().toISOString(),
+        status: 'failed',
+        passedTests: 0,
+        totalTests: 1,
+        failedTests: [],
+      },
+      diagnosisCategory: 'wrong-answer',
+      diagnoses: [],
+      attempts: [],
+      resolved: true,
+      resolvedAt: new Date().toISOString(),
+      passedWithinThreeRuns: true,
+      repairDurationMs: 1000,
+      repeatedDiagnosisCategories: [],
+    };
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_correction_episode" (id, user_id, client_episode_id, problem_slug_snapshot, problem_content_version, diagnosis_category, payload, resolved, passed_within_three_runs, repair_duration_ms, started_at, diagnosed_at, ended_at, resolved_at) VALUES ($1, $2, $3, $4, 1, 'wrong-answer', $5::jsonb, true, true, 1000, now(), now(), now(), now())`,
+      [
+        `correction_${nonce}`,
+        firstUserId,
+        correctionEpisode.id,
+        versionedSessionSlug,
+        correctionEpisode,
+      ]
+    );
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_code_run" (id, session_id, problem_slug_snapshot, problem_content_version, language, runtime_version, runner_mode, code_snapshot, status, passed_tests, total_tests, duration_ms, executed_at) VALUES ($1, $2, $3, 1, 'python', 'pyodide@test', 'browser-worker', 'def solve(): pass', 'passed', 1, 1, 10, now())`,
+      [`effective_run_${nonce}`, `ci_session_v1_${nonce}`, versionedSessionSlug]
+    );
+    const [cohort] = await app.unsafe<
+      { effective_practices: number; diagnosis_three_run_pass_rate: number }[]
+    >(
+      `SELECT effective_practices, diagnosis_three_run_pass_rate FROM "${applicationSchema}"."coach_cohort_metric_v" WHERE user_id = $1`,
+      [firstUserId]
+    );
+    if (
+      !cohort ||
+      cohort.effective_practices < 1 ||
+      Number(cohort.diagnosis_three_run_pass_rate) !== 1
+    ) {
+      throw new Error('Cohort metrics did not include effective correction');
     }
 
     const importedDraftValues = {

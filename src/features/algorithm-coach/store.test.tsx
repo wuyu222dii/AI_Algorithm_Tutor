@@ -123,7 +123,164 @@ describe('CoachProvider persistence', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('keeps a daily plan stable for the local date and audits skip reasons', async () => {
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems}>{children}</CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-15T09:00:00.000Z'));
+
+    act(() => {
+      result.current.completeOnboarding({
+        goal: 'interview',
+        preferredLanguage: 'javascript',
+        weeklyTarget: 5,
+        dailyMinutes: 30,
+      });
+    });
+    act(() => result.current.ensureDailyPlan('UTC'));
+    const firstPlan = Object.values(result.current.state.dailyPlans)[0];
+    expect(firstPlan).toBeTruthy();
+    expect(firstPlan.tasks.length).toBeGreaterThan(0);
+
+    act(() => result.current.ensureDailyPlan('UTC'));
+    expect(Object.keys(result.current.state.dailyPlans)).toHaveLength(1);
+
+    const task = firstPlan.tasks[0]!;
+    act(() =>
+      result.current.skipDailyPlanTask(firstPlan.id, task.id, '今天时间不足')
+    );
+    expect(
+      result.current.state.dailyPlans[firstPlan.id].tasks[0]
+    ).toMatchObject({
+      status: 'skipped',
+      skipReason: '今天时间不足',
+    });
+    expect(result.current.state.events).toContainEqual(
+      expect.objectContaining({ name: 'daily_plan_task_skipped' })
+    );
+  });
+
+  it('builds a version-bound correction episode through a real retry pass', async () => {
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems}>{children}</CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    const failedRun: CodeRunResult = {
+      id: 'episode-failed-run',
+      problemSlug: 'dependency-cycle',
+      problemContentVersion: 1,
+      language: 'javascript',
+      status: 'failed',
+      passedTests: 1,
+      totalTests: 2,
+      testResults: [
+        {
+          testId: 'cycle',
+          passed: false,
+          expected: true,
+          actual: false,
+          durationMs: 1,
+        },
+      ],
+      console: [],
+      durationMs: 2,
+      executedAt: '2026-07-15T10:00:00.000Z',
+      codeSnapshot: 'function hasCycle() { return false; }',
+      testScope: 'full',
+      submitted: true,
+    };
+    act(() => result.current.recordRun('dependency-cycle', failedRun));
+    act(() =>
+      result.current.addArtifact({
+        id: 'episode-diagnosis',
+        type: 'diagnose',
+        locale: 'zh',
+        problemSlug: 'dependency-cycle',
+        problemContentVersion: 1,
+        runId: failedRun.id,
+        title: '错因诊断',
+        summary: '缺少访问中状态检测。',
+        details: [],
+        evidence: ['cycle: expected true, actual false'],
+        diagnosisCategory: 'wrong-answer',
+        createdAt: '2026-07-15T10:00:01.000Z',
+      })
+    );
+    act(() =>
+      result.current.recordRun('dependency-cycle', {
+        ...failedRun,
+        id: 'episode-passed-run',
+        status: 'passed',
+        passedTests: 2,
+        testResults: [
+          { testId: 'cycle', passed: true, durationMs: 1 },
+          { testId: 'acyclic', passed: true, durationMs: 1 },
+        ],
+        executedAt: '2026-07-15T10:00:10.000Z',
+        codeSnapshot: 'function hasCycle() { return detectVisitingState(); }',
+      })
+    );
+
+    expect(result.current.state.correctionEpisodes).toContainEqual(
+      expect.objectContaining({
+        problemSlug: 'dependency-cycle',
+        problemContentVersion: 1,
+        resolved: true,
+        passedWithinThreeRuns: true,
+        repairDurationMs: 10_000,
+      })
+    );
+    expect(result.current.state.events).toContainEqual(
+      expect.objectContaining({ name: 'correction_episode_completed' })
+    );
+  });
+
+  it('persists an objective review grade and records a rating override', async () => {
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems}>{children}</CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    act(() =>
+      result.current.recordReviewAttempt({
+        id: 'review-attempt-objective',
+        problemSlug: 'dependency-cycle',
+        problemContentVersion: 1,
+        answer: 'Use DFS colors and detect a back edge.',
+        submittedAt: '2026-07-15T11:00:00.000Z',
+        grade: {
+          suggestedRating: 'good',
+          coverage: 0.8,
+          matchedPoints: ['DFS colors'],
+          missingPoints: ['complexity'],
+        },
+      })
+    );
+    act(() =>
+      result.current.rateReview('dependency-cycle', 'hard', {
+        attemptId: 'review-attempt-objective',
+        suggestedRating: 'good',
+      })
+    );
+
+    expect(result.current.state.reviewAttempts[0]).toMatchObject({
+      selectedRating: 'hard',
+      ratingOverride: 'hard',
+    });
+    expect(result.current.state.events).toContainEqual(
+      expect.objectContaining({ name: 'review_rating_overridden' })
+    );
   });
 
   it('persists an added review card artifact to versioned localStorage', async () => {

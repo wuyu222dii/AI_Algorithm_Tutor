@@ -114,6 +114,9 @@ export interface Problem {
   constraints: LocalizedText[];
   hints: Record<CoachLocale, [string, string, string]>;
   reviewPoints: LocalizedText[];
+  learningObjectives?: LocalizedText[];
+  prerequisiteTopics?: ProblemTopic[];
+  solutionPatterns?: string[];
   estimatedMinutes: number;
   sourceStatement?: string;
   sourceUrl?: string;
@@ -222,6 +225,152 @@ export interface ReviewScheduleResult {
   intervalDays: number;
 }
 
+export type DailyPlanTaskKind = 'due-review' | 'weak-topic' | 'new-topic';
+export type DailyPlanTaskStatus = 'pending' | 'completed' | 'skipped';
+export type DailyPlanTaskReason =
+  | 'review-due'
+  | 'assessment-weak'
+  | 'weak-mastery'
+  | 'new-topic';
+
+export interface DailyPlanTask {
+  id: string;
+  kind: DailyPlanTaskKind;
+  status: DailyPlanTaskStatus;
+  problemId: string;
+  problemSlug: string;
+  problemContentVersion: number;
+  primaryTopic: ProblemTopic;
+  difficulty: Difficulty;
+  reason: DailyPlanTaskReason;
+  estimatedMinutes: number;
+  dueAt?: string;
+  completedAt?: string;
+  skipReason?: string;
+  skippedAt?: string;
+}
+
+export interface DailyPlanChange {
+  id: string;
+  action: 'skipped' | 'swapped' | 'swap-unavailable';
+  taskId: string;
+  reason: string;
+  occurredAt: string;
+  fromProblemSlug: string;
+  fromProblemContentVersion: number;
+  toProblemSlug?: string;
+  toProblemContentVersion?: number;
+}
+
+export interface DailyLearningPlan {
+  id: string;
+  localDate: string;
+  timeZone: string;
+  budgetMinutes: number;
+  estimatedMinutes: number;
+  preferredLanguage?: Language;
+  goal: LearningGoal;
+  tasks: DailyPlanTask[];
+  changes: DailyPlanChange[];
+}
+
+export interface LineDiffSummary {
+  beforeLines: number;
+  afterLines: number;
+  unchangedLines: number;
+  changedLines: number;
+  addedLines: number;
+  removedLines: number;
+  hasChanges: boolean;
+}
+
+export interface CorrectionFailureEvidence {
+  runId?: string;
+  executedAt: string;
+  status: CodeRunStatus;
+  error?: string;
+  passedTests: number;
+  totalTests: number;
+  failedTests: Array<{
+    testId: string;
+    error?: string;
+    expected?: JsonValue;
+    actual?: JsonValue;
+  }>;
+}
+
+export interface CorrectionAttempt {
+  runId?: string;
+  executedAt: string;
+  language: Language;
+  status: CodeRunStatus;
+  passedTests: number;
+  totalTests: number;
+  durationMs: number;
+  codeSnapshot?: string;
+  diffFromPrevious?: LineDiffSummary;
+}
+
+export interface CorrectionDiagnosis {
+  artifactId: string;
+  runId?: string;
+  category: DiagnosisCategory;
+  createdAt: string;
+}
+
+export interface CorrectionEpisode {
+  id: string;
+  problemSlug: string;
+  problemContentVersion: number;
+  startedAt: string;
+  diagnosedAt: string;
+  endedAt: string;
+  initialFailure: CorrectionFailureEvidence;
+  diagnosisCategory: DiagnosisCategory;
+  diagnoses: CorrectionDiagnosis[];
+  attempts: CorrectionAttempt[];
+  resolved: boolean;
+  resolvedAt?: string;
+  passedWithinThreeRuns: boolean;
+  repairDurationMs?: number;
+  repeatedDiagnosisCategories: DiagnosisCategory[];
+}
+
+export interface ReviewAttempt {
+  id: string;
+  problemSlug: string;
+  problemContentVersion: number;
+  answer: string;
+  submittedAt: string;
+  grade?: ReviewGrade;
+  selectedRating?: ReviewRating;
+  ratingOverride?: ReviewRating;
+  gradedArtifactId?: string;
+}
+
+export interface ReviewGrade {
+  suggestedRating: ReviewRating;
+  coverage: number;
+  matchedPoints: string[];
+  missingPoints: string[];
+  rationale?: string;
+  gradedAt?: string;
+}
+
+export interface ReviewRatingDecision {
+  suggestedRating: ReviewRating;
+  selectedRating: ReviewRating;
+  selectionSource: 'suggested' | 'override';
+  effectiveRating: ReviewRating;
+  answerCap?: ReviewRating;
+  subsequentPassRunId?: string;
+  adjustedForSubsequentPass: boolean;
+}
+
+export interface EvidenceBasedReviewSchedule extends ReviewScheduleResult {
+  decision: ReviewRatingDecision;
+}
+
 export interface PracticeSession {
   problemSlug: string;
   problemContentVersion?: number;
@@ -284,12 +433,21 @@ export interface ReviewCardPayload {
   tags: string[];
 }
 
+export interface ReviewGradePayload {
+  hitConcepts: string[];
+  missedConcepts: string[];
+  feedback: string;
+  suggestedRating: ReviewRating;
+  confidence: number;
+}
+
 export type LearningArtifactType =
   | 'parse'
   | 'diagnose'
   | 'hint'
   | 'counterexample'
-  | 'review_card';
+  | 'review_card'
+  | 'review_grade';
 
 export interface LearningArtifact {
   id: string;
@@ -307,6 +465,7 @@ export interface LearningArtifact {
   hint?: HintPayload;
   counterexample?: CounterexamplePayload;
   reviewCard?: ReviewCardPayload;
+  reviewGrade?: ReviewGradePayload;
   draft?: ParsedProblemDraft;
   generationMode?: 'live' | 'local';
   model?: string;
@@ -316,8 +475,22 @@ export interface LearningArtifact {
   createdAt: string;
 }
 
+export type AssessmentKind = 'baseline' | 'checkpoint' | 'practice';
+
+export interface AssessmentComparison {
+  baselineAssessmentId: string;
+  scoreDelta: number;
+  correctCountDelta: number;
+  averageDurationDeltaMs?: number;
+  hintCountDelta?: number;
+  baselineErrorCategories?: DiagnosisCategory[];
+  checkpointErrorCategories?: DiagnosisCategory[];
+}
+
 export interface AssessmentResult {
   id: string;
+  kind?: AssessmentKind;
+  baselineAssessmentId?: string;
   version?: string;
   verificationToken?: string;
   problemSlugs: string[];
@@ -329,10 +502,16 @@ export interface AssessmentResult {
   totalCount: number;
   weakTopics: ProblemTopic[];
   recommendation: string;
+  averageDurationMs?: number;
+  hintCount?: number;
+  errorCategories?: DiagnosisCategory[];
+  comparison?: AssessmentComparison;
 }
 
 export interface AssessmentState {
   id: string;
+  kind?: AssessmentKind;
+  baselineAssessmentId?: string;
   problemSlugs: string[];
   problemVersions?: ProblemVersionRef[];
   startedAt: string;
@@ -347,6 +526,9 @@ export interface CoachState {
   events: ProductEvent[];
   activeAssessment: AssessmentState | null;
   assessments: AssessmentResult[];
+  dailyPlans: Record<string, DailyLearningPlan>;
+  reviewAttempts: ReviewAttempt[];
+  correctionEpisodes: CorrectionEpisode[];
   /** Flat compatibility views used by simple UI consumers. */
   code: Record<string, Partial<Record<Language, string>>>;
   runs: CodeRunResult[];
@@ -368,6 +550,9 @@ export interface CoachSyncMutation {
     events?: ProductEvent[];
     activeAssessment?: AssessmentState | null;
     assessments?: AssessmentResult[];
+    dailyPlans?: Record<string, DailyLearningPlan>;
+    reviewAttempts?: ReviewAttempt[];
+    correctionEpisodes?: CorrectionEpisode[];
     code?: Record<string, Partial<Record<Language, string>>>;
     runs?: CodeRunResult[];
     completedProblemIds?: string[];
@@ -398,6 +583,17 @@ export type ProductEventName =
   | 'corrected_after_diagnosis'
   | 'assessment_started'
   | 'assessment_completed'
+  | 'baseline_started'
+  | 'baseline_completed'
+  | 'checkpoint_completed'
+  | 'daily_plan_viewed'
+  | 'daily_plan_task_started'
+  | 'daily_plan_task_swapped'
+  | 'daily_plan_task_skipped'
+  | 'daily_plan_task_completed'
+  | 'review_answered'
+  | 'review_rating_overridden'
+  | 'correction_episode_completed'
   | 'counterexample_requested'
   | 'review_card_created'
   | 'review_completed'
@@ -444,7 +640,8 @@ export type CoachAction =
   | 'diagnose'
   | 'hint'
   | 'counterexample'
-  | 'review_card';
+  | 'review_card'
+  | 'review_grade';
 
 export interface CoachProblemContext {
   slug?: string;
@@ -467,6 +664,8 @@ export interface CoachRequest {
   code?: string;
   runResult?: CodeRunResult;
   hintLevel?: 1 | 2 | 3;
+  reviewResponse?: string;
+  reviewCard?: ReviewCardPayload;
   experimentVariant?: 'A' | 'B';
 }
 

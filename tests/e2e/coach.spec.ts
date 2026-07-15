@@ -215,6 +215,96 @@ test('onboarding, problem filtering, and imported draft flow', async ({
   ).toBeVisible();
 });
 
+test('keeps the daily plan stable and unlocks the two-week checkpoint', async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name.startsWith('mobile'),
+    'Desktop covers the timed baseline completion flow'
+  );
+  test.setTimeout(process.env.CI ? 120_000 : 75_000);
+  await completeOnboarding(page);
+  await expect(page.getByText('今日学习计划', { exact: true })).toBeVisible();
+  const initialPlanId = await page.evaluate(() => {
+    const raw = window.localStorage.getItem('algocoach:state:v4');
+    const plans = raw ? (JSON.parse(raw).dailyPlans ?? {}) : {};
+    return Object.keys(plans)[0] ?? '';
+  });
+  expect(initialPlanId).not.toBe('');
+  await page.reload();
+  await expect(page.getByText('今日学习计划', { exact: true })).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = window.localStorage.getItem('algocoach:state:v4');
+        const plans = raw ? (JSON.parse(raw).dailyPlans ?? {}) : {};
+        return Object.keys(plans)[0] ?? '';
+      })
+    )
+    .toBe(initialPlanId);
+
+  await clickAndWaitForUrl(
+    page,
+    page.getByRole('link', { name: '开始基线自测' }),
+    /\/assessment\?kind=baseline/
+  );
+  await expect(
+    page.getByRole('heading', { name: '能力基线测评' })
+  ).toBeVisible();
+  await expect(page.getByText('8 分钟', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '开始测评' }).click();
+  await expect(
+    page.getByText('为保证结果可比较，测评中 AI 教练已关闭。')
+  ).toBeVisible();
+  await page.getByRole('button', { name: '提交测评' }).click();
+  await expect(page.getByRole('heading', { name: '测评完成' })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = window.localStorage.getItem('algocoach:state:v4');
+        const assessment = raw
+          ? (JSON.parse(raw).assessments ?? []).at(-1)
+          : undefined;
+        return assessment?.kind;
+      })
+    )
+    .toBe('baseline');
+
+  await page.addInitScript(() => {
+    if (!window.location.pathname.endsWith('/learn')) return;
+    const marker = '__algocoach_checkpoint_age_applied__';
+    if (window.sessionStorage.getItem(marker)) return;
+    const key = 'algocoach:state:v4';
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return;
+    const state = JSON.parse(raw);
+    const baseline = (state.assessments ?? []).find(
+      (assessment: { kind?: string }) => assessment.kind === 'baseline'
+    );
+    if (!baseline) return;
+    baseline.completedAt = new Date(
+      Date.now() - 15 * 24 * 60 * 60 * 1000
+    ).toISOString();
+    baseline.startedAt = baseline.completedAt;
+    window.localStorage.setItem(key, JSON.stringify(state));
+    window.sessionStorage.setItem(marker, 'true');
+  });
+  await page.goto('/learn');
+  await expect(
+    page.getByRole('heading', { name: '两周阶段复测已到期' })
+  ).toBeVisible();
+  await clickAndWaitForUrl(
+    page,
+    page.getByRole('link', { name: '开始阶段复测' }),
+    /\/assessment\?kind=checkpoint&baseline=/
+  );
+  await expect(
+    page.getByRole('heading', { name: '两周阶段复测' })
+  ).toBeVisible();
+});
+
 test('runs JavaScript, submits, reveals a hint, and creates review data', async ({
   page,
 }, testInfo) => {
@@ -339,7 +429,7 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const raw = window.localStorage.getItem('algocoach:state:v3');
+        const raw = window.localStorage.getItem('algocoach:state:v4');
         if (!raw) return [];
         return (JSON.parse(raw).artifacts ?? []).map(
           (artifact: { type?: string }) => artifact.type
@@ -352,8 +442,12 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
   await expect(page.getByRole('heading', { name: '复习中心' })).toBeVisible();
   await page.getByRole('tab', { name: /归纳卡/ }).click();
   await expect(page.getByText('AI 复习卡', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '显示答案' }).click();
+  await page
+    .getByPlaceholder(/使用哈希表记录已访问值/)
+    .fill('使用哈希表统计频次，两次遍历，时间复杂度 O(n)。');
+  await page.getByRole('button', { name: '评分并查看答案' }).click();
   await expect(page.getByText('参考归纳', { exact: true })).toBeVisible();
+  await expect(page.getByText('建议自评', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: '掌握', exact: true }).click();
 
   await page.goto('/progress');
@@ -525,7 +619,7 @@ test('runs Python in an isolated browser worker', async ({
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const raw = window.localStorage.getItem('algocoach:state:v3');
+        const raw = window.localStorage.getItem('algocoach:state:v4');
         if (!raw) return false;
         return (JSON.parse(raw).runs ?? []).some(
           (run: { language?: string; status?: string }) =>
@@ -567,7 +661,7 @@ test('runs and restores TypeScript in the isolated QuickJS worker', async ({
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const raw = window.localStorage.getItem('algocoach:state:v3');
+        const raw = window.localStorage.getItem('algocoach:state:v4');
         if (!raw) return false;
         return (JSON.parse(raw).runs ?? []).some(
           (run: {
@@ -680,7 +774,7 @@ test('mobile practice tabs and assessment remain usable', async ({
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const raw = window.localStorage.getItem('algocoach:state:v3');
+        const raw = window.localStorage.getItem('algocoach:state:v4');
         if (!raw) return false;
         return (JSON.parse(raw).artifacts ?? []).some(
           (artifact: { type?: string }) => artifact.type === 'review_card'
@@ -691,7 +785,10 @@ test('mobile practice tabs and assessment remain usable', async ({
 
   await page.goto('/review');
   await page.getByRole('tab', { name: /归纳卡/ }).click();
-  await page.getByRole('button', { name: '显示答案' }).click();
+  await page
+    .getByPlaceholder(/使用哈希表记录已访问值/)
+    .fill('先统计频次，再找第一个频次为 1 的位置，复杂度 O(n)。');
+  await page.getByRole('button', { name: '评分并查看答案' }).click();
   await expect(page.getByText('参考归纳', { exact: true })).toBeVisible();
 
   await page.goto('/assessment');
@@ -713,7 +810,7 @@ test('mobile practice tabs and assessment remain usable', async ({
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const raw = window.localStorage.getItem('algocoach:state:v3');
+        const raw = window.localStorage.getItem('algocoach:state:v4');
         return raw ? (JSON.parse(raw).assessments ?? []).length : 0;
       })
     )

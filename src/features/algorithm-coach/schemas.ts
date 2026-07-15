@@ -134,6 +134,19 @@ const reviewCardRequestSchema = z.object({
   statement: z.string().max(12_000).optional(),
 });
 
+const reviewCardPayloadSchema = z.object({
+  front: z.string().min(1).max(2_000),
+  back: z.string().min(1).max(8_000),
+  tags: z.array(z.string().min(1).max(100)).max(20),
+});
+
+const reviewGradeRequestSchema = z.object({
+  ...commonRequestShape,
+  action: z.literal('review_grade'),
+  reviewResponse: z.string().max(4_000),
+  reviewCard: reviewCardPayloadSchema,
+});
+
 export const coachRequestSchema = z
   .discriminatedUnion('action', [
     parseRequestSchema,
@@ -141,6 +154,7 @@ export const coachRequestSchema = z
     hintRequestSchema,
     counterexampleRequestSchema,
     reviewCardRequestSchema,
+    reviewGradeRequestSchema,
   ])
   .superRefine((value, context) => {
     if (

@@ -7,12 +7,15 @@ import { dbPostgres } from '@/core/db';
 import {
   coachAssessment,
   coachCodeRun,
+  coachCorrectionEpisode,
+  coachDailyLearningPlan,
   coachImportedTestCase,
   coachLearningArtifact,
   coachLearningProfile,
   coachPracticeSession,
   coachProblem,
   coachProductEvent,
+  coachReviewAttempt,
   coachReviewItem,
   coachSyncMutation as coachSyncMutationTable,
   coachSyncState,
@@ -32,11 +35,14 @@ import {
   CoachSyncMutation,
   CoachSyncResult,
   CodeRunResult,
+  CorrectionEpisode,
+  DailyLearningPlan,
   ImportedDraftRecord,
   LearningArtifact,
   LearningProfile,
   Problem,
   ProductEvent,
+  ReviewAttempt,
   ReviewItem,
   ReviewProgressState,
 } from './types';
@@ -493,6 +499,110 @@ async function persistCoachDataInTransaction(
       });
   }
 
+  for (const plan of Object.values(state.dailyPlans)) {
+    const id = namespacedId('daily_plan', userId, plan.id);
+    const createdAt = asDate(
+      plan.tasks[0]?.dueAt ?? `${plan.localDate}T00:00:00.000Z`
+    );
+    await tx
+      .insert(coachDailyLearningPlan)
+      .values({
+        id,
+        userId,
+        clientPlanId: plan.id,
+        localDate: plan.localDate,
+        timeZone: plan.timeZone,
+        budgetMinutes: plan.budgetMinutes,
+        estimatedMinutes: plan.estimatedMinutes,
+        preferredLanguage: plan.preferredLanguage,
+        goal: plan.goal,
+        tasks: plan.tasks,
+        changes: plan.changes,
+        createdAt,
+        updatedAt: timestamp,
+      })
+      .onConflictDoUpdate({
+        target: coachDailyLearningPlan.id,
+        set: {
+          budgetMinutes: plan.budgetMinutes,
+          estimatedMinutes: plan.estimatedMinutes,
+          preferredLanguage: plan.preferredLanguage,
+          goal: plan.goal,
+          tasks: plan.tasks,
+          changes: plan.changes,
+          updatedAt: timestamp,
+        },
+      });
+  }
+
+  for (const attempt of state.reviewAttempts) {
+    const id = namespacedId('review_attempt', userId, attempt.id);
+    await tx
+      .insert(coachReviewAttempt)
+      .values({
+        id,
+        userId,
+        clientAttemptId: attempt.id,
+        problemId: problemIdBySlug.get(attempt.problemSlug),
+        problemSlugSnapshot: attempt.problemSlug,
+        problemContentVersion: attempt.problemContentVersion,
+        answer: attempt.answer,
+        grade: attempt.grade,
+        selectedRating: attempt.selectedRating,
+        ratingOverride: attempt.ratingOverride,
+        gradedArtifactId: attempt.gradedArtifactId,
+        submittedAt: asDate(attempt.submittedAt),
+        updatedAt: timestamp,
+      })
+      .onConflictDoUpdate({
+        target: coachReviewAttempt.id,
+        set: {
+          grade: attempt.grade,
+          selectedRating: attempt.selectedRating,
+          ratingOverride: attempt.ratingOverride,
+          gradedArtifactId: attempt.gradedArtifactId,
+          updatedAt: timestamp,
+        },
+      });
+  }
+
+  for (const episode of state.correctionEpisodes) {
+    const id = namespacedId('correction_episode', userId, episode.id);
+    await tx
+      .insert(coachCorrectionEpisode)
+      .values({
+        id,
+        userId,
+        clientEpisodeId: episode.id,
+        problemId: problemIdBySlug.get(episode.problemSlug),
+        problemSlugSnapshot: episode.problemSlug,
+        problemContentVersion: episode.problemContentVersion,
+        diagnosisCategory: episode.diagnosisCategory,
+        payload: episode,
+        resolved: episode.resolved,
+        passedWithinThreeRuns: episode.passedWithinThreeRuns,
+        repairDurationMs: episode.repairDurationMs,
+        startedAt: asDate(episode.startedAt),
+        diagnosedAt: asDate(episode.diagnosedAt),
+        endedAt: asDate(episode.endedAt),
+        resolvedAt: episode.resolvedAt ? asDate(episode.resolvedAt) : null,
+        updatedAt: timestamp,
+      })
+      .onConflictDoUpdate({
+        target: coachCorrectionEpisode.id,
+        set: {
+          diagnosisCategory: episode.diagnosisCategory,
+          payload: episode,
+          resolved: episode.resolved,
+          passedWithinThreeRuns: episode.passedWithinThreeRuns,
+          repairDurationMs: episode.repairDurationMs,
+          endedAt: asDate(episode.endedAt),
+          resolvedAt: episode.resolvedAt ? asDate(episode.resolvedAt) : null,
+          updatedAt: timestamp,
+        },
+      });
+  }
+
   const persistedSessionIdByKey = new Map<string, string>();
   const persistedRunIdByKey = new Map<string, string>();
   const persistedRunIdByClientId = new Map<string, string>();
@@ -636,6 +746,7 @@ async function persistCoachDataInTransaction(
         hint: artifact.hint,
         counterexample: artifact.counterexample,
         reviewCard: artifact.reviewCard,
+        reviewGrade: artifact.reviewGrade,
         draft: artifact.draft,
         generationMode: artifact.generationMode ?? 'live',
         model: artifact.model,
@@ -668,6 +779,7 @@ async function persistCoachDataInTransaction(
           hint: artifact.hint,
           counterexample: artifact.counterexample,
           reviewCard: artifact.reviewCard,
+          reviewGrade: artifact.reviewGrade,
           draft: artifact.draft,
           generationMode: artifact.generationMode ?? 'live',
           model: artifact.model,
@@ -700,6 +812,14 @@ async function persistCoachDataInTransaction(
       .values({
         id: assessmentId,
         userId,
+        kind: state.activeAssessment.kind ?? 'practice',
+        baselineAssessmentId: state.activeAssessment.baselineAssessmentId
+          ? namespacedId(
+              'assessment',
+              userId,
+              state.activeAssessment.baselineAssessmentId
+            )
+          : undefined,
         problemSlugs: state.activeAssessment.problemSlugs,
         problemVersions:
           state.activeAssessment.problemVersions ??
@@ -717,6 +837,14 @@ async function persistCoachDataInTransaction(
         target: coachAssessment.id,
         set: {
           problemSlugs: state.activeAssessment.problemSlugs,
+          kind: state.activeAssessment.kind ?? 'practice',
+          baselineAssessmentId: state.activeAssessment.baselineAssessmentId
+            ? namespacedId(
+                'assessment',
+                userId,
+                state.activeAssessment.baselineAssessmentId
+              )
+            : null,
           problemVersions:
             state.activeAssessment.problemVersions ??
             state.activeAssessment.problemSlugs.map((slug) => ({
@@ -738,6 +866,10 @@ async function persistCoachDataInTransaction(
       .values({
         id: assessmentId,
         userId,
+        kind: assessment.kind ?? 'practice',
+        baselineAssessmentId: assessment.baselineAssessmentId
+          ? namespacedId('assessment', userId, assessment.baselineAssessmentId)
+          : undefined,
         problemSlugs: assessment.problemSlugs,
         problemVersions:
           assessment.problemVersions ??
@@ -746,7 +878,7 @@ async function persistCoachDataInTransaction(
             contentVersion: 1,
           })),
         status: 'completed',
-        durationMinutes: 20,
+        durationMinutes: assessment.kind === 'baseline' ? 8 : 20,
         startedAt: asDate(assessment.startedAt),
         completedAt: asDate(assessment.completedAt),
         score: assessment.score,
@@ -754,6 +886,10 @@ async function persistCoachDataInTransaction(
         totalCount: assessment.totalCount,
         weakTopics: assessment.weakTopics,
         recommendation: assessment.recommendation,
+        averageDurationMs: assessment.averageDurationMs,
+        hintCount: assessment.hintCount ?? 0,
+        errorCategories: assessment.errorCategories ?? [],
+        comparison: assessment.comparison,
         assessmentVersion: assessment.version,
         verificationToken: assessment.verificationToken,
         createdAt: asDate(assessment.startedAt),
@@ -763,6 +899,14 @@ async function persistCoachDataInTransaction(
         target: coachAssessment.id,
         set: {
           problemSlugs: assessment.problemSlugs,
+          kind: assessment.kind ?? 'practice',
+          baselineAssessmentId: assessment.baselineAssessmentId
+            ? namespacedId(
+                'assessment',
+                userId,
+                assessment.baselineAssessmentId
+              )
+            : null,
           problemVersions:
             assessment.problemVersions ??
             assessment.problemSlugs.map((slug) => ({
@@ -776,6 +920,10 @@ async function persistCoachDataInTransaction(
           totalCount: assessment.totalCount,
           weakTopics: assessment.weakTopics,
           recommendation: assessment.recommendation,
+          averageDurationMs: assessment.averageDurationMs,
+          hintCount: assessment.hintCount ?? 0,
+          errorCategories: assessment.errorCategories ?? [],
+          comparison: assessment.comparison,
           assessmentVersion: assessment.version,
           verificationToken: assessment.verificationToken,
           updatedAt: asDate(assessment.completedAt),
@@ -1018,6 +1166,9 @@ async function loadCoachDataFromTransaction(
     events,
     importedRows,
     reviewRows,
+    dailyPlanRows,
+    reviewAttemptRows,
+    correctionEpisodeRows,
     syncRows,
   ] = await Promise.all([
     tx
@@ -1061,6 +1212,24 @@ async function loadCoachDataFromTransaction(
       .where(eq(coachReviewItem.userId, userId))
       .orderBy(asc(coachReviewItem.problemSlug))
       .limit(500),
+    tx
+      .select()
+      .from(coachDailyLearningPlan)
+      .where(eq(coachDailyLearningPlan.userId, userId))
+      .orderBy(desc(coachDailyLearningPlan.localDate))
+      .limit(60),
+    tx
+      .select()
+      .from(coachReviewAttempt)
+      .where(eq(coachReviewAttempt.userId, userId))
+      .orderBy(desc(coachReviewAttempt.submittedAt))
+      .limit(200),
+    tx
+      .select()
+      .from(coachCorrectionEpisode)
+      .where(eq(coachCorrectionEpisode.userId, userId))
+      .orderBy(desc(coachCorrectionEpisode.startedAt))
+      .limit(100),
     tx
       .select({ revision: coachSyncState.revision })
       .from(coachSyncState)
@@ -1210,6 +1379,8 @@ async function loadCoachDataFromTransaction(
           undefined,
         reviewCard:
           (row.reviewCard as LearningArtifact['reviewCard']) ?? undefined,
+        reviewGrade:
+          (row.reviewGrade as LearningArtifact['reviewGrade']) ?? undefined,
         draft: (row.draft as LearningArtifact['draft']) ?? undefined,
         generationMode:
           row.generationMode as LearningArtifact['generationMode'],
@@ -1228,6 +1399,16 @@ async function loadCoachDataFromTransaction(
   state.activeAssessment = activeAssessment
     ? {
         id: clientIdFromNamespaced('assessment', userId, activeAssessment.id),
+        kind: activeAssessment.kind as NonNullable<
+          CoachState['activeAssessment']
+        >['kind'],
+        baselineAssessmentId: activeAssessment.baselineAssessmentId
+          ? clientIdFromNamespaced(
+              'assessment',
+              userId,
+              activeAssessment.baselineAssessmentId
+            )
+          : undefined,
         problemSlugs: activeAssessment.problemSlugs,
         problemVersions: activeAssessment.problemVersions as NonNullable<
           CoachState['activeAssessment']
@@ -1240,6 +1421,10 @@ async function loadCoachDataFromTransaction(
     .filter((row) => row.status === 'completed' && row.completedAt)
     .map((row) => ({
       id: clientIdFromNamespaced('assessment', userId, row.id),
+      kind: row.kind as CoachState['assessments'][number]['kind'],
+      baselineAssessmentId: row.baselineAssessmentId
+        ? clientIdFromNamespaced('assessment', userId, row.baselineAssessmentId)
+        : undefined,
       problemSlugs: row.problemSlugs,
       problemVersions:
         row.problemVersions as CoachState['assessments'][number]['problemVersions'],
@@ -1251,11 +1436,55 @@ async function loadCoachDataFromTransaction(
       weakTopics:
         row.weakTopics as CoachState['assessments'][number]['weakTopics'],
       recommendation: row.recommendation,
+      averageDurationMs: row.averageDurationMs ?? undefined,
+      hintCount: row.hintCount,
+      errorCategories:
+        row.errorCategories as CoachState['assessments'][number]['errorCategories'],
+      comparison:
+        (row.comparison as CoachState['assessments'][number]['comparison']) ??
+        undefined,
       version: row.assessmentVersion ?? undefined,
       verificationToken: row.verificationToken ?? undefined,
     }))
     .slice(0, 20)
     .reverse();
+
+  state.dailyPlans = Object.fromEntries(
+    [...dailyPlanRows].reverse().map((row) => {
+      const plan: DailyLearningPlan = {
+        id: row.clientPlanId,
+        localDate: row.localDate,
+        timeZone: row.timeZone,
+        budgetMinutes: row.budgetMinutes,
+        estimatedMinutes: row.estimatedMinutes,
+        preferredLanguage:
+          (row.preferredLanguage as DailyLearningPlan['preferredLanguage']) ??
+          undefined,
+        goal: row.goal as DailyLearningPlan['goal'],
+        tasks: row.tasks as DailyLearningPlan['tasks'],
+        changes: row.changes as DailyLearningPlan['changes'],
+      };
+      return [plan.id, plan];
+    })
+  );
+  state.reviewAttempts = [...reviewAttemptRows].reverse().map(
+    (row): ReviewAttempt => ({
+      id: row.clientAttemptId,
+      problemSlug: row.problemSlugSnapshot,
+      problemContentVersion: row.problemContentVersion,
+      answer: row.answer,
+      submittedAt: asIso(row.submittedAt),
+      grade: (row.grade as ReviewAttempt['grade']) ?? undefined,
+      selectedRating:
+        (row.selectedRating as ReviewAttempt['selectedRating']) ?? undefined,
+      ratingOverride:
+        (row.ratingOverride as ReviewAttempt['ratingOverride']) ?? undefined,
+      gradedArtifactId: row.gradedArtifactId ?? undefined,
+    })
+  );
+  state.correctionEpisodes = [...correctionEpisodeRows]
+    .reverse()
+    .map((row) => row.payload as CorrectionEpisode);
 
   state.events = [...events]
     .reverse()
@@ -1351,6 +1580,9 @@ async function loadCoachDataFromTransaction(
       assessments.length ||
       events.length ||
       reviewRows.length ||
+      dailyPlanRows.length ||
+      reviewAttemptRows.length ||
+      correctionEpisodeRows.length ||
       importedDrafts.length
   );
   return {

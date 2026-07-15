@@ -8,6 +8,7 @@ import {
   Eye,
   FileQuestion,
   Lightbulb,
+  LoaderCircle,
   NotebookTabs,
   RotateCcw,
   Sparkles,
@@ -15,6 +16,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { useLocale } from 'next-intl';
+import { toast } from 'sonner';
 
 import { Link } from '@/core/i18n/navigation';
 import { Badge } from '@/shared/components/ui/badge';
@@ -26,6 +28,7 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/shared/components/ui/tabs';
+import { Textarea } from '@/shared/components/ui/textarea';
 import { cn } from '@/shared/lib/utils';
 
 import {
@@ -34,7 +37,12 @@ import {
   TOPIC_LABELS,
 } from '../learning-progress';
 import { useCoachStore } from '../store';
-import type { CodeRunResult } from '../types';
+import type {
+  CoachResponse,
+  CodeRunResult,
+  LearningArtifact,
+  ReviewGrade,
+} from '../types';
 import { CoachPage, EmptyState, Panel, PanelHeading } from './coach-ui';
 import {
   artifactText,
@@ -67,6 +75,14 @@ const copy = {
     rateEasy: '简单',
     ratePrompt: '本次回忆效果',
     showAnswer: '显示答案',
+    recallPrompt: '先写下你的解题思路、复杂度或关键边界条件',
+    recallPlaceholder: '例如：使用哈希表记录已访问值，时间复杂度 O(n)…',
+    gradeRecall: '评分并查看答案',
+    grading: '正在评分…',
+    gradeFailed: '暂时无法评分，请稍后重试。',
+    hits: '已命中',
+    misses: '待补充',
+    suggested: '建议自评',
     answer: '参考归纳',
     failures: '次未通过',
     latest: '最近错误',
@@ -103,6 +119,16 @@ const copy = {
     rateEasy: 'Easy',
     ratePrompt: 'Recall quality',
     showAnswer: 'Show answer',
+    recallPrompt:
+      'First write your approach, complexity, or important edge cases',
+    recallPlaceholder:
+      'For example: track seen values in a hash map for O(n) time…',
+    gradeRecall: 'Grade recall and reveal',
+    grading: 'Grading…',
+    gradeFailed: 'Recall could not be graded. Try again shortly.',
+    hits: 'Covered',
+    misses: 'Missing',
+    suggested: 'Suggested rating',
     answer: 'Reference summary',
     failures: 'failed runs',
     latest: 'Latest issue',
@@ -130,6 +156,10 @@ export function ReviewPage() {
   const [revealedCards, setRevealedCards] = useState<Set<string>>(
     () => new Set()
   );
+  const [recallResponses, setRecallResponses] = useState<
+    Record<string, string>
+  >({});
+  const [gradingCardId, setGradingCardId] = useState<string | null>(null);
   const runs = getRuns(coach.state);
   const artifacts = getArtifacts(coach.state);
 
@@ -187,6 +217,79 @@ export function ReviewPage() {
       type === 'review_card' || type === 'review-card' || type === 'review'
     );
   });
+
+  async function gradeRecall(
+    cardArtifact: LearningArtifact,
+    problemSlug: string,
+    cardId: string
+  ) {
+    const reviewCard = cardArtifact.reviewCard;
+    const responseText = recallResponses[cardId]?.trim();
+    if (!reviewCard || !responseText || gradingCardId) return;
+    const problem = problems.find(
+      (item) => item.slug === problemSlug || item.id === problemSlug
+    );
+    const problemContentVersion =
+      cardArtifact.problemContentVersion ??
+      problem?.version?.contentVersion ??
+      1;
+    setGradingCardId(cardId);
+    try {
+      const response = await fetch('/api/coach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'review_grade',
+          locale,
+          problemSlug: problem?.slug ?? problemSlug,
+          problemContentVersion,
+          reviewResponse: responseText,
+          reviewCard,
+        }),
+      });
+      if (!response.ok) throw new Error('review grade failed');
+      const payload = (await response.json()) as CoachResponse;
+      const gradePayload = payload.artifact.reviewGrade;
+      if (!gradePayload) throw new Error('review grade missing');
+      const conceptCount =
+        gradePayload.hitConcepts.length + gradePayload.missedConcepts.length;
+      const grade: ReviewGrade = {
+        suggestedRating: gradePayload.suggestedRating,
+        coverage: conceptCount
+          ? gradePayload.hitConcepts.length / conceptCount
+          : 0,
+        matchedPoints: gradePayload.hitConcepts,
+        missingPoints: gradePayload.missedConcepts,
+        rationale: gradePayload.feedback,
+        gradedAt: new Date().toISOString(),
+      };
+      const attemptId = `review_attempt_${crypto.randomUUID()}`;
+      coach.addArtifact({
+        ...payload.artifact,
+        problemSlug: problem?.slug ?? problemSlug,
+        problemContentVersion,
+        generationMode: payload.mode,
+        model: payload.model,
+        promptVersion: payload.promptVersion,
+        traceId: payload.traceId,
+        latencyMs: payload.latencyMs,
+      });
+      coach.recordReviewAttempt({
+        id: attemptId,
+        problemSlug: problem?.slug ?? problemSlug,
+        problemContentVersion,
+        answer: responseText,
+        submittedAt: new Date().toISOString(),
+        grade,
+        gradedArtifactId: cardId,
+      });
+      setRevealedCards((current) => new Set(current).add(cardId));
+    } catch {
+      toast.error(t.gradeFailed);
+    } finally {
+      setGradingCardId(null);
+    }
+  }
 
   return (
     <CoachPage title={t.title} description={t.description}>
@@ -356,8 +459,16 @@ export function ReviewPage() {
                   ? localizedProblem(problem, locale).titleText
                   : String(artifact.title ?? t.card);
                 const structuredCard = artifact.reviewCard;
+                const savedAttempt = [...coach.state.reviewAttempts]
+                  .reverse()
+                  .find(
+                    (attempt) => attempt.gradedArtifactId === String(cardId)
+                  );
+                const grade = savedAttempt?.grade;
                 const revealed =
-                  !structuredCard || revealedCards.has(String(cardId));
+                  !structuredCard ||
+                  Boolean(grade) ||
+                  revealedCards.has(String(cardId));
                 return (
                   <article
                     key={cardId}
@@ -378,22 +489,52 @@ export function ReviewPage() {
                       {structuredCard?.front ?? artifactText(artifact, locale)}
                     </p>
                     {structuredCard && !revealed ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="mt-4 self-start"
-                        onClick={() =>
-                          setRevealedCards((current) => {
-                            const next = new Set(current);
-                            next.add(String(cardId));
-                            return next;
-                          })
-                        }
-                      >
-                        <Eye />
-                        {t.showAnswer}
-                      </Button>
+                      <div className="mt-4 space-y-3">
+                        <p className="text-muted-foreground text-xs leading-5">
+                          {t.recallPrompt}
+                        </p>
+                        <Textarea
+                          value={
+                            recallResponses[String(cardId)] ??
+                            savedAttempt?.answer ??
+                            ''
+                          }
+                          onChange={(event) =>
+                            setRecallResponses((current) => ({
+                              ...current,
+                              [String(cardId)]: event.target.value,
+                            }))
+                          }
+                          placeholder={t.recallPlaceholder}
+                          maxLength={4000}
+                          className="min-h-28 resize-y rounded-md"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={
+                            gradingCardId === String(cardId) ||
+                            !(recallResponses[String(cardId)] ?? '').trim()
+                          }
+                          onClick={() =>
+                            gradeRecall(
+                              artifact,
+                              problem?.slug ?? problemId,
+                              String(cardId)
+                            )
+                          }
+                        >
+                          {gradingCardId === String(cardId) ? (
+                            <LoaderCircle className="animate-spin" />
+                          ) : (
+                            <Eye />
+                          )}
+                          {gradingCardId === String(cardId)
+                            ? t.grading
+                            : t.gradeRecall}
+                        </Button>
+                      </div>
                     ) : null}
                     {structuredCard && revealed ? (
                       <div className="bg-muted/40 mt-4 rounded-md border p-3">
@@ -403,6 +544,28 @@ export function ReviewPage() {
                         <p className="mt-2 text-sm leading-7 whitespace-pre-wrap">
                           {structuredCard.back}
                         </p>
+                      </div>
+                    ) : null}
+                    {grade ? (
+                      <div className="mt-3 rounded-md border border-emerald-500/25 bg-emerald-500/5 p-3 text-xs leading-5">
+                        <p className="font-medium">
+                          {t.suggested}: {grade.suggestedRating}
+                        </p>
+                        {grade.matchedPoints.length ? (
+                          <p className="mt-1 text-emerald-700 dark:text-emerald-300">
+                            {t.hits}: {grade.matchedPoints.join('、')}
+                          </p>
+                        ) : null}
+                        {grade.missingPoints.length ? (
+                          <p className="mt-1 text-amber-700 dark:text-amber-300">
+                            {t.misses}: {grade.missingPoints.join('、')}
+                          </p>
+                        ) : null}
+                        {grade.rationale ? (
+                          <p className="text-muted-foreground mt-1">
+                            {grade.rationale}
+                          </p>
+                        ) : null}
                       </div>
                     ) : null}
                     {problem && coach.reviewItems[problem.slug] && revealed ? (
@@ -423,10 +586,17 @@ export function ReviewPage() {
                               key={rating}
                               type="button"
                               size="sm"
-                              variant="outline"
+                              variant={
+                                grade?.suggestedRating === rating
+                                  ? 'default'
+                                  : 'outline'
+                              }
                               className="min-w-0 px-1 text-xs"
                               onClick={() =>
-                                coach.rateReview(problem.slug, rating)
+                                coach.rateReview(problem.slug, rating, {
+                                  attemptId: savedAttempt?.id,
+                                  suggestedRating: grade?.suggestedRating,
+                                })
                               }
                             >
                               {label}

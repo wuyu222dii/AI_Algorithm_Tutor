@@ -1,13 +1,38 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-import type { Problem, ProblemTopic, ProblemVersionRef } from './types';
+import { problemSupportsLanguage } from './languages';
+import type {
+  AssessmentKind,
+  CodeRunStatus,
+  DiagnosisCategory,
+  Language,
+  LearningGoal,
+  Problem,
+  ProblemTopic,
+  ProblemVersionRef,
+} from './types';
 
-export const ASSESSMENT_VERSION = '2026-07-v2';
+export const ASSESSMENT_VERSION = '2026-07-v3';
 export const ASSESSMENT_DURATION_MINUTES = 20;
+export const BASELINE_DURATION_MINUTES = 8;
 const ASSESSMENT_GRACE_MINUTES = 5;
+
+const GOAL_TOPICS: Record<LearningGoal, ProblemTopic[]> = {
+  foundation: ['array-hash', 'two-pointers', 'stack', 'linked-list'],
+  interview: [
+    'array-hash',
+    'two-pointers',
+    'binary-search',
+    'linked-list',
+    'dynamic-programming',
+  ],
+  contest: ['dynamic-programming', 'bfs', 'dfs', 'binary-search'],
+};
 
 export interface SignedAssessmentSession {
   id: string;
+  kind: AssessmentKind;
+  baselineAssessmentId?: string;
   version: string;
   problemSlugs: string[];
   problemVersions: ProblemVersionRef[];
@@ -21,10 +46,14 @@ export interface AssessmentRunClaim {
   problemSlug: string;
   passed: boolean;
   durationMs: number;
+  status?: CodeRunStatus;
+  errorCategory?: DiagnosisCategory;
 }
 
 export interface VerifiedAssessmentResult {
   id: string;
+  kind: AssessmentKind;
+  baselineAssessmentId?: string;
   version: string;
   problemSlugs: string[];
   problemVersions: ProblemVersionRef[];
@@ -35,6 +64,9 @@ export interface VerifiedAssessmentResult {
   totalCount: number;
   weakTopics: ProblemTopic[];
   recommendation: string;
+  averageDurationMs: number;
+  hintCount: number;
+  errorCategories: DiagnosisCategory[];
   verificationToken: string;
 }
 
@@ -89,9 +121,52 @@ function stableNumber(seed: string): number {
 
 export function selectAssessmentProblems(
   seed: string,
-  problems: readonly Problem[]
+  problems: readonly Problem[],
+  options: {
+    kind?: AssessmentKind;
+    preferredLanguage?: Language;
+    goal?: LearningGoal;
+    baselineProblemVersions?: ProblemVersionRef[];
+  } = {}
 ): ProblemVersionRef[] {
-  const candidates = problems.map((problem) => problem.slug);
+  const kind = options.kind ?? 'practice';
+  const preferredTopics = GOAL_TOPICS[options.goal ?? 'foundation'];
+  const baselineProblems = (options.baselineProblemVersions ?? [])
+    .map((reference) =>
+      problems.find((problem) => problem.slug === reference.slug)
+    )
+    .filter((problem): problem is Problem => Boolean(problem));
+  const baselineTopics = new Set(
+    baselineProblems.flatMap((problem) => problem.topics)
+  );
+  const baselineDifficulties = new Set(
+    baselineProblems.map((problem) => problem.difficulty)
+  );
+  let eligible = problems.filter(
+    (problem) =>
+      (!options.preferredLanguage ||
+        problemSupportsLanguage(problem, options.preferredLanguage)) &&
+      (kind === 'practice' || problem.difficulty !== 'hard')
+  );
+  if (kind === 'checkpoint' && baselineProblems.length) {
+    const comparable = eligible.filter(
+      (problem) =>
+        !(options.baselineProblemVersions ?? []).some(
+          (reference) => reference.slug === problem.slug
+        ) &&
+        baselineDifficulties.has(problem.difficulty) &&
+        problem.topics.some((topic) => baselineTopics.has(topic))
+    );
+    if (comparable.length >= 2) eligible = comparable;
+  } else if (kind === 'baseline') {
+    const goalMatched = eligible.filter((problem) =>
+      problem.topics.some((topic) =>
+        preferredTopics.includes(topic as ProblemTopic)
+      )
+    );
+    if (goalMatched.length >= 2) eligible = goalMatched;
+  }
+  const candidates = eligible.map((problem) => problem.slug);
   if (candidates.length < 2) {
     throw new Error('At least two assessment problems are required');
   }
@@ -120,23 +195,40 @@ export function selectAssessmentProblems(
 export function createSignedAssessmentSession(options: {
   id: string;
   problems: readonly Problem[];
+  kind?: AssessmentKind;
+  preferredLanguage?: Language;
+  goal?: LearningGoal;
+  baselineAssessmentId?: string;
+  baselineProblemVersions?: ProblemVersionRef[];
   now?: Date;
 }): SignedAssessmentSession {
   const now = options.now ?? new Date();
+  const kind = options.kind ?? 'practice';
+  const durationMinutes =
+    kind === 'practice'
+      ? ASSESSMENT_DURATION_MINUTES
+      : BASELINE_DURATION_MINUTES;
   const expiresAt = new Date(
-    now.getTime() +
-      (ASSESSMENT_DURATION_MINUTES + ASSESSMENT_GRACE_MINUTES) * 60_000
+    now.getTime() + (durationMinutes + ASSESSMENT_GRACE_MINUTES) * 60_000
   );
   const problemVersions = selectAssessmentProblems(
     options.id,
-    options.problems
+    options.problems,
+    {
+      kind,
+      preferredLanguage: options.preferredLanguage,
+      goal: options.goal,
+      baselineProblemVersions: options.baselineProblemVersions,
+    }
   );
   const payload: AssessmentTokenPayload = {
     id: options.id,
+    kind,
+    baselineAssessmentId: options.baselineAssessmentId,
     version: ASSESSMENT_VERSION,
     problemSlugs: problemVersions.map((problem) => problem.slug),
     problemVersions,
-    durationMinutes: ASSESSMENT_DURATION_MINUTES,
+    durationMinutes,
     startedAt: now.toISOString(),
     expiresAt: expiresAt.toISOString(),
   };
@@ -150,6 +242,7 @@ export function verifyAssessmentSession(
 ): AssessmentTokenPayload {
   const payload = readSignedAssessmentSession(token, now);
   if (
+    !['baseline', 'checkpoint', 'practice'].includes(payload.kind) ||
     payload.problemVersions.some((reference) => {
       const problem = problems.find((item) => item.slug === reference.slug);
       return (
@@ -221,6 +314,21 @@ export function completeSignedAssessment(options: {
   const correctCount = session.problemSlugs.filter(
     (slug) => runBySlug.get(slug)?.passed
   ).length;
+  const errorCategories = Array.from(
+    new Set(
+      session.problemSlugs
+        .map((slug): DiagnosisCategory | undefined => {
+          const run = runBySlug.get(slug);
+          if (!run || run.passed) return undefined;
+          if (run.errorCategory) return run.errorCategory;
+          if (run.status === 'syntax_error') return 'syntax';
+          if (run.status === 'runtime_error') return 'runtime';
+          if (run.status === 'timeout') return 'timeout';
+          return 'wrong-answer';
+        })
+        .filter((category): category is DiagnosisCategory => Boolean(category))
+    )
+  );
   const weakTopics = Array.from(
     new Set(
       session.problemSlugs
@@ -246,6 +354,8 @@ export function completeSignedAssessment(options: {
   );
   const unsigned = {
     id: session.id,
+    kind: session.kind,
+    baselineAssessmentId: session.baselineAssessmentId,
     version: session.version,
     problemSlugs: session.problemSlugs,
     problemVersions: session.problemVersions,
@@ -255,6 +365,14 @@ export function completeSignedAssessment(options: {
     correctCount,
     totalCount: session.problemSlugs.length,
     weakTopics,
+    averageDurationMs: Math.round(
+      session.problemSlugs.reduce(
+        (total, slug) => total + (runBySlug.get(slug)?.durationMs ?? 0),
+        0
+      ) / session.problemSlugs.length
+    ),
+    hintCount: 0,
+    errorCategories,
     recommendation:
       correctCount === session.problemSlugs.length
         ? 'Raise the difficulty and keep a tighter per-problem time limit.'

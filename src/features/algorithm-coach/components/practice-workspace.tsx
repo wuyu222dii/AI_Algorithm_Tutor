@@ -59,7 +59,13 @@ import { loadPracticeContext, savePracticeContext } from '../practice-context';
 import { runCode } from '../runner';
 import { useCoachStore } from '../store';
 import { getPracticeSessionKey } from '../sync';
-import type { CoachResponse, CodeRunResult, Language, Problem } from '../types';
+import type {
+  CoachResponse,
+  CodeRunResult,
+  CorrectionEpisode,
+  Language,
+  Problem,
+} from '../types';
 import { CodeEditor } from './code-editor';
 import {
   artifactText,
@@ -131,6 +137,15 @@ const copy = {
     timeline: '纠错时间线',
     runTimeline: '代码运行',
     codeChanged: '相较上次运行已修改代码',
+    episodeResolved: '已完成纠错',
+    episodeOpen: '纠错进行中',
+    withinThree: '3 次运行内通过',
+    repairTime: '修复用时',
+    initialEvidence: '首次失败证据',
+    changedLines: '修改行',
+    addedLines: '新增行',
+    removedLines: '删除行',
+    repeatedCause: '重复错因',
     testsPassed: '个测试通过',
     javascript: 'JavaScript',
     python: 'Python',
@@ -195,6 +210,15 @@ const copy = {
     timeline: 'Correction timeline',
     runTimeline: 'Code run',
     codeChanged: 'Code changed since the previous run',
+    episodeResolved: 'Correction completed',
+    episodeOpen: 'Correction in progress',
+    withinThree: 'Passed within 3 runs',
+    repairTime: 'Repair time',
+    initialEvidence: 'Initial failure evidence',
+    changedLines: 'changed',
+    addedLines: 'added',
+    removedLines: 'removed',
+    repeatedCause: 'Repeated cause',
     testsPassed: 'tests passed',
     javascript: 'JavaScript',
     python: 'Python',
@@ -369,6 +393,21 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
     t.codeChanged,
     t.testsPassed,
   ]);
+
+  const correctionEpisodes = useMemo(
+    () =>
+      state.correctionEpisodes
+        .filter(
+          (episode) =>
+            episode.problemSlug === problem?.slug &&
+            episode.problemContentVersion === problemContentVersion
+        )
+        .sort(
+          (left, right) =>
+            Date.parse(right.startedAt) - Date.parse(left.startedAt)
+        ),
+    [problem?.slug, problemContentVersion, state.correctionEpisodes]
+  );
 
   useEffect(() => {
     if (!problem) return;
@@ -836,6 +875,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
     <CoachPanel
       copy={t}
       artifacts={artifacts}
+      correctionEpisodes={correctionEpisodes}
       hintLevel={hintLevel}
       aiLoading={aiLoading}
       messages={messages}
@@ -1172,6 +1212,7 @@ function EditorPanel({
 function CoachPanel({
   copy: t,
   artifacts,
+  correctionEpisodes,
   hintLevel,
   aiLoading,
   messages,
@@ -1187,6 +1228,7 @@ function CoachPanel({
 }: {
   copy: (typeof copy)['zh'] | (typeof copy)['en'];
   artifacts: ArtifactView[];
+  correctionEpisodes: CorrectionEpisode[];
   hintLevel: number;
   aiLoading: string | null;
   messages: CoachMessage[];
@@ -1315,12 +1357,76 @@ function CoachPanel({
           </div>
         </div>
 
-        {artifacts.length ? (
+        {artifacts.length || correctionEpisodes.length ? (
           <div className="space-y-3 border-b p-4">
             <div className="text-muted-foreground flex items-center gap-2 text-xs font-semibold">
               <Clock3 className="size-3.5" />
               {t.timeline}
             </div>
+            {correctionEpisodes.map((episode) => (
+              <div
+                key={episode.id}
+                className={cn(
+                  'rounded-lg border p-3',
+                  episode.resolved
+                    ? 'border-emerald-500/25 bg-emerald-500/5'
+                    : 'border-amber-500/25 bg-amber-500/5'
+                )}
+              >
+                <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+                  {episode.resolved ? (
+                    <CheckCircle2 className="size-3.5 text-emerald-600" />
+                  ) : (
+                    <TriangleAlert className="size-3.5 text-amber-600" />
+                  )}
+                  <span>
+                    {episode.resolved ? t.episodeResolved : t.episodeOpen}
+                  </span>
+                  <Badge variant="outline" className="rounded-md text-[10px]">
+                    {episode.diagnosisCategory}
+                  </Badge>
+                  {episode.passedWithinThreeRuns ? (
+                    <Badge className="rounded-md bg-emerald-600 text-[10px] text-white">
+                      {t.withinThree}
+                    </Badge>
+                  ) : null}
+                </div>
+                <div className="text-muted-foreground mt-2 space-y-1 text-xs leading-5">
+                  <p>
+                    {t.initialEvidence}: {episode.initialFailure.passedTests}/
+                    {episode.initialFailure.totalTests} {t.testsPassed}
+                    {episode.initialFailure.error
+                      ? ` · ${episode.initialFailure.error}`
+                      : ''}
+                  </p>
+                  {episode.attempts.slice(1).map((attempt, index) => {
+                    const diff = attempt.diffFromPrevious;
+                    return (
+                      <p key={attempt.runId ?? attempt.executedAt}>
+                        #{index + 1} {attempt.passedTests}/{attempt.totalTests}{' '}
+                        {t.testsPassed}
+                        {diff?.hasChanges
+                          ? ` · ${t.changedLines} ${diff.changedLines} · ${t.addedLines} ${diff.addedLines} · ${t.removedLines} ${diff.removedLines}`
+                          : ''}
+                      </p>
+                    );
+                  })}
+                  {episode.repairDurationMs !== undefined ? (
+                    <p>
+                      {t.repairTime}:{' '}
+                      {Math.max(1, Math.round(episode.repairDurationMs / 1000))}{' '}
+                      s
+                    </p>
+                  ) : null}
+                  {episode.repeatedDiagnosisCategories.length ? (
+                    <p>
+                      {t.repeatedCause}:{' '}
+                      {episode.repeatedDiagnosisCategories.join(', ')}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            ))}
             {artifacts.map((artifact) => (
               <div
                 key={artifact.id}

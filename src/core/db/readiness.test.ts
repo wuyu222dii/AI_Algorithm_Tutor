@@ -231,23 +231,23 @@ describe('health checks', () => {
 
   it('requires every published catalog problem to have a valid current revision', () => {
     expect(
-      checkCatalogReadiness({ publishedCount: 58, readyCount: 58 })
+      checkCatalogReadiness({ publishedCount: 73, readyCount: 73 })
     ).toMatchObject({
       status: 'ok',
-      details: { publishedCount: 58, readyCount: 58 },
+      details: { publishedCount: 73, readyCount: 73 },
     });
     expect(
-      checkCatalogReadiness({ publishedCount: 58, readyCount: 57 })
+      checkCatalogReadiness({ publishedCount: 73, readyCount: 72 })
     ).toMatchObject({
       status: 'error',
       code: 'catalog_invalid',
-      details: { publishedCount: 58, readyCount: 57 },
+      details: { publishedCount: 73, readyCount: 72 },
     });
     expect(
       checkCatalogReadiness({ publishedCount: 0, readyCount: 0 })
     ).toMatchObject({ status: 'error', code: 'catalog_empty' });
     expect(
-      checkCatalogReadiness({ publishedCount: 57, readyCount: 57 })
+      checkCatalogReadiness({ publishedCount: 72, readyCount: 72 })
     ).toMatchObject({ status: 'error', code: 'catalog_below_minimum' });
     expect(
       checkCatalogReadiness({

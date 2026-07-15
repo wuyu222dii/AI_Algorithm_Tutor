@@ -16,8 +16,7 @@ import {
 } from 'lucide-react';
 import { useLocale } from 'next-intl';
 
-import { Link } from '@/core/i18n/navigation';
-import { Badge } from '@/shared/components/ui/badge';
+import { Link, useRouter } from '@/core/i18n/navigation';
 import { Button } from '@/shared/components/ui/button';
 import { Label } from '@/shared/components/ui/label';
 import { Progress } from '@/shared/components/ui/progress';
@@ -31,12 +30,13 @@ import {
 } from '@/shared/components/ui/select';
 import { cn } from '@/shared/lib/utils';
 
+import { getDailyPlanDateKey } from '../daily-plan';
 import { LANGUAGE_REGISTRY } from '../languages';
 import { countNaturalWeekCompletions } from '../learning-progress';
-import { getProblemRecommendations } from '../recommendations';
 import { useCoachStore } from '../store';
 import type { Language, LearningGoal } from '../types';
 import { CoachPage, Metric, Panel, PanelHeading } from './coach-ui';
+import { DailyPlanPanel } from './daily-plan-panel';
 import {
   getCompletedProblemIds,
   getPreferredLanguage,
@@ -44,7 +44,6 @@ import {
   getRuns,
   isOnboarded,
   localeKey,
-  localizedProblem,
 } from './domain-adapter';
 
 const copy = {
@@ -83,6 +82,12 @@ const copy = {
     assessmentTitle: '想知道当前水平？',
     assessmentDescription: '完成 20 分钟测评，获得知识点分析与下一步建议。',
     assessmentAction: '开始测评',
+    baselineTitle: '先校准能力基线',
+    baselineDescription: '8 分钟完成 2 道无 AI 题，让每日计划从真实水平出发。',
+    baselineAction: '开始基线自测',
+    checkpointTitle: '两周阶段复测已到期',
+    checkpointDescription: '完成同难度新题，对比正确率与平均用时变化。',
+    checkpointAction: '开始阶段复测',
     reasonRetry: '优先纠错',
     reasonReviewDue: '复习到期',
     reasonWeakTopic: '补强薄弱点',
@@ -129,6 +134,14 @@ const copy = {
     assessmentDescription:
       'Take a 20-minute assessment for topic analysis and a focused next step.',
     assessmentAction: 'Start assessment',
+    baselineTitle: 'Calibrate your baseline first',
+    baselineDescription:
+      'Solve two no-AI problems in 8 minutes so the daily plan starts from evidence.',
+    baselineAction: 'Start baseline',
+    checkpointTitle: 'Your two-week checkpoint is ready',
+    checkpointDescription:
+      'Solve comparable new problems and compare accuracy and average time.',
+    checkpointAction: 'Start checkpoint',
     reasonRetry: 'Retry priority',
     reasonReviewDue: 'Review due',
     reasonWeakTopic: 'Strengthen weak topic',
@@ -165,8 +178,10 @@ export function LearnPage() {
   const locale = localeKey(useLocale());
   const t = copy[locale];
   const coach = useCoachStore();
+  const router = useRouter();
   const enabledLanguages = coach.enabledLanguages;
   const trackEvent = coach.trackEvent;
+  const ensureDailyPlan = coach.ensureDailyPlan;
   const state = coach.state;
   const profile = getProfile(state);
   const [editing, setEditing] = useState(false);
@@ -180,6 +195,10 @@ export function LearnPage() {
   const [dailyMinutes, setDailyMinutes] = useState(
     String(profile?.dailyMinutes ?? 30)
   );
+  const [timeZone] = useState(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  );
+  const [currentTimestamp] = useState(() => Date.now());
 
   const language = enabledLanguages.some(
     (languageId) => languageId === selectedLanguage
@@ -195,26 +214,13 @@ export function LearnPage() {
   );
   const onboarded = isOnboarded(state) && !editing;
 
-  const todaysProblems = useMemo(
-    () =>
-      getProblemRecommendations(state, {
-        limit: 3,
-        reviewItems: coach.reviewItems,
-        maxMinutes: Number(profile?.dailyMinutes ?? dailyMinutes),
-        catalog: coach.problems,
-      }),
-    [
-      coach.problems,
-      coach.reviewItems,
-      dailyMinutes,
-      profile?.dailyMinutes,
-      state,
-    ]
-  );
-  const todayEstimatedMinutes = todaysProblems.reduce(
-    (total, item) => total + item.problem.estimatedMinutes,
-    0
-  );
+  const todaysPlan = useMemo(() => {
+    if (!timeZone) return undefined;
+    const localDate = getDailyPlanDateKey(new Date(), timeZone);
+    return Object.values(state.dailyPlans).find(
+      (plan) => plan.localDate === localDate && plan.timeZone === timeZone
+    );
+  }, [state.dailyPlans, timeZone]);
   const onboardingStarted = state.events.some(
     (event) => event.name === 'onboarding_started'
   );
@@ -225,13 +231,63 @@ export function LearnPage() {
     }
   }, [coach.hydrated, onboardingStarted, profile, trackEvent]);
 
-  const recommendationReason = {
-    retry: t.reasonRetry,
-    'review-due': t.reasonReviewDue,
-    'weak-topic': t.reasonWeakTopic,
-    'goal-fit': t.reasonGoalFit,
-    continue: t.reasonContinue,
-  } as const;
+  useEffect(() => {
+    if (!coach.hydrated || !profile?.onboardingCompleted) return;
+    ensureDailyPlan(timeZone);
+  }, [coach.hydrated, ensureDailyPlan, profile?.onboardingCompleted, timeZone]);
+
+  const latestBaseline = useMemo(
+    () =>
+      [...state.assessments]
+        .filter((assessment) => assessment.kind === 'baseline')
+        .sort(
+          (left, right) =>
+            Date.parse(right.completedAt) - Date.parse(left.completedAt)
+        )[0],
+    [state.assessments]
+  );
+  const latestCheckpoint = useMemo(
+    () =>
+      [...state.assessments]
+        .filter(
+          (assessment) =>
+            assessment.kind === 'checkpoint' &&
+            assessment.baselineAssessmentId === latestBaseline?.id
+        )
+        .sort(
+          (left, right) =>
+            Date.parse(right.completedAt) - Date.parse(left.completedAt)
+        )[0],
+    [latestBaseline?.id, state.assessments]
+  );
+  const checkpointDue = Boolean(
+    latestBaseline &&
+      currentTimestamp - Date.parse(latestBaseline.completedAt) >=
+        14 * 24 * 60 * 60 * 1000 &&
+      (!latestCheckpoint ||
+        Date.parse(latestCheckpoint.completedAt) <
+          Date.parse(latestBaseline.completedAt))
+  );
+  const assessmentCard = !latestBaseline
+    ? {
+        title: t.baselineTitle,
+        description: t.baselineDescription,
+        action: t.baselineAction,
+        href: '/assessment?kind=baseline',
+      }
+    : checkpointDue
+      ? {
+          title: t.checkpointTitle,
+          description: t.checkpointDescription,
+          action: t.checkpointAction,
+          href: `/assessment?kind=checkpoint&baseline=${encodeURIComponent(latestBaseline.id)}`,
+        }
+      : {
+          title: t.assessmentTitle,
+          description: t.assessmentDescription,
+          action: t.assessmentAction,
+          href: '/assessment',
+        };
 
   const weeklyTarget = Number(
     profile?.weeklyTarget ?? profile?.weeklyGoal ?? weeklyGoal ?? 5
@@ -414,88 +470,64 @@ export function LearnPage() {
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <Panel>
-          <PanelHeading
-            icon={<Play className="size-4" />}
-            title={t.today}
-            description={t.todayDescription.replace(
-              '{minutes}',
-              String(todayEstimatedMinutes)
-            )}
-            action={
+        {todaysPlan ? (
+          <div className="space-y-2">
+            <div className="flex justify-end">
               <Button asChild variant="ghost" size="sm">
                 <Link href="/problems">{t.explore}</Link>
               </Button>
-            }
-          />
-          <div className="divide-y">
-            {todaysProblems.map(({ problem, reason }, index) => {
-              const localized = localizedProblem(problem, locale);
-              const completed =
-                completedIds.has(problem.id) || completedIds.has(problem.slug);
-              return (
-                <div
-                  key={problem.id}
-                  className="flex flex-col gap-4 px-4 py-4 sm:flex-row sm:items-center md:px-5"
-                >
-                  <div className="flex min-w-0 flex-1 items-start gap-3">
-                    <span
-                      className={cn(
-                        'flex size-8 shrink-0 items-center justify-center rounded-md border text-xs font-semibold',
-                        completed &&
-                          'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                      )}
-                    >
-                      {completed ? <Check className="size-4" /> : index + 1}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="font-medium">{localized.titleText}</h3>
-                        <Badge
-                          variant="secondary"
-                          className="rounded-md text-[11px]"
-                        >
-                          {recommendationReason[reason]}
-                        </Badge>
-                      </div>
-                      <p className="text-muted-foreground mt-1 line-clamp-2 text-sm leading-5">
-                        {localized.descriptionText}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-3 pl-11 sm:pl-0">
-                    <span className="text-muted-foreground text-xs">
-                      {problem.estimatedMinutes} {t.minutes}
-                    </span>
-                    <Button
-                      asChild
-                      size="sm"
-                      variant={completed ? 'outline' : 'default'}
-                    >
-                      <Link href={`/practice/${problem.slug}`}>
-                        {completed ? t.completed : t.continue}
-                        <ArrowRight />
-                      </Link>
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
+            </div>
+            <DailyPlanPanel
+              plan={todaysPlan}
+              problems={coach.problems}
+              locale={locale}
+              onSkip={(taskId, reason) =>
+                coach.skipDailyPlanTask(todaysPlan.id, taskId, reason)
+              }
+              onSwap={(taskId, reason) =>
+                coach.swapDailyPlanTask(todaysPlan.id, taskId, reason)
+              }
+              onOpen={(task) => {
+                coach.trackEvent('daily_plan_task_started', {
+                  problemSlug: task.problemSlug,
+                  properties: {
+                    planId: todaysPlan.id,
+                    taskId: task.id,
+                    kind: task.kind,
+                  },
+                });
+                router.push(
+                  task.kind === 'due-review'
+                    ? '/review'
+                    : `/practice/${task.problemSlug}`
+                );
+              }}
+            />
           </div>
-        </Panel>
+        ) : (
+          <Panel>
+            <PanelHeading
+              icon={<Play className="size-4" />}
+              title={t.today}
+              description={t.todayDescription.replace('{minutes}', '0')}
+            />
+          </Panel>
+        )}
 
         <Panel className="overflow-hidden" tone="muted">
           <div className="p-5">
             <div className="bg-primary/10 text-primary flex size-10 items-center justify-center rounded-md">
               <ClipboardAssessmentIcon />
             </div>
-            <h2 className="mt-5 text-lg font-semibold">{t.assessmentTitle}</h2>
+            <h2 className="mt-5 text-lg font-semibold">
+              {assessmentCard.title}
+            </h2>
             <p className="text-muted-foreground mt-2 text-sm leading-6">
-              {t.assessmentDescription}
+              {assessmentCard.description}
             </p>
             <Button asChild className="mt-6 w-full">
-              <Link href="/assessment">
-                {t.assessmentAction}
+              <Link href={assessmentCard.href}>
+                {assessmentCard.action}
                 <ArrowRight />
               </Link>
             </Button>

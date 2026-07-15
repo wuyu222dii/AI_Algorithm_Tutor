@@ -12,12 +12,12 @@ afterEach(() => {
 });
 
 describe('runtime problem catalog', () => {
-  it('loads the complete 58-problem fixture only when the DB flag is explicit', async () => {
+  it('loads the complete 73-problem fixture only when the DB flag is explicit', async () => {
     vi.stubEnv('DB_CATALOG_ENABLED', 'false');
     vi.stubEnv('NODE_ENV', 'test');
 
     const catalog = await listRuntimeProblems();
-    expect(catalog).toHaveLength(58);
+    expect(catalog).toHaveLength(73);
     expect(
       catalog.every((problem) =>
         ['javascript', 'python', 'typescript'].every(
@@ -28,6 +28,11 @@ describe('runtime problem catalog', () => {
     expect(
       catalog.filter((problem) => problem.origin?.provider === 'exercism')
     ).toHaveLength(20);
+    expect(
+      catalog.filter(
+        (problem) => problem.origin?.provider === 'algocoach-original'
+      )
+    ).toHaveLength(15);
     for (const problem of catalog) {
       for (const language of ['javascript', 'typescript', 'python'] as const) {
         const config = problem.languageConfigs?.[language];
@@ -63,7 +68,7 @@ describe('runtime problem catalog', () => {
     vi.stubEnv('NODE_ENV', 'test');
 
     const typescript = await listRuntimeProblems({ language: 'typescript' });
-    expect(typescript).toHaveLength(58);
+    expect(typescript).toHaveLength(73);
     await expect(
       getRuntimeProblem('dependency-cycle', 1)
     ).resolves.toMatchObject({

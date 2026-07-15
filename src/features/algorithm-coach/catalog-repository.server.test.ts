@@ -85,6 +85,9 @@ const revisionRow = {
   constraints: [],
   hints: { zh: ['', '', ''], en: ['', '', ''] },
   reviewPoints: [],
+  learningObjectives: [{ zh: '掌握边界搜索', en: 'Master boundary search' }],
+  prerequisiteTopics: ['binary-search'],
+  solutionPatterns: ['lower-bound'],
   estimatedMinutes: 12,
   sourceStatement: null,
   sourceUrl: null,
@@ -153,6 +156,11 @@ describe('PostgreSQL catalog repository', () => {
         sourceRevision: 'legacy-static-catalog',
         contentHash: 'sha256:revision-v1',
       },
+      learningObjectives: [
+        { zh: '掌握边界搜索', en: 'Master boundary search' },
+      ],
+      prerequisiteTopics: ['binary-search'],
+      solutionPatterns: ['lower-bound'],
     });
     expect(problems[0].tests.map((test) => test.id)).toEqual([
       'sample-1',

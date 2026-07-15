@@ -14,7 +14,24 @@ import { enforceDistributedWindowRateLimit } from '@/shared/lib/rate-limit';
 export const dynamic = 'force-dynamic';
 
 const requestSchema = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('start') }),
+  z.object({
+    action: z.literal('start'),
+    kind: z.enum(['baseline', 'checkpoint', 'practice']).default('practice'),
+    preferredLanguage: z
+      .enum(['javascript', 'typescript', 'python'])
+      .optional(),
+    goal: z.enum(['foundation', 'interview', 'contest']).optional(),
+    baselineAssessmentId: z.string().max(160).optional(),
+    baselineProblemVersions: z
+      .array(
+        z.object({
+          slug: z.string().min(1).max(120),
+          contentVersion: z.number().int().min(1).max(1_000_000),
+        })
+      )
+      .length(2)
+      .optional(),
+  }),
   z.object({
     action: z.literal('complete'),
     token: z.string().min(32).max(4096),
@@ -24,6 +41,25 @@ const requestSchema = z.discriminatedUnion('action', [
           problemSlug: z.string().min(1).max(120),
           passed: z.boolean(),
           durationMs: z.number().finite().min(0).max(180_000),
+          status: z
+            .enum([
+              'passed',
+              'failed',
+              'syntax_error',
+              'runtime_error',
+              'timeout',
+            ])
+            .optional(),
+          errorCategory: z
+            .enum([
+              'syntax',
+              'runtime',
+              'timeout',
+              'wrong-answer',
+              'edge-case',
+              'unknown',
+            ])
+            .optional(),
         })
       )
       .length(2),
@@ -55,8 +91,13 @@ export async function POST(request: Request) {
     if (parsed.data.action === 'start') {
       const problems = await listRuntimeProblems();
       data = createSignedAssessmentSession({
-        id: `assessment_${crypto.randomUUID()}`,
+        id: `${parsed.data.kind}_${crypto.randomUUID()}`,
         problems,
+        kind: parsed.data.kind,
+        preferredLanguage: parsed.data.preferredLanguage,
+        goal: parsed.data.goal,
+        baselineAssessmentId: parsed.data.baselineAssessmentId,
+        baselineProblemVersions: parsed.data.baselineProblemVersions,
       });
     } else {
       const session = readSignedAssessmentSession(parsed.data.token);

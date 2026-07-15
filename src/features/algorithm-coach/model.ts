@@ -1,6 +1,6 @@
 import type { CoachAction, CoachTokenUsage } from './types';
 
-export const COACH_PROMPT_VERSION = 'coach-v1.2';
+export const COACH_PROMPT_VERSION = 'coach-v1.3';
 export const COACH_MODEL_WHITELIST = [
   'google/gemini-2.5-flash',
   'gpt-5.5',

@@ -1,4 +1,5 @@
 import { parseProblemDraft } from './parser';
+import { createDeterministicReviewGrade } from './review-grading';
 import {
   CoachChatRequest,
   CoachLocale,
@@ -72,6 +73,8 @@ function baseArtifact(
     type: request.action,
     locale: request.locale ?? 'zh',
     problemSlug: request.problemSlug ?? request.problem?.slug,
+    runId: request.runResult?.id,
+    problemContentVersion: request.problemContentVersion,
     title,
     summary,
     details: [],
@@ -310,6 +313,43 @@ function createReviewCard(
   };
 }
 
+function createReviewGrade(request: CoachRequest): LearningArtifact {
+  const locale = request.locale ?? 'zh';
+  const reviewCard = request.reviewCard ?? {
+    front:
+      locale === 'zh'
+        ? '请主动回忆本题的核心思路。'
+        : 'Recall the core idea for this problem.',
+    back:
+      locale === 'zh'
+        ? '说明核心思路、复杂度和边界条件。'
+        : 'Explain the core idea, complexity, and boundary conditions.',
+    tags: [],
+  };
+  const reviewGrade = createDeterministicReviewGrade(
+    request.reviewResponse ?? '',
+    reviewCard,
+    locale
+  );
+
+  return {
+    ...baseArtifact(
+      request,
+      locale === 'zh' ? '主动回忆评分' : 'Active recall grade',
+      locale === 'zh'
+        ? `已核对 ${reviewGrade.hitConcepts.length + reviewGrade.missedConcepts.length} 个复习要点。`
+        : `${reviewGrade.hitConcepts.length + reviewGrade.missedConcepts.length} review point(s) were assessed.`
+    ),
+    details: [reviewGrade.feedback],
+    evidence: reviewGrade.hitConcepts,
+    reviewGrade,
+    nextAction:
+      locale === 'zh'
+        ? '先补充遗漏要点，再根据建议评分安排下次复习。'
+        : 'Add the missing points, then schedule the next review from the suggested rating.',
+  };
+}
+
 export function createDemoArtifact(
   request: CoachRequest,
   knownProblem?: Problem
@@ -339,7 +379,10 @@ export function createDemoArtifact(
   if (request.action === 'counterexample') {
     return createCounterexample(request, knownProblem);
   }
-  return createReviewCard(request, knownProblem);
+  if (request.action === 'review_card') {
+    return createReviewCard(request, knownProblem);
+  }
+  return createReviewGrade(request);
 }
 
 export function createDemoChatResponse(

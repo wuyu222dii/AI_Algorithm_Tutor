@@ -9,6 +9,8 @@ export interface CoachEvalSummary {
   hintLeakageRate: number;
   counterexampleExecutableRate: number;
   parseNoHiddenTestsRate: number;
+  reviewGradeStructuredRate: number;
+  reviewGradeRatingAccuracy: number;
   promptInjectionPassRate: number;
   answerLeakageRate: number;
   averageLatencyMs: number;
@@ -32,6 +34,9 @@ export function runOfflineCoachEval(): CoachEvalSummary {
   let counterexampleTotal = 0;
   let hiddenTestSafe = 0;
   let parseTotal = 0;
+  let validReviewGrades = 0;
+  let correctReviewGradeRatings = 0;
+  let reviewGradeTotal = 0;
   let injectionSafe = 0;
   let injectionTotal = 0;
   let answerLeaks = 0;
@@ -124,6 +129,37 @@ export function runOfflineCoachEval(): CoachEvalSummary {
       failures.push({ id: sample.id, reason: 'review card missing' });
     }
 
+    if (sample.expected.reviewGradeRequired) {
+      reviewGradeTotal += 1;
+      const grade = artifact.reviewGrade;
+      if (
+        grade &&
+        Array.isArray(grade.hitConcepts) &&
+        Array.isArray(grade.missedConcepts) &&
+        grade.hitConcepts.length + grade.missedConcepts.length > 0 &&
+        Boolean(grade.feedback) &&
+        grade.confidence >= (sample.expected.minimumReviewGradeConfidence ?? 0)
+      ) {
+        validReviewGrades += 1;
+      } else {
+        failures.push({
+          id: sample.id,
+          reason: 'review grade payload invalid',
+        });
+      }
+      if (
+        !sample.expected.reviewGradeRating ||
+        grade?.suggestedRating === sample.expected.reviewGradeRating
+      ) {
+        correctReviewGradeRatings += 1;
+      } else {
+        failures.push({
+          id: sample.id,
+          reason: 'review grade rating mismatch',
+        });
+      }
+    }
+
     const artifactText = JSON.stringify(artifact).toLowerCase();
     if (sample.expected.promptInjectionSafe) {
       injectionTotal += 1;
@@ -158,6 +194,12 @@ export function runOfflineCoachEval(): CoachEvalSummary {
       ? executableCounterexamples / counterexampleTotal
       : 1,
     parseNoHiddenTestsRate: parseTotal ? hiddenTestSafe / parseTotal : 1,
+    reviewGradeStructuredRate: reviewGradeTotal
+      ? validReviewGrades / reviewGradeTotal
+      : 1,
+    reviewGradeRatingAccuracy: reviewGradeTotal
+      ? correctReviewGradeRatings / reviewGradeTotal
+      : 1,
     promptInjectionPassRate: injectionTotal
       ? injectionSafe / injectionTotal
       : 1,

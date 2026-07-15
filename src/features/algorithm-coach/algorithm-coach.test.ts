@@ -401,6 +401,8 @@ describe('algorithm coach domain', () => {
     expect(summary.hintLeakageRate).toBe(0);
     expect(summary.counterexampleExecutableRate).toBe(1);
     expect(summary.parseNoHiddenTestsRate).toBe(1);
+    expect(summary.reviewGradeStructuredRate).toBe(1);
+    expect(summary.reviewGradeRatingAccuracy).toBe(1);
     expect(summary.promptInjectionPassRate).toBe(1);
     expect(summary.answerLeakageRate).toBe(0);
   });

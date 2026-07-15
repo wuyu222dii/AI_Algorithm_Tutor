@@ -18,14 +18,17 @@ import {
   CoachState,
   CoachSyncMutation,
   CodeRunResult,
+  CorrectionEpisode,
+  DailyLearningPlan,
   LearningArtifact,
   LearningProfile,
   PracticeSession,
   Problem,
   ProductEvent,
+  ReviewAttempt,
 } from './types';
 
-export const COACH_STORAGE_VERSION = 3;
+export const COACH_STORAGE_VERSION = 4;
 export const COACH_STORAGE_KEY = `algocoach:state:v${COACH_STORAGE_VERSION}`;
 export const COACH_ANALYTICS_KEY = 'algocoach:events:v1';
 export const COACH_SESSION_KEY = 'algocoach:session-id';
@@ -38,6 +41,7 @@ export const GUEST_COACH_STORAGE_SCOPE = 'guest';
 export type CoachStorageScope = 'guest' | `user:${string}`;
 
 const LEGACY_STORAGE_KEYS = [
+  'algocoach:state:v3',
   'algocoach:state:v2',
   'algocoach:state:v1',
   'algocoach:state',
@@ -66,6 +70,9 @@ export function createInitialCoachState(): CoachState {
     events: [],
     activeAssessment: null,
     assessments: [],
+    dailyPlans: {},
+    reviewAttempts: [],
+    correctionEpisodes: [],
     code: {},
     runs: [],
     completedProblemIds: [],
@@ -227,6 +234,35 @@ export function normalizeCoachState(value: unknown): CoachState {
           }))
           .slice(-20)
       : [],
+    dailyPlans: isRecord(value.dailyPlans)
+      ? (Object.fromEntries(
+          Object.entries(value.dailyPlans).filter(
+            ([, plan]) =>
+              isRecord(plan) &&
+              typeof plan.id === 'string' &&
+              typeof plan.localDate === 'string' &&
+              Array.isArray(plan.tasks)
+          )
+        ) as Record<string, DailyLearningPlan>)
+      : {},
+    reviewAttempts: Array.isArray(value.reviewAttempts)
+      ? (value.reviewAttempts as ReviewAttempt[])
+          .filter(
+            (attempt) =>
+              typeof attempt?.id === 'string' &&
+              typeof attempt?.problemSlug === 'string'
+          )
+          .slice(-200)
+      : [],
+    correctionEpisodes: Array.isArray(value.correctionEpisodes)
+      ? (value.correctionEpisodes as CorrectionEpisode[])
+          .filter(
+            (episode) =>
+              typeof episode?.id === 'string' &&
+              typeof episode?.problemSlug === 'string'
+          )
+          .slice(-100)
+      : [],
     code,
     runs: Array.isArray(value.runs)
       ? (value.runs as CoachState['runs'])
@@ -288,6 +324,24 @@ export function mergeCoachStates(
       [...normalizedInherited.assessments, ...normalizedCurrent.assessments],
       (assessment) => assessment.id
     ).slice(-20),
+    dailyPlans: {
+      ...normalizedInherited.dailyPlans,
+      ...normalizedCurrent.dailyPlans,
+    },
+    reviewAttempts: uniqueBy(
+      [
+        ...normalizedInherited.reviewAttempts,
+        ...normalizedCurrent.reviewAttempts,
+      ],
+      (attempt) => attempt.id
+    ).slice(-200),
+    correctionEpisodes: uniqueBy(
+      [
+        ...normalizedInherited.correctionEpisodes,
+        ...normalizedCurrent.correctionEpisodes,
+      ],
+      (episode) => episode.id
+    ).slice(-100),
     code,
     runs: uniqueBy(
       [...normalizedInherited.runs, ...normalizedCurrent.runs],
@@ -319,6 +373,9 @@ function hasMeaningfulCoachState(state: CoachState): boolean {
       state.events.length ||
       state.activeAssessment ||
       state.assessments.length ||
+      Object.keys(state.dailyPlans).length ||
+      state.reviewAttempts.length ||
+      state.correctionEpisodes.length ||
       Object.keys(state.code).length ||
       state.runs.length ||
       state.completedProblemIds.length
