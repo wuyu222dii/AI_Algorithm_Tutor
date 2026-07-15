@@ -3,6 +3,7 @@ import {
   executeCatalogRollback,
 } from '@/features/algorithm-coach/catalog/admin-actions.server';
 import { authorizeCatalogAdmin } from '@/features/algorithm-coach/catalog/admin-auth.server';
+import { recordCatalogAdminFailure } from '@/features/algorithm-coach/catalog/admin-observability.server';
 import {
   CoachHttpError,
   errorResponse,
@@ -66,7 +67,7 @@ export async function POST(request: Request) {
         traceId
       );
     }
-    console.error(`[catalog-admin:${traceId}] catalog rollback failed`, error);
+    await recordCatalogAdminFailure('rollback', traceId, error);
     return errorResponse(
       new CoachHttpError(
         503,

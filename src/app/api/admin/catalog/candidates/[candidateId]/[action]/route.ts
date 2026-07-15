@@ -3,6 +3,7 @@ import {
   executeCatalogCandidateAction,
 } from '@/features/algorithm-coach/catalog/admin-actions.server';
 import { authorizeCatalogAdmin } from '@/features/algorithm-coach/catalog/admin-auth.server';
+import { recordCatalogAdminFailure } from '@/features/algorithm-coach/catalog/admin-observability.server';
 import {
   CoachHttpError,
   errorResponse,
@@ -93,7 +94,7 @@ export async function POST(
         traceId
       );
     }
-    console.error(`[catalog-admin:${traceId}] catalog action failed`, error);
+    await recordCatalogAdminFailure('candidate_action', traceId, error);
     return errorResponse(
       new CoachHttpError(
         503,

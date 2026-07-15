@@ -1,5 +1,5 @@
 import { CoachHttpError } from '@/features/algorithm-coach/http';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GET } from './route';
 
@@ -35,6 +35,10 @@ describe('catalog candidate list API', () => {
       publish: false,
       rollback: false,
     });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('requires read permission and returns uncached candidate data', async () => {
@@ -78,6 +82,7 @@ describe('catalog candidate list API', () => {
   });
 
   it('preserves authorization errors and hides service failures', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
     mocks.authorize.mockRejectedValueOnce(
       new CoachHttpError(403, 'forbidden', 'Permission denied.')
     );
@@ -100,5 +105,9 @@ describe('catalog candidate list API', () => {
       error: { code: 'catalog_admin_unavailable' },
     });
     expect(JSON.stringify(payload)).not.toContain('database.internal');
+    expect(errorLog).toHaveBeenCalledOnce();
+    const serializedLog = String(errorLog.mock.calls[0]?.[0]);
+    expect(serializedLog).not.toContain('database.internal');
+    expect(serializedLog).not.toContain('connection string leaked');
   });
 });

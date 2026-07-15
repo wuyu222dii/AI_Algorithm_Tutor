@@ -3,6 +3,7 @@ import {
   catalogFunctionSignatureSchema,
   catalogReviewFunctionProtocolV2Schema,
 } from '@/features/algorithm-coach/catalog/admin-contracts';
+import { recordCatalogAdminFailure } from '@/features/algorithm-coach/catalog/admin-observability.server';
 import { listCatalogAdminCanonicalCases } from '@/features/algorithm-coach/catalog/admin-service.server';
 import {
   CoachHttpError,
@@ -68,7 +69,7 @@ export async function GET(
     return await responseFor(candidateId, parsed.data);
   } catch (error) {
     if (error instanceof CoachHttpError) return errorResponse(error, traceId);
-    console.error(`[catalog-admin:${traceId}] canonical cases failed`, error);
+    await recordCatalogAdminFailure('canonical_cases', traceId, error);
     return errorResponse(
       new CoachHttpError(
         503,
@@ -102,7 +103,7 @@ export async function POST(
     return await responseFor(candidateId, parsed.data);
   } catch (error) {
     if (error instanceof CoachHttpError) return errorResponse(error, traceId);
-    console.error(`[catalog-admin:${traceId}] canonical preview failed`, error);
+    await recordCatalogAdminFailure('canonical_preview', traceId, error);
     return errorResponse(
       new CoachHttpError(
         503,

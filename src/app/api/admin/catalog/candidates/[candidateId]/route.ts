@@ -4,6 +4,7 @@ import {
 } from '@/features/algorithm-coach/catalog/admin-actions.server';
 import { authorizeCatalogAdmin } from '@/features/algorithm-coach/catalog/admin-auth.server';
 import { catalogReviewDraftUpdateV2Schema } from '@/features/algorithm-coach/catalog/admin-contracts';
+import { recordCatalogAdminFailure } from '@/features/algorithm-coach/catalog/admin-observability.server';
 import { getCatalogAdminCandidate } from '@/features/algorithm-coach/catalog/admin-service.server';
 import {
   CoachHttpError,
@@ -66,7 +67,7 @@ export async function GET(
     );
   } catch (error) {
     if (error instanceof CoachHttpError) return errorResponse(error, traceId);
-    console.error(`[catalog-admin:${traceId}] candidate detail failed`, error);
+    await recordCatalogAdminFailure('candidate_detail', traceId, error);
     return errorResponse(
       new CoachHttpError(
         503,
@@ -135,7 +136,7 @@ export async function PATCH(
         traceId
       );
     }
-    console.error(`[catalog-admin:${traceId}] candidate update failed`, error);
+    await recordCatalogAdminFailure('candidate_update', traceId, error);
     return errorResponse(
       new CoachHttpError(
         503,

@@ -19,6 +19,7 @@ describe('window rate limiting', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     delete process.env.REDIS_URL;
     delete process.env.REDIS_TOKEN;
     delete process.env.TRUSTED_PROXY_HEADERS;
@@ -139,6 +140,7 @@ describe('window rate limiting', () => {
   });
 
   it('fails closed when the configured Redis backend is unavailable', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
     process.env.REDIS_URL = 'https://redis.example.test';
     process.env.REDIS_TOKEN = 'test-token';
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
@@ -152,5 +154,11 @@ describe('window rate limiting', () => {
     });
 
     expect(response?.status).toBe(503);
+    expect(errorLog).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(errorLog.mock.calls[0]?.[0]))).toMatchObject({
+      event: 'rate_limit_backend_failed',
+      level: 'error',
+      error: { name: 'Error', message: 'offline' },
+    });
   });
 });

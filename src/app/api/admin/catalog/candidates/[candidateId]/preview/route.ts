@@ -1,4 +1,5 @@
 import { authorizeCatalogAdmin } from '@/features/algorithm-coach/catalog/admin-auth.server';
+import { recordCatalogAdminFailure } from '@/features/algorithm-coach/catalog/admin-observability.server';
 import { getCatalogAdminCandidatePreview } from '@/features/algorithm-coach/catalog/admin-service.server';
 import { CoachHttpError, errorResponse } from '@/features/algorithm-coach/http';
 import { z } from 'zod';
@@ -48,7 +49,7 @@ export async function GET(
     );
   } catch (error) {
     if (error instanceof CoachHttpError) return errorResponse(error, traceId);
-    console.error(`[catalog-admin:${traceId}] candidate preview failed`, error);
+    await recordCatalogAdminFailure('candidate_preview', traceId, error);
     return errorResponse(
       new CoachHttpError(
         503,

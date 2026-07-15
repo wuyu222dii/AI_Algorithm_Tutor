@@ -25,12 +25,14 @@ describe('observability redaction', () => {
 
   it('redacts credentials and personal data embedded in error text', () => {
     const safe = sanitizeTelemetryText(
-      'user learner@example.test failed with Bearer abc123 and code=oauth-code eyJ1234567890.abcdefghijk.zzzzzzzzzz'
+      'user learner@example.test failed with Bearer abc123 and code=oauth-code eyJ1234567890.abcdefghijk.zzzzzzzzzz postgresql://admin:db-password@database.internal/algocoach sk-1234567890abcdefghijklmnop'
     );
 
     expect(safe).not.toContain('learner@example.test');
     expect(safe).not.toContain('abc123');
     expect(safe).not.toContain('oauth-code');
     expect(safe).not.toContain('eyJ1234567890');
+    expect(safe).not.toContain('db-password');
+    expect(safe).not.toContain('sk-1234567890abcdefghijklmnop');
   });
 });

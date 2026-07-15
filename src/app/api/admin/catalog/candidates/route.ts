@@ -1,4 +1,5 @@
 import { authorizeCatalogAdmin } from '@/features/algorithm-coach/catalog/admin-auth.server';
+import { recordCatalogAdminFailure } from '@/features/algorithm-coach/catalog/admin-observability.server';
 import {
   catalogAdminCapabilities,
   CatalogAdminQueryError,
@@ -76,7 +77,7 @@ export async function GET(request: Request) {
         traceId
       );
     }
-    console.error(`[catalog-admin:${traceId}] candidate list failed`, error);
+    await recordCatalogAdminFailure('candidate_list', traceId, error);
     return errorResponse(
       new CoachHttpError(
         503,
