@@ -60,6 +60,12 @@ export const PERMISSIONS = {
   AITASKS_READ: 'admin.ai-tasks.read',
   AITASKS_WRITE: 'admin.ai-tasks.write',
   AITASKS_DELETE: 'admin.ai-tasks.delete',
+
+  // AlgoCoach catalog
+  CATALOG_READ: 'admin.catalog.read',
+  CATALOG_REVIEW: 'admin.catalog.review',
+  CATALOG_PUBLISH: 'admin.catalog.publish',
+  CATALOG_ROLLBACK: 'admin.catalog.rollback',
 } as const;
 
 /**

@@ -4,6 +4,7 @@ export type CatalogDifficulty = 'easy' | 'medium' | 'hard';
 
 export type CatalogCandidateState =
   | 'discovered'
+  | 'drafting'
   | 'quarantined'
   | 'validated'
   | 'approved'
@@ -29,6 +30,9 @@ export interface CatalogTestCase {
   args: CatalogJsonValue[];
   expected: CatalogJsonValue;
   isSample: boolean;
+  sourceKind?: 'canonical' | 'manual' | 'legacy';
+  sourceTestUuid?: string;
+  reviewNote?: string;
 }
 
 export type CatalogTypeSpec =
@@ -82,6 +86,9 @@ export interface RawCatalogProblem {
     en: [string, string, string];
   };
   reviewPoints: CatalogLocalizedText[];
+  learningObjectives?: CatalogLocalizedText[];
+  prerequisiteTopics?: string[];
+  solutionPatterns?: string[];
   estimatedMinutes: number;
   origin: CatalogProblemOrigin;
 }
@@ -96,6 +103,9 @@ export interface ExercismUpstreamProblem {
   statementPath: string;
   statementMarkdown: string;
   statementHash: string;
+  statementBlobSha: string;
+  canonicalPath: string;
+  canonicalBlobSha?: string;
   canonicalData: CatalogJsonValue;
   canonicalDataHash: string;
   canonicalDataStatus: 'available' | 'missing' | 'parse_error';
@@ -107,9 +117,157 @@ export interface ExercismSnapshot {
   revision: string;
   etag: string;
   licenseSpdx: 'MIT';
+  license: ExercismLicenseEvidence;
   localContentFingerprint: string;
   fetchedAt: string;
   problems: ExercismUpstreamProblem[];
+}
+
+export interface ExercismGitTreeEntry {
+  path: string;
+  mode: string;
+  type: 'blob' | 'tree';
+  sha: string;
+  size?: number;
+}
+
+export interface ExercismLicenseEvidence {
+  path: 'LICENSE';
+  spdx: 'MIT';
+  text: string;
+  gitBlobSha: string;
+  contentHash: string;
+}
+
+export type ExercismDiscoveredExercise = ExercismUpstreamProblem;
+
+export interface ExercismDiscoveryAiMetadata {
+  provider: 'openrouter';
+  model: string;
+  promptVersion: string;
+  finishReason:
+    | 'stop'
+    | 'length'
+    | 'content-filter'
+    | 'tool-calls'
+    | 'error'
+    | 'other'
+    | 'unknown';
+  inputTokens?: number;
+  outputTokens?: number;
+  estimatedCostUsd?: number;
+  latencyMs: number;
+  inputHash: string;
+  outputHash: string;
+}
+
+export interface ExercismDiscoveryFunctionSignature
+  extends CatalogFunctionSignature {
+  entryPoint: string;
+}
+
+export interface ExercismDiscoverySnapshot {
+  schemaVersion: 1;
+  provider: 'exercism';
+  repository: 'exercism/problem-specifications';
+  revision: string;
+  etag: string;
+  fetchedAt: string;
+  license: ExercismLicenseEvidence;
+  treeExerciseCount: number;
+  knownExerciseCount: number;
+  newExerciseCount: number;
+  changedExerciseCount: number;
+  unchangedExerciseCount: number;
+  undiscoveredExerciseCount: number;
+  selectedExerciseCount: number;
+  selectionTruncated: boolean;
+  exercises: ExercismDiscoveredExercise[];
+}
+
+export interface ExercismDiscoveryDraft {
+  schemaVersion: 1;
+  externalId: string;
+  discoveryContentHash: string;
+  status: 'needs_human_review' | 'rejected';
+  publishable: false;
+  /** Immutable upstream material retained for human review and normalization. */
+  upstream: ExercismDiscoveredExercise;
+  /** Present only when a live provider successfully produced the proposal. */
+  aiMetadata?: ExercismDiscoveryAiMetadata;
+  source: {
+    provider: 'exercism';
+    repository: 'exercism/problem-specifications';
+    revision: string;
+    upstreamUrl: string;
+    statementPath: string;
+    statementHash: string;
+    statementBlobSha: string;
+    canonicalPath: string;
+    canonicalDataHash: string;
+    canonicalBlobSha?: string;
+    licenseSpdx: 'MIT';
+    licenseText: string;
+    licenseGitBlobSha: string;
+    licenseContentHash: string;
+    attribution: string;
+  };
+  proposed: {
+    title: CatalogLocalizedText;
+    description: CatalogLocalizedText;
+    difficulty: CatalogDifficulty | null;
+    topics: string[];
+    learningObjectives: CatalogLocalizedText[];
+    functionSignature: ExercismDiscoveryFunctionSignature | null;
+    starterTemplates: Partial<Record<CatalogLanguage, string>>;
+    tests: [];
+  };
+  warnings: string[];
+}
+
+export interface ExercismDiscoveryReport {
+  schemaVersion: 1;
+  notModified: false;
+  generatedAt: string;
+  revision: string;
+  etag: string;
+  repository: 'exercism/problem-specifications';
+  generatorId: string;
+  license: ExercismLicenseEvidence;
+  counts: {
+    treeExercises: number;
+    knownExercises: number;
+    newExercises: number;
+    changedExercises: number;
+    unchangedExercises: number;
+    undiscoveredExercises: number;
+    selectedExercises: number;
+    selectionTruncated: boolean;
+  };
+  drafts: ExercismDiscoveryDraft[];
+}
+
+export interface ExercismDiscoveryNotModifiedReport {
+  schemaVersion: 1;
+  notModified: true;
+  generatedAt: string;
+  revision: string;
+  etag: string;
+  repository: 'exercism/problem-specifications';
+  drafts: [];
+}
+
+export type ExercismDiscoveryArtifact =
+  | ExercismDiscoveryReport
+  | ExercismDiscoveryNotModifiedReport;
+
+export interface CatalogBootstrapSummary {
+  runId: string;
+  revision: string;
+  etag?: string;
+  localContentFingerprint: string;
+  baselined: number;
+  alreadyBaselined: number;
 }
 
 export interface CatalogValidationIssue {
@@ -131,9 +289,39 @@ export interface CatalogValidationIssue {
   path?: string;
 }
 
+export interface CatalogRunnerCompatibilityEvidence {
+  valid: boolean;
+  testCount: number;
+  checks: Array<{
+    language: CatalogLanguage;
+    runner: string;
+    runtimeVersion: string;
+    starter: {
+      loaded: boolean;
+      entryPointFound: boolean;
+      compatible: boolean;
+      durationMs: number;
+    };
+    oracle: {
+      executedTests: number;
+      passedTests: number;
+      durationMs: number;
+    };
+  }>;
+  issues: Array<{
+    code: string;
+    stage: string;
+    message: string;
+    language?: CatalogLanguage;
+    path?: string;
+    testId?: string;
+  }>;
+}
+
 export interface CatalogValidationResult {
   valid: boolean;
   issues: CatalogValidationIssue[];
+  runnerCompatibility?: CatalogRunnerCompatibilityEvidence;
 }
 
 export interface CatalogCandidate {

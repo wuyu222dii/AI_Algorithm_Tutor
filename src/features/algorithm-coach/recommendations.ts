@@ -1,12 +1,20 @@
+import { problemSupportsLanguage } from './languages';
 import {
   calculateTopicMasterySnapshots,
   createInitialReviewProgress,
   getProblemPracticeSession,
+  getReviewItemForProblem,
   isPracticeSessionCompleted,
   reconcileReviewProgress,
   ReviewItem,
 } from './learning-progress';
-import type { CoachState, LearningGoal, Problem, ProblemTopic } from './types';
+import type {
+  CoachState,
+  Language,
+  LearningGoal,
+  Problem,
+  ProblemTopic,
+} from './types';
 
 export type RecommendationReason =
   | 'retry'
@@ -55,9 +63,7 @@ function isReviewDue(
   problem: Problem,
   reviewItems: Record<string, ReviewItem>
 ): boolean {
-  return (
-    (reviewItems[problem.slug] ?? reviewItems[problem.id])?.status === 'due'
-  );
+  return getReviewItemForProblem(reviewItems, problem)?.status === 'due';
 }
 
 export function getProblemRecommendations(
@@ -68,22 +74,45 @@ export function getProblemRecommendations(
     reviewItems?: Record<string, ReviewItem>;
     maxMinutes?: number;
     catalog?: readonly Problem[];
+    language?: Language;
+    enabledLanguages?: readonly Language[];
   } = {}
 ): ProblemRecommendation[] {
   const limit = Math.max(1, options.limit ?? 3);
   const now = options.now ?? new Date();
+  const requestedLanguage =
+    options.language ?? state.profile?.preferredLanguage;
+  const language = options.enabledLanguages
+    ? requestedLanguage &&
+      options.enabledLanguages.includes(requestedLanguage) &&
+      (options.catalog ?? []).some((problem) =>
+        problemSupportsLanguage(problem, requestedLanguage)
+      )
+      ? requestedLanguage
+      : options.enabledLanguages.find((candidate) =>
+          (options.catalog ?? []).some((problem) =>
+            problemSupportsLanguage(problem, candidate)
+          )
+        )
+    : requestedLanguage;
+  const catalog =
+    options.enabledLanguages && !language
+      ? []
+      : (options.catalog ?? []).filter(
+          (problem) => !language || problemSupportsLanguage(problem, language)
+        );
   const reviewProgress = reconcileReviewProgress(
     state,
     {
       ...createInitialReviewProgress(),
       items: options.reviewItems ?? {},
     },
-    { now, catalog: options.catalog }
+    { now, catalog }
   );
   const masterySnapshots = calculateTopicMasterySnapshots(
     state,
     reviewProgress.items,
-    options.catalog
+    catalog
   );
   const mastery = Object.fromEntries(
     Object.entries(masterySnapshots).map(([topic, snapshot]) => [
@@ -96,7 +125,7 @@ export function getProblemRecommendations(
     state.assessments.at(-1)?.weakTopics ?? []
   );
 
-  const ranked = (options.catalog ?? []).map((problem, catalogIndex) => {
+  const ranked = catalog.map((problem, catalogIndex) => {
     const session = getProblemPracticeSession(state, problem);
     const lastRun = lastRunFor(state, problem);
     const completed = isPracticeSessionCompleted(session);

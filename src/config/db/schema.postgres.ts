@@ -665,12 +665,42 @@ export const coachProblemCandidate = table(
     contentHash: text('content_hash').notNull(),
     licenseSpdx: text('license_spdx').notNull(),
     attribution: text('attribution').notNull(),
+    rawPayload: jsonb('raw_payload')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    rawContentHash: text('raw_content_hash').notNull().default(''),
+    draft: jsonb('draft')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    draftHash: text('draft_hash').notNull().default(''),
+    draftRevision: integer('draft_revision').notNull().default(1),
+    policyVersion: text('policy_version')
+      .notNull()
+      .default('catalog-policy-v1'),
+    changeKind: text('change_kind').notNull().default('new'),
+    targetProblemId: text('target_problem_id').references(
+      (): AnyPgColumn => coachProblem.id,
+      { onDelete: 'restrict' }
+    ),
     normalizedProblem: jsonb('normalized_problem').notNull(),
     validation: jsonb('validation')
       .notNull()
       .default(sql`'{}'::jsonb`),
     status: text('status').notNull().default('quarantined'),
     rejectionReason: text('rejection_reason'),
+    approvedByUserId: text('approved_by_user_id').references(() => user.id, {
+      onDelete: 'restrict',
+    }),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    approvedContentHash: text('approved_content_hash'),
+    approvedSourceRevision: text('approved_source_revision'),
+    approvedDraftHash: text('approved_draft_hash'),
+    approvedDraftRevision: integer('approved_draft_revision'),
+    approvedPolicyVersion: text('approved_policy_version'),
+    publishedByUserId: text('published_by_user_id').references(() => user.id, {
+      onDelete: 'restrict',
+    }),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -690,9 +720,62 @@ export const coachProblemCandidate = table(
       table.updatedAt.asc()
     ),
     index('idx_coach_problem_candidate_sync').on(table.syncRunId),
+    index('idx_coach_problem_candidate_target').on(table.targetProblemId),
     check(
       'chk_coach_problem_candidate_status',
-      sql`${table.status} in ('discovered', 'quarantined', 'validated', 'approved', 'rejected', 'published', 'archived')`
+      sql`${table.status} in ('discovered', 'drafting', 'quarantined', 'validated', 'approved', 'rejected', 'published', 'archived')`
+    ),
+    check(
+      'chk_coach_problem_candidate_draft_revision',
+      sql`${table.draftRevision} > 0`
+    ),
+    check(
+      'chk_coach_problem_candidate_change_kind',
+      sql`${table.changeKind} in ('new', 'content_update', 'translation_update', 'metadata_update')`
+    ),
+    check(
+      'chk_coach_problem_candidate_distinct_actors',
+      sql`${table.publishedByUserId} is null or ${table.approvedByUserId} is null or ${table.publishedByUserId} <> ${table.approvedByUserId}`
+    ),
+  ]
+);
+
+export const coachCatalogAiGeneration = table(
+  'coach_catalog_ai_generation',
+  {
+    id: text('id').primaryKey(),
+    candidateId: text('candidate_id')
+      .notNull()
+      .references(() => coachProblemCandidate.id, { onDelete: 'restrict' }),
+    actorUserId: text('actor_user_id').references(() => user.id, {
+      onDelete: 'restrict',
+    }),
+    kind: text('kind').notNull(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    promptVersion: text('prompt_version').notNull(),
+    inputHash: text('input_hash').notNull(),
+    outputHash: text('output_hash').notNull(),
+    status: text('status').notNull(),
+    metadata: jsonb('metadata')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index('idx_coach_catalog_ai_candidate_created').on(
+      table.candidateId,
+      table.createdAt.desc()
+    ),
+    check(
+      'chk_coach_catalog_ai_kind',
+      sql`${table.kind} in ('translation', 'topic_mapping', 'difficulty', 'review_summary')`
+    ),
+    check(
+      'chk_coach_catalog_ai_status',
+      sql`${table.status} in ('generated', 'accepted', 'rejected')`
     ),
   ]
 );
@@ -741,6 +824,28 @@ export const coachProblemRevision = table(
     sourceStatement: text('source_statement'),
     sourceUrl: text('source_url'),
     sourceRevision: text('source_revision'),
+    candidateId: text('candidate_id').references(
+      () => coachProblemCandidate.id,
+      { onDelete: 'restrict' }
+    ),
+    catalogSourceId: text('catalog_source_id').references(
+      () => coachCatalogSource.id,
+      { onDelete: 'restrict' }
+    ),
+    sourceExternalId: text('source_external_id'),
+    sourceStatementPath: text('source_statement_path'),
+    sourceLicenseSpdx: text('source_license_spdx'),
+    sourceLicenseHash: text('source_license_hash'),
+    sourceAttribution: text('source_attribution'),
+    sourceFetchedAt: timestamp('source_fetched_at', { withTimezone: true }),
+    policyVersion: text('policy_version')
+      .notNull()
+      .default('catalog-policy-legacy'),
+    draftRevision: integer('draft_revision').notNull().default(1),
+    draftHash: text('draft_hash').notNull().default(''),
+    provenance: jsonb('provenance')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     catalogVersion: text('catalog_version'),
     contentHash: text('content_hash').notNull(),
     status: text('status').notNull().default('draft'),
@@ -767,7 +872,12 @@ export const coachProblemRevision = table(
       table.status,
       table.version.desc()
     ),
+    index('idx_coach_problem_revision_candidate').on(table.candidateId),
     check('chk_coach_problem_revision_version', sql`${table.version} > 0`),
+    check(
+      'chk_coach_problem_revision_draft_revision',
+      sql`${table.draftRevision} > 0`
+    ),
     check(
       'chk_coach_problem_revision_difficulty',
       sql`${table.difficulty} in ('easy', 'medium', 'hard')`
@@ -920,19 +1030,24 @@ export const coachCatalogReviewAudit = table(
     id: text('id').primaryKey(),
     candidateId: text('candidate_id').references(
       () => coachProblemCandidate.id,
-      { onDelete: 'set null' }
+      { onDelete: 'restrict' }
     ),
     problemId: text('problem_id').references(() => coachProblem.id, {
-      onDelete: 'set null',
+      onDelete: 'restrict',
     }),
     revisionId: text('revision_id').references(() => coachProblemRevision.id, {
-      onDelete: 'set null',
+      onDelete: 'restrict',
     }),
     reviewerUserId: text('reviewer_user_id').references(() => user.id, {
-      onDelete: 'set null',
+      onDelete: 'restrict',
     }),
     action: text('action').notNull(),
     notes: text('notes'),
+    contentHash: text('content_hash'),
+    sourceRevision: text('source_revision'),
+    draftHash: text('draft_hash'),
+    draftRevision: integer('draft_revision'),
+    policyVersion: text('policy_version'),
     metadata: jsonb('metadata')
       .notNull()
       .default(sql`'{}'::jsonb`),
@@ -951,11 +1066,72 @@ export const coachCatalogReviewAudit = table(
     ),
     check(
       'chk_coach_catalog_review_action',
-      sql`${table.action} in ('submitted', 'approved', 'rejected', 'published', 'archived', 'rolled_back')`
+      sql`${table.action} in ('submitted', 'draft_updated', 'approved', 'rejected', 'published', 'archived', 'rolled_back')`
     ),
     check(
       'chk_coach_catalog_review_subject',
       sql`${table.candidateId} is not null or ${table.problemId} is not null or ${table.revisionId} is not null`
+    ),
+  ]
+);
+
+export const coachCatalogAdminMutation = table(
+  'coach_catalog_admin_mutation',
+  {
+    id: text('id').primaryKey(),
+    actorUserId: text('actor_user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'restrict' }),
+    idempotencyKey: text('idempotency_key').notNull(),
+    action: text('action').notNull(),
+    targetType: text('target_type').notNull(),
+    targetId: text('target_id').notNull(),
+    requestHash: text('request_hash').notNull(),
+    status: text('status').notNull().default('claimed'),
+    result: jsonb('result')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    errorCode: text('error_code'),
+    claimedAt: timestamp('claimed_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true })
+      .notNull()
+      .default(sql`now() + interval '5 minutes'`),
+    attemptCount: integer('attempt_count').notNull().default(1),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_coach_catalog_admin_mutation_actor_key').on(
+      table.actorUserId,
+      table.idempotencyKey
+    ),
+    index('idx_coach_catalog_admin_mutation_status').on(
+      table.status,
+      table.leaseExpiresAt.asc()
+    ),
+    check(
+      'chk_coach_catalog_admin_mutation_action',
+      sql`${table.action} in ('update_draft', 'validate', 'approve', 'reject', 'publish', 'rollback', 'bootstrap')`
+    ),
+    check(
+      'chk_coach_catalog_admin_mutation_target',
+      sql`${table.targetType} in ('candidate', 'problem', 'revision', 'catalog')`
+    ),
+    check(
+      'chk_coach_catalog_admin_mutation_status',
+      sql`${table.status} in ('claimed', 'completed', 'failed')`
+    ),
+    check(
+      'chk_coach_catalog_admin_mutation_attempt_count',
+      sql`${table.attemptCount} between 1 and 1000`
     ),
   ]
 );
@@ -974,6 +1150,9 @@ export const coachTestCase = table(
     isSample: boolean('is_sample').notNull().default(false),
     label: jsonb('label'),
     timeoutMs: integer('timeout_ms').notNull().default(3000),
+    sourceKind: text('source_kind').notNull().default('legacy'),
+    sourceTestUuid: text('source_test_uuid'),
+    reviewNote: text('review_note'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -1004,6 +1183,14 @@ export const coachTestCase = table(
     check(
       'chk_coach_test_case_timeout',
       sql`${table.timeoutMs} between 100 and 10000`
+    ),
+    check(
+      'chk_coach_test_case_source_kind',
+      sql`${table.sourceKind} in ('canonical', 'manual', 'legacy')`
+    ),
+    check(
+      'chk_coach_test_case_source_evidence',
+      sql`(${table.sourceKind} = 'canonical' and ${table.sourceTestUuid} is not null) or (${table.sourceKind} = 'manual' and nullif(btrim(${table.reviewNote}), '') is not null) or ${table.sourceKind} = 'legacy'`
     ),
   ]
 );
@@ -1148,6 +1335,9 @@ export const coachReviewItem = table(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
     problemSlug: text('problem_slug').notNull(),
+    problemContentVersion: integer('problem_content_version')
+      .notNull()
+      .default(1),
     status: text('status').notNull(),
     source: text('source').notNull(),
     dueAt: timestamp('due_at', { withTimezone: true }).notNull(),
@@ -1165,13 +1355,18 @@ export const coachReviewItem = table(
   (table) => [
     uniqueIndex('uq_coach_review_item_user_problem').on(
       table.userId,
-      table.problemSlug
+      table.problemSlug,
+      table.problemContentVersion
     ),
     index('idx_coach_review_item_user_due').on(table.userId, table.dueAt.asc()),
     index('idx_coach_review_item_user_status').on(
       table.userId,
       table.status,
       table.updatedAt.desc()
+    ),
+    check(
+      'chk_coach_review_item_version',
+      sql`${table.problemContentVersion} > 0`
     ),
     check(
       'chk_coach_review_item_status',

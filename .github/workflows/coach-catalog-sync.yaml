@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '17 15 * * *'
   workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: Establish the one-time published catalog baseline
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: coach-exercism-catalog-sync
@@ -16,6 +22,7 @@ jobs:
   sync-database-candidates:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: catalog-sync-production
     env:
       NODE_VERSION: '22.13.0'
       PNPM_VERSION: '11.7.0'
@@ -37,11 +44,93 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Require the restricted catalog writer URL
         run: test -n "$DATABASE_URL"
+      - name: Establish the one-time published baseline
+        if: github.event_name == 'workflow_dispatch' && inputs.bootstrap == true
+        env:
+          CATALOG_BOOTSTRAP_ENABLED: 'true'
+        run: pnpm catalog:bootstrap -- --reviewer "github:${GITHUB_ACTOR}"
       - name: Fetch candidates into PostgreSQL quarantine
+        if: github.event_name == 'schedule' || inputs.bootstrap != true
         run: pnpm catalog:sync -- --trigger scheduled
       - name: Apply deterministic catalog quality gates
+        if: github.event_name == 'schedule' || inputs.bootstrap != true
         run: pnpm catalog:validate
       # Publishing remains an explicit, reviewer-authenticated manual command.
+
+  discover-review-drafts:
+    needs: sync-database-candidates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: catalog-sync-production
+    env:
+      NODE_VERSION: '22.13.0'
+      PNPM_VERSION: '11.7.0'
+      DATABASE_PROVIDER: postgresql
+      DATABASE_URL: ${{ secrets.CATALOG_DATABASE_URL }}
+      DB_SCHEMA: algocoach
+      DB_SINGLETON_ENABLED: 'true'
+      CATALOG_SYNC_ENABLED: 'true'
+      CATALOG_DISCOVERY_ENABLED: 'true'
+      CATALOG_DISCOVERY_INGEST_ENABLED: 'true'
+      CATALOG_DISCOVERY_MAX_EXERCISES: '10'
+      CATALOG_AI_DRAFT_ENABLED: ${{ vars.CATALOG_AI_DRAFT_ENABLED || 'false' }}
+      CATALOG_AI_MODEL: ${{ vars.CATALOG_AI_MODEL || 'google/gemini-2.5-flash' }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      EXERCISM_GITHUB_TOKEN: ${{ github.token }}
+      DISCOVERY_REPORT: .catalog/exercism-discovery.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Require the restricted catalog writer URL
+        run: test -n "$DATABASE_URL"
+      - name: Discover unreviewed exercises at a fixed commit
+        run: pnpm catalog:discover -- --output "$DISCOVERY_REPORT" --ingest --reviewer "github:${GITHUB_ACTOR}"
+      - name: Validate ingested discovery drafts
+        run: pnpm catalog:validate
+      - name: Upload non-publishable review drafts
+        uses: actions/upload-artifact@v4
+        with:
+          name: exercism-discovery-review-${{ github.run_id }}
+          path: ${{ env.DISCOVERY_REPORT }}
+          if-no-files-found: error
+          retention-days: 30
+
+  catalog-anomaly-monitor:
+    needs: [sync-database-candidates, discover-review-drafts]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: catalog-sync-production
+    env:
+      NODE_VERSION: '22.13.0'
+      PNPM_VERSION: '11.7.0'
+      DATABASE_PROVIDER: postgresql
+      DATABASE_URL: ${{ secrets.CATALOG_DATABASE_URL }}
+      DB_SCHEMA: algocoach
+      DB_SINGLETON_ENABLED: 'true'
+      CATALOG_SYNC_ENABLED: 'true'
+      CATALOG_ANOMALY_DELTA_THRESHOLD: ${{ vars.CATALOG_ANOMALY_DELTA_THRESHOLD || '25' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Require the restricted catalog URL
+        run: test -n "$DATABASE_URL"
+      - name: Monitor catalog sync anomalies
+        run: pnpm catalog:monitor
 
   deterministic-fixture-artifact:
     runs-on: ubuntu-latest

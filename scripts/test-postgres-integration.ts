@@ -7,9 +7,29 @@ import postgres from 'postgres';
 import migrationJournal from '../src/config/db/migrations/meta/_journal.json';
 import { readyHealthStatus } from '../src/core/db/readiness';
 import { CatalogDatabaseStore } from '../src/features/algorithm-coach/catalog/catalog-store.server';
+import {
+  calculateCandidateContentHash,
+  calculateCanonicalDataHash,
+  sha256,
+  stableStringify,
+  withContentHash,
+} from '../src/features/algorithm-coach/catalog/content-hash';
 import { curatedExercismProblems } from '../src/features/algorithm-coach/catalog/curated-exercism-problems';
-import type { ExercismCatalogAdapter } from '../src/features/algorithm-coach/catalog/exercism-adapter';
+import {
+  calculateDiscoveryContentHash,
+  OpenRouterDiscoveryDraftGenerator,
+} from '../src/features/algorithm-coach/catalog/discovery-enrichment';
+import {
+  calculateGitBlobSha,
+  type ExercismCatalogAdapter,
+} from '../src/features/algorithm-coach/catalog/exercism-adapter';
 import { exercismSnapshotFixture } from '../src/features/algorithm-coach/catalog/fixtures/exercism-snapshot.fixture';
+import type {
+  CatalogJsonValue,
+  ExercismDiscoveryDraft,
+  ExercismDiscoveryReport,
+  RawCatalogProblem,
+} from '../src/features/algorithm-coach/catalog/raw-types';
 import { migrateDatabase } from './migrate-database';
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -18,6 +38,8 @@ const READ_ONLY_CATALOG_TABLES = [
   'coach_catalog_source',
   'coach_catalog_sync_run',
   'coach_problem_candidate',
+  'coach_catalog_ai_generation',
+  'coach_catalog_admin_mutation',
   'coach_problem_revision',
   'coach_problem_origin',
   'coach_catalog_review_audit',
@@ -373,12 +395,379 @@ async function verifyApplicationCatalogPermissions(
   }
 }
 
+async function verifyCatalogCapabilityRoles(
+  admin: postgres.Sql,
+  applicationSchema: string,
+  applicationRole: string
+) {
+  const roleNames = [
+    'algocoach_application',
+    'algocoach_catalog_sync',
+    'algocoach_catalog_reviewer',
+    'algocoach_catalog_publisher',
+  ];
+  const roles = await admin<
+    {
+      rolname: string;
+      rolcanlogin: boolean;
+      rolsuper: boolean;
+      rolcreatedb: boolean;
+      rolcreaterole: boolean;
+      rolinherit: boolean;
+      password_is_null: boolean;
+    }[]
+  >`
+    SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+      rolinherit, rolpassword IS NULL AS password_is_null
+    FROM pg_authid WHERE rolname = ANY(${roleNames}) ORDER BY rolname
+  `;
+  if (
+    roles.length !== roleNames.length ||
+    roles.some(
+      (role) =>
+        role.rolcanlogin ||
+        role.rolsuper ||
+        role.rolcreatedb ||
+        role.rolcreaterole ||
+        role.rolinherit ||
+        !role.password_is_null
+    )
+  ) {
+    throw new Error(
+      `Catalog capability roles are unsafe: ${JSON.stringify(roles)}`
+    );
+  }
+  const [membership] = await admin<{ member: boolean }[]>`
+    SELECT pg_has_role(${applicationRole}, 'algocoach_application', 'member') AS member
+  `;
+  if (!membership?.member) {
+    throw new Error('Application role is missing the catalog guard capability');
+  }
+  const [privileges] = await admin<
+    {
+      application_dml: boolean;
+      sync_candidate_write: boolean;
+      sync_problem_write: boolean;
+      reviewer_candidate_update: boolean;
+      reviewer_problem_write: boolean;
+      publisher_problem_write: boolean;
+      publisher_test_insert: boolean;
+      publisher_test_update: boolean;
+    }[]
+  >`
+    SELECT
+      has_table_privilege('algocoach_application', ${`${applicationSchema}.coach_problem_candidate`}, 'INSERT,UPDATE,DELETE') AS application_dml,
+      has_table_privilege('algocoach_catalog_sync', ${`${applicationSchema}.coach_problem_candidate`}, 'INSERT,UPDATE') AS sync_candidate_write,
+      has_table_privilege('algocoach_catalog_sync', ${`${applicationSchema}.coach_problem`}, 'INSERT,UPDATE,DELETE') AS sync_problem_write,
+      has_table_privilege('algocoach_catalog_reviewer', ${`${applicationSchema}.coach_problem_candidate`}, 'UPDATE') AS reviewer_candidate_update,
+      has_table_privilege('algocoach_catalog_reviewer', ${`${applicationSchema}.coach_problem`}, 'INSERT,UPDATE,DELETE') AS reviewer_problem_write,
+      has_table_privilege('algocoach_catalog_publisher', ${`${applicationSchema}.coach_problem`}, 'INSERT,UPDATE') AS publisher_problem_write,
+      has_table_privilege('algocoach_catalog_publisher', ${`${applicationSchema}.coach_test_case`}, 'INSERT') AS publisher_test_insert,
+      has_table_privilege('algocoach_catalog_publisher', ${`${applicationSchema}.coach_test_case`}, 'UPDATE') AS publisher_test_update
+  `;
+  if (
+    !privileges ||
+    privileges.application_dml ||
+    !privileges.sync_candidate_write ||
+    privileges.sync_problem_write ||
+    !privileges.reviewer_candidate_update ||
+    privileges.reviewer_problem_write ||
+    !privileges.publisher_problem_write ||
+    !privileges.publisher_test_insert ||
+    privileges.publisher_test_update
+  ) {
+    throw new Error(
+      `Catalog capability privileges are invalid: ${JSON.stringify(privileges)}`
+    );
+  }
+}
+
+async function expectCatalogDatabaseRejection(
+  admin: postgres.Sql,
+  operation: (tx: postgres.TransactionSql) => Promise<unknown>,
+  label: string
+) {
+  let rejected = false;
+  try {
+    await admin.begin(operation);
+  } catch {
+    rejected = true;
+  }
+  if (!rejected) throw new Error(`${label} bypassed catalog governance`);
+}
+
+async function verifyDiscoveryIngestion(
+  store: CatalogDatabaseStore,
+  admin: postgres.Sql,
+  applicationSchema: string
+): Promise<{
+  candidateId: string;
+  draft: ExercismDiscoveryDraft;
+  aiCandidateId: string;
+  aiDraft: ExercismDiscoveryDraft;
+  gateCandidateId: string;
+  gateDraft: ExercismDiscoveryDraft;
+}> {
+  const licenseText = [
+    'MIT License',
+    '',
+    'Copyright (c) Exercism contributors',
+    '',
+    'Permission is hereby granted, free of charge, to any person obtaining a copy',
+    'of this software and associated documentation files (the "Software"), to deal',
+    'in the Software without restriction, including without limitation the rights',
+    'to use, copy, modify, merge, publish, distribute, sublicense, and/or sell',
+    'copies of the Software, and to permit persons to whom the Software is',
+    'furnished to do so, subject to the following conditions:',
+    '',
+    'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.',
+  ].join('\n');
+  const license = {
+    path: 'LICENSE' as const,
+    spdx: 'MIT' as const,
+    text: licenseText,
+    gitBlobSha: calculateGitBlobSha(licenseText),
+    contentHash: sha256(licenseText),
+  };
+  const revision = exercismSnapshotFixture.revision;
+  const buildDraft = (
+    externalId: string,
+    canonicalProblem?: RawCatalogProblem
+  ): ExercismDiscoveryDraft => {
+    const statementMarkdown = `# ${externalId}\n\nReturn a deterministic value.`;
+    const canonicalData = {
+      exercise: externalId,
+      cases: canonicalProblem
+        ? canonicalProblem.tests.map((test) => ({
+            uuid: `${externalId}-${test.id}`,
+            input: { args: test.args },
+            expected: test.expected,
+          }))
+        : [
+            {
+              uuid: `ci-${externalId}-case`,
+              input: [],
+              expected: 1,
+            },
+          ],
+    };
+    const statementHash = sha256(statementMarkdown);
+    const statementBlobSha = calculateGitBlobSha(statementMarkdown);
+    const canonicalDataHash = calculateCanonicalDataHash(canonicalData);
+    const canonicalBlobSha = 'b'.repeat(40);
+    const upstreamUrl = `https://github.com/exercism/problem-specifications/tree/${revision}/exercises/${externalId}`;
+    const statementPath = `exercises/${externalId}/description.md`;
+    const canonicalPath = `exercises/${externalId}/canonical-data.json`;
+    const discoveryContentHash = calculateDiscoveryContentHash({
+      externalId,
+      revision,
+      statementHash,
+      statementBlobSha,
+      canonicalDataHash,
+      canonicalBlobSha,
+      licenseGitBlobSha: license.gitBlobSha,
+      licenseContentHash: license.contentHash,
+    });
+    return {
+      schemaVersion: 1,
+      externalId,
+      discoveryContentHash,
+      status: 'needs_human_review',
+      publishable: false,
+      upstream: {
+        externalId,
+        upstreamUrl,
+        statementPath,
+        statementMarkdown,
+        statementHash,
+        statementBlobSha,
+        canonicalPath,
+        canonicalBlobSha,
+        canonicalData,
+        canonicalDataHash,
+        canonicalDataStatus: 'available',
+      },
+      source: {
+        provider: 'exercism',
+        repository: 'exercism/problem-specifications',
+        revision,
+        upstreamUrl,
+        statementPath,
+        statementHash,
+        statementBlobSha,
+        canonicalPath,
+        canonicalDataHash,
+        canonicalBlobSha,
+        licenseSpdx: 'MIT',
+        licenseText,
+        licenseGitBlobSha: license.gitBlobSha,
+        licenseContentHash: license.contentHash,
+        attribution: 'Exercise specification from Exercism contributors (MIT).',
+      },
+      proposed: {
+        title: { zh: '', en: externalId },
+        description: { zh: '', en: 'Review required.' },
+        difficulty: null,
+        topics: [],
+        learningObjectives: [],
+        functionSignature: null,
+        starterTemplates: {},
+        tests: [],
+      },
+      warnings: ['Human normalization is required.'],
+    };
+  };
+  const reportFor = (
+    draft: ExercismDiscoveryDraft,
+    generatorId: string
+  ): ExercismDiscoveryReport => ({
+    schemaVersion: 1,
+    notModified: false,
+    generatedAt: new Date().toISOString(),
+    revision,
+    etag: `"ci-${revision}"`,
+    repository: 'exercism/problem-specifications',
+    generatorId,
+    license,
+    counts: {
+      treeExercises: 1,
+      knownExercises: 0,
+      newExercises: 1,
+      changedExercises: 0,
+      unchangedExercises: 0,
+      undiscoveredExercises: 1,
+      selectedExercises: 1,
+      selectionTruncated: false,
+    },
+    drafts: [draft],
+  });
+
+  const deterministic = reportFor(
+    buildDraft('ci-discovery-deterministic'),
+    'deterministic-discovery-draft-v1'
+  );
+  const first = await store.ingestDiscoveryReport(deterministic);
+  const repeated = await store.ingestDiscoveryReport(deterministic);
+  if (
+    first.ingested !== 1 ||
+    first.quarantined.length !== 1 ||
+    repeated.alreadyPresent !== 1
+  ) {
+    throw new Error('Discovery ingestion was not quarantined and idempotent');
+  }
+  const validation = await store.validateCandidates(first.candidateIds);
+  if (validation.quarantined !== 1 || validation.validated !== 0) {
+    throw new Error('Incomplete discovery draft escaped quarantine');
+  }
+  const aiBase = buildDraft('ci-discovery-ai');
+  let now = 1_000;
+  const aiGenerator = new OpenRouterDiscoveryDraftGenerator({
+    apiKey: 'ci-only-key',
+    model: 'google/gemini-2.5-flash',
+    now: () => {
+      now += 125;
+      return now;
+    },
+    provider: {
+      generate: async () => ({
+        object: {
+          title: { zh: 'CI 发现题', en: 'CI discovery problem' },
+          description: {
+            zh: '仅供人工审核的候选。',
+            en: 'A candidate for human review only.',
+          },
+          difficulty: 'easy',
+          topics: ['array-hash'],
+          learningObjectives: [
+            {
+              zh: '识别并实现确定性的函数输入输出契约。',
+              en: 'Recognize and implement a deterministic function contract.',
+            },
+          ],
+          functionSignature: {
+            entryPoint: 'solve',
+            parameters: [],
+            returns: { kind: 'integer' },
+          },
+          warnings: ['CI generated metadata requires human review.'],
+        },
+        finishReason: 'stop',
+        usage: { inputTokens: 120, outputTokens: 80 },
+        estimatedCostUsd: 0.001,
+      }),
+    },
+  });
+  const aiDraft = await aiGenerator.generate({
+    repository: 'exercism/problem-specifications',
+    revision,
+    licenseSpdx: 'MIT',
+    licenseText,
+    licenseGitBlobSha: license.gitBlobSha,
+    licenseContentHash: license.contentHash,
+    exercise: aiBase.upstream,
+  });
+  const aiReport = reportFor(aiDraft, aiGenerator.id);
+  const aiIngestion = await store.ingestDiscoveryReport(aiReport);
+  const gateDraft = buildDraft(
+    'ci-discovery-publish-gate',
+    curatedExercismProblems[2]
+  );
+  const gateIngestion = await store.ingestDiscoveryReport(
+    reportFor(gateDraft, 'deterministic-discovery-draft-v1')
+  );
+  const [evidence] = await admin.unsafe<
+    { raw_has_upstream: boolean; ai_count: number }[]
+  >(
+    `SELECT candidate.raw_payload ? 'upstream' AS raw_has_upstream, count(generation.id)::int AS ai_count FROM "${applicationSchema}"."coach_problem_candidate" AS candidate LEFT JOIN "${applicationSchema}"."coach_catalog_ai_generation" AS generation ON generation.candidate_id = candidate.id WHERE candidate.id = $1 GROUP BY candidate.id`,
+    [aiIngestion.candidateIds[0]]
+  );
+  if (!evidence?.raw_has_upstream || evidence.ai_count !== 1) {
+    throw new Error('Discovery raw evidence or AI generation audit was lost');
+  }
+  const known = await store.recordedExercismExternalIds();
+  if (
+    !known.includes('ci-discovery-deterministic') ||
+    !known.includes('ci-discovery-ai')
+  ) {
+    throw new Error(
+      'Recorded discovery IDs were not included in deduplication'
+    );
+  }
+  const unsafeAi = reportFor(
+    {
+      ...aiDraft,
+      aiMetadata: { ...aiDraft.aiMetadata!, model: 'unapproved/model' },
+    },
+    'openrouter-discovery-draft-v1:unapproved/model'
+  );
+  let unsafeAiRejected = false;
+  try {
+    await store.ingestDiscoveryReport(unsafeAi);
+  } catch {
+    unsafeAiRejected = true;
+  }
+  if (!unsafeAiRejected) {
+    throw new Error('Unallowlisted discovery AI metadata was persisted');
+  }
+  return {
+    candidateId: first.candidateIds[0]!,
+    draft: deterministic.drafts[0]!,
+    aiCandidateId: aiIngestion.candidateIds[0]!,
+    aiDraft,
+    gateCandidateId: gateIngestion.candidateIds[0]!,
+    gateDraft,
+  };
+}
+
 async function verifyCatalogPublicationLifecycle(
   admin: postgres.Sql,
   applicationSchema: string
 ) {
   const database = drizzle(admin);
   const store = new CatalogDatabaseStore(database);
+  await admin.unsafe(
+    `INSERT INTO "${applicationSchema}"."user" (id, name, email, email_verified) VALUES ('ci-content-reviewer', 'Catalog reviewer', 'ci-content-reviewer@example.test', true), ('ci-release-manager', 'Catalog publisher', 'ci-release-manager@example.test', true) ON CONFLICT (id) DO NOTHING`
+  );
   const adapter = {
     fetchSnapshot: async () => ({
       notModified: false,
@@ -387,7 +776,64 @@ async function verifyCatalogPublicationLifecycle(
       localContentFingerprint: exercismSnapshotFixture.localContentFingerprint,
       snapshot: exercismSnapshotFixture,
     }),
+    fetchSnapshotAtRevision: async () => ({
+      notModified: false,
+      revision: exercismSnapshotFixture.revision,
+      etag: exercismSnapshotFixture.etag,
+      localContentFingerprint: exercismSnapshotFixture.localContentFingerprint,
+      snapshot: exercismSnapshotFixture,
+    }),
   } as unknown as ExercismCatalogAdapter;
+
+  const [candidateCountBeforeBootstrap] = await admin.unsafe<
+    { count: number }[]
+  >(
+    `SELECT count(*)::int AS count FROM "${applicationSchema}"."coach_problem_candidate"`
+  );
+  const firstBootstrap = await store.bootstrapExercism(
+    curatedExercismProblems,
+    adapter,
+    'ci-catalog-bootstrap'
+  );
+  const repeatedBootstrap = await store.bootstrapExercism(
+    curatedExercismProblems,
+    adapter,
+    'ci-catalog-bootstrap'
+  );
+  const [candidateCountAfterBootstrap] = await admin.unsafe<
+    { count: number }[]
+  >(
+    `SELECT count(*)::int AS count FROM "${applicationSchema}"."coach_problem_candidate"`
+  );
+  if (
+    firstBootstrap.baselined !== curatedExercismProblems.length ||
+    repeatedBootstrap.alreadyBaselined !== curatedExercismProblems.length ||
+    candidateCountBeforeBootstrap?.count !== candidateCountAfterBootstrap?.count
+  ) {
+    throw new Error(
+      'Catalog bootstrap was not idempotent or changed catalog content'
+    );
+  }
+  await admin.unsafe(
+    `INSERT INTO "${applicationSchema}"."coach_catalog_sync_run" (id, source_id, trigger, status, statistics, started_at, completed_at, created_at) SELECT 'ci_post_bootstrap_sync_' || value::text, 'catalog_source_exercism', 'scheduled', 'succeeded', '{"kind":"sync"}'::jsonb, now(), now(), now() + (value || ' seconds')::interval FROM generate_series(1, 101) AS value`
+  );
+  const bootstrapEvidence = await store.recordedExercismEvidence();
+  if (
+    bootstrapEvidence.length !== curatedExercismProblems.length ||
+    bootstrapEvidence.some(
+      (evidence) =>
+        evidence.originOnly ||
+        !/^[a-f0-9]{40}$/.test(evidence.statementBlobSha ?? '') ||
+        !/^[a-f0-9]{40}$/.test(evidence.canonicalBlobSha ?? '')
+    )
+  ) {
+    throw new Error('Catalog bootstrap did not persist exact blob evidence');
+  }
+  const discovery = await verifyDiscoveryIngestion(
+    store,
+    admin,
+    applicationSchema
+  );
 
   const firstSync = await store.syncExercism(
     curatedExercismProblems,
@@ -406,12 +852,311 @@ async function verifyCatalogPublicationLifecycle(
     throw new Error('Repeated fixture sync created duplicate candidates');
   }
 
+  const renameTarget = curatedExercismProblems[1]!;
+  const renameContent = renameTarget;
+  const duplicateProblem = withContentHash({
+    ...renameContent,
+    id: 'ex-072',
+    slug: 'ci-unassociated-duplicate',
+    tests: renameContent.tests.map((test) => ({
+      ...test,
+      sourceKind: 'manual' as const,
+      reviewNote: `CI reviewer verified duplicate test ${test.id}.`,
+    })),
+    origin: {
+      provider: 'exercism',
+      externalId: discovery.aiDraft.externalId,
+      upstreamUrl: discovery.aiDraft.source.upstreamUrl,
+      statementPath: discovery.aiDraft.source.statementPath,
+      licenseSpdx: 'MIT',
+      attribution: discovery.aiDraft.source.attribution,
+      sourceRevision: discovery.aiDraft.source.revision,
+    },
+  });
+  await store.updateCandidateDraft(
+    discovery.aiCandidateId,
+    { problem: duplicateProblem, upstream: discovery.aiDraft.upstream },
+    'ci-content-reviewer',
+    1
+  );
+  const duplicateValidation = await store.validateCandidates(
+    [discovery.aiCandidateId],
+    'reviewer'
+  );
+  if (duplicateValidation.rejected !== 1) {
+    throw new Error(
+      'A duplicate full test-vector set bypassed explicit target association'
+    );
+  }
+  const renamedProblem = withContentHash({
+    ...renameContent,
+    id: 'ex-071',
+    slug: 'ci-renamed-exercism-problem',
+    tests: renameContent.tests.map((test) => ({
+      ...test,
+      sourceKind: 'manual' as const,
+      reviewNote: `CI reviewer verified renamed test ${test.id}.`,
+    })),
+    origin: {
+      provider: 'exercism',
+      externalId: discovery.draft.externalId,
+      upstreamUrl: discovery.draft.source.upstreamUrl,
+      statementPath: discovery.draft.source.statementPath,
+      licenseSpdx: 'MIT',
+      attribution: discovery.draft.source.attribution,
+      sourceRevision: discovery.draft.source.revision,
+    },
+  });
+  const normalizedRename = await store.updateCandidateDraft(
+    discovery.candidateId,
+    { problem: renamedProblem, upstream: discovery.draft.upstream },
+    'ci-content-reviewer',
+    1
+  );
+  const [curatedTarget] = await admin.unsafe<{ slug: string }[]>(
+    `SELECT slug FROM "${applicationSchema}"."coach_problem" WHERE source = 'curated' AND owner_user_id IS NULL ORDER BY slug LIMIT 1`
+  );
+  let curatedAssociationRejected = false;
+  try {
+    await store.associateCandidateTarget(
+      discovery.candidateId,
+      curatedTarget!.slug,
+      'ci-content-reviewer',
+      normalizedRename.draftRevision
+    );
+  } catch {
+    curatedAssociationRejected = true;
+  }
+  if (!curatedAssociationRejected) {
+    throw new Error('Exercism candidate was associated to a curated identity');
+  }
+  const associatedRename = await store.associateCandidateTarget(
+    discovery.candidateId,
+    renameTarget.slug,
+    'ci-content-reviewer',
+    normalizedRename.draftRevision
+  );
+  await expectCatalogDatabaseRejection(
+    admin,
+    async (tx) => {
+      await tx.unsafe('SET LOCAL ROLE algocoach_catalog_sync');
+      await tx.unsafe(
+        `UPDATE "${applicationSchema}"."coach_problem_candidate" SET target_problem_id = NULL, change_kind = 'new' WHERE id = $1`,
+        [discovery.candidateId]
+      );
+    },
+    'Sync target association edit'
+  );
+  const renamedValidation = await store.validateCandidates(
+    [discovery.candidateId],
+    'reviewer'
+  );
+  if (renamedValidation.validated !== 1) {
+    throw new Error('Renamed catalog association did not validate');
+  }
+  await store.approveCandidates([discovery.candidateId], 'ci-content-reviewer');
+  await store.publishCandidates([discovery.candidateId], 'ci-release-manager');
+  const [renameIdentity] = await admin.unsafe<
+    { target_id: string; renamed_slug_count: number }[]
+  >(
+    `SELECT target.id AS target_id, (SELECT count(*)::int FROM "${applicationSchema}"."coach_problem" WHERE slug = 'ci-renamed-exercism-problem') AS renamed_slug_count FROM "${applicationSchema}"."coach_problem" AS target WHERE target.slug = $1`,
+    [renameTarget.slug]
+  );
+  if (
+    renameIdentity?.target_id !== associatedRename.targetProblemId ||
+    renameIdentity.renamed_slug_count !== 0
+  ) {
+    throw new Error('Renamed source created a duplicate problem identity');
+  }
+  const [renamedTestEvidence] = await admin.unsafe<
+    { test_count: number; preserved_count: number }[]
+  >(
+    `SELECT count(*)::int AS test_count, count(*) FILTER (WHERE test_case.source_kind = 'manual' AND length(test_case.review_note) > 0)::int AS preserved_count FROM "${applicationSchema}"."coach_problem" AS problem JOIN "${applicationSchema}"."coach_test_case" AS test_case ON test_case.revision_id = problem.current_revision_id WHERE problem.slug = $1`,
+    [renameTarget.slug]
+  );
+  if (
+    !renamedTestEvidence ||
+    renamedTestEvidence.test_count === 0 ||
+    renamedTestEvidence.preserved_count !== renamedTestEvidence.test_count
+  ) {
+    throw new Error('Published manual test provenance was not preserved');
+  }
+
+  const canonicalGateTarget = curatedExercismProblems[2]!;
+  const canonicalGateContent = structuredClone(canonicalGateTarget);
+  const canonicalGateProblem = withContentHash({
+    ...canonicalGateContent,
+    id: 'ex-073',
+    slug: 'ci-canonical-publish-gate',
+    tests: canonicalGateContent.tests.map((test) => ({
+      ...test,
+      sourceKind: 'canonical' as const,
+      sourceTestUuid: `${discovery.gateDraft.externalId}-${test.id}`,
+    })),
+    origin: {
+      provider: 'exercism',
+      externalId: discovery.gateDraft.externalId,
+      upstreamUrl: discovery.gateDraft.source.upstreamUrl,
+      statementPath: discovery.gateDraft.source.statementPath,
+      licenseSpdx: 'MIT',
+      attribution: discovery.gateDraft.source.attribution,
+      sourceRevision: discovery.gateDraft.source.revision,
+    },
+  });
+  const canonicalGateUpdated = await store.updateCandidateDraft(
+    discovery.gateCandidateId,
+    {
+      problem: canonicalGateProblem,
+      upstream: discovery.gateDraft.upstream,
+    },
+    'ci-content-reviewer',
+    1
+  );
+  await store.associateCandidateTarget(
+    discovery.gateCandidateId,
+    canonicalGateTarget.slug,
+    'ci-content-reviewer',
+    canonicalGateUpdated.draftRevision
+  );
+  const canonicalGateValidation = await store.validateCandidates(
+    [discovery.gateCandidateId],
+    'reviewer'
+  );
+  if (canonicalGateValidation.validated !== 1) {
+    throw new Error('Valid canonical UUID evidence did not validate');
+  }
+  await store.approveCandidates(
+    [discovery.gateCandidateId],
+    'ci-content-reviewer'
+  );
+  const approvedGateContent = canonicalGateProblem;
+  const approvedGateOriginInput = {
+    provider: canonicalGateProblem.origin.provider,
+    externalId: canonicalGateProblem.origin.externalId,
+    upstreamUrl: canonicalGateProblem.origin.upstreamUrl,
+    statementPath: canonicalGateProblem.origin.statementPath,
+    licenseSpdx: canonicalGateProblem.origin.licenseSpdx,
+    attribution: canonicalGateProblem.origin.attribution,
+    sourceRevision: canonicalGateProblem.origin.sourceRevision,
+  };
+  const tamperedCanonicalProblem = withContentHash({
+    ...approvedGateContent,
+    tests: approvedGateContent.tests.map((test, index) =>
+      index === 0 ? { ...test, sourceTestUuid: 'unknown-canonical-uuid' } : test
+    ),
+    origin: approvedGateOriginInput,
+  });
+  const tamperedCanonicalPayload = {
+    problem: tamperedCanonicalProblem,
+    upstream: discovery.gateDraft.upstream,
+  };
+  const tamperedDraftHash = sha256(
+    stableStringify(tamperedCanonicalPayload as unknown as CatalogJsonValue)
+  );
+  const tamperedContentHash = calculateCandidateContentHash(
+    tamperedCanonicalProblem,
+    discovery.gateDraft.upstream
+  );
+  await admin.begin(async (tx) => {
+    await tx.unsafe(`SET LOCAL session_replication_role = 'replica'`);
+    await tx.unsafe(
+      `UPDATE "${applicationSchema}"."coach_problem_candidate" SET draft = $2::jsonb, normalized_problem = $2::jsonb, draft_hash = $3, content_hash = $4, approved_draft_hash = $3, approved_content_hash = $4 WHERE id = $1`,
+      [
+        discovery.gateCandidateId,
+        JSON.stringify(tamperedCanonicalPayload),
+        tamperedDraftHash,
+        tamperedContentHash,
+      ]
+    );
+  });
+  let canonicalPublishRejected = false;
+  try {
+    await store.publishCandidates(
+      [discovery.gateCandidateId],
+      'ci-release-manager'
+    );
+  } catch {
+    canonicalPublishRejected = true;
+  }
+  const [canonicalGateState] = await admin.unsafe<
+    { status: string; revision_count: number }[]
+  >(
+    `SELECT candidate.status, (SELECT count(*)::int FROM "${applicationSchema}"."coach_problem_revision" AS revision WHERE revision.candidate_id = candidate.id) AS revision_count FROM "${applicationSchema}"."coach_problem_candidate" AS candidate WHERE candidate.id = $1`,
+    [discovery.gateCandidateId]
+  );
+  if (
+    !canonicalPublishRejected ||
+    canonicalGateState?.status !== 'rejected' ||
+    canonicalGateState.revision_count !== 0
+  ) {
+    throw new Error('Publish-time canonical UUID revalidation was bypassed');
+  }
+
   const candidateId = firstSync.candidateIds[0]!;
   const targetProblem = curatedExercismProblems[0]!;
   const validation = await store.validateCandidates([candidateId]);
   if (validation.validated !== 1) {
     throw new Error('Fixture candidate did not pass validation');
   }
+  const unauditedApprovalCandidateId = firstSync.candidateIds[1]!;
+  const unauditedValidation = await store.validateCandidates([
+    unauditedApprovalCandidateId,
+  ]);
+  if (unauditedValidation.validated !== 1) {
+    throw new Error('Unaudited approval fixture did not validate');
+  }
+  await expectCatalogDatabaseRejection(
+    admin,
+    async (tx) => {
+      await tx.unsafe('SET LOCAL ROLE algocoach_catalog_reviewer');
+      await tx.unsafe(
+        `UPDATE "${applicationSchema}"."coach_problem_candidate" SET status = 'approved', approved_by_user_id = 'ci-content-reviewer', approved_at = now(), approved_content_hash = content_hash, approved_source_revision = source_revision, approved_draft_hash = draft_hash, approved_draft_revision = draft_revision, approved_policy_version = policy_version WHERE id = $1`,
+        [unauditedApprovalCandidateId]
+      );
+    },
+    'Unaudited approval'
+  );
+  const crashClaimInput = {
+    actorUserId: 'ci-content-reviewer',
+    idempotencyKey: `ci-crash-recovery-${Date.now()}`,
+    action: 'approve' as const,
+    targetType: 'candidate' as const,
+    targetId: unauditedApprovalCandidateId,
+    requestHash: sha256('ci-crash-recovery-request'),
+  };
+  const crashClaim = await store.claimAdminMutation(crashClaimInput);
+  if (!crashClaim.claimed) {
+    throw new Error('Catalog admin mutation was not initially claimed');
+  }
+  await store.approveCandidates(
+    [unauditedApprovalCandidateId],
+    'ci-content-reviewer'
+  );
+  await admin.unsafe(
+    `UPDATE "${applicationSchema}"."coach_catalog_admin_mutation" SET lease_expires_at = now() - interval '1 minute' WHERE id = $1`,
+    [crashClaim.mutation.id]
+  );
+  const recoveredClaim = await store.claimAdminMutation(crashClaimInput);
+  if (
+    recoveredClaim.claimed ||
+    recoveredClaim.mutation.status !== 'completed' ||
+    (recoveredClaim.mutation.result as { reconciled?: unknown }).reconciled !==
+      true
+  ) {
+    throw new Error('Expired admin mutation did not reconcile applied state');
+  }
+
+  await expectCatalogDatabaseRejection(
+    admin,
+    async (tx) => {
+      await tx.unsafe('SET LOCAL ROLE algocoach_catalog_sync');
+      await tx.unsafe(
+        `INSERT INTO "${applicationSchema}"."coach_problem_candidate" (id, source_id, sync_run_id, external_id, upstream_url, source_revision, content_hash, license_spdx, attribution, raw_payload, raw_content_hash, draft, draft_hash, draft_revision, policy_version, normalized_problem, validation, status) SELECT $1, source_id, sync_run_id, external_id || '-forged', upstream_url, source_revision, content_hash || '-forged', license_spdx, attribution, raw_payload, raw_content_hash, draft, draft_hash, 1, policy_version, normalized_problem, validation, 'approved' FROM "${applicationSchema}"."coach_problem_candidate" WHERE id = $2`,
+        [`ci_forged_candidate_${Date.now()}`, candidateId]
+      );
+    },
+    'Sync released-candidate insert'
+  );
 
   let unapprovedPublishRejected = false;
   try {
@@ -434,6 +1179,48 @@ async function verifyCatalogPublicationLifecycle(
   if (approval.approved !== 1 || repeatedApproval.alreadyApproved !== 1) {
     throw new Error('Catalog approval was not independently idempotent');
   }
+  await expectCatalogDatabaseRejection(
+    admin,
+    async (tx) => {
+      await tx.unsafe('SET LOCAL ROLE algocoach_catalog_publisher');
+      await tx.unsafe(
+        `INSERT INTO "${applicationSchema}"."coach_problem_revision" (id, problem_id, version, title, description, difficulty, topics, entry_point, templates, language_configs, signature, hints, source_revision, candidate_id, catalog_source_id, source_external_id, source_statement_path, source_license_spdx, source_license_hash, source_attribution, source_fetched_at, policy_version, draft_revision, draft_hash, provenance, content_hash, status, published_at) SELECT $1, current.problem_id, 999, current.title, current.description, current.difficulty, current.topics, current.entry_point, current.templates, current.language_configs, current.signature, current.hints, candidate.source_revision, candidate.id, candidate.source_id, candidate.external_id, candidate.normalized_problem#>>'{problem,origin,statementPath}', candidate.license_spdx, candidate.raw_payload#>>'{source,licenseContentHash}', candidate.attribution, now(), candidate.policy_version, candidate.draft_revision, candidate.draft_hash, jsonb_build_object('licenseText', candidate.raw_payload#>>'{source,licenseText}', 'licenseContentHash', candidate.raw_payload#>>'{source,licenseContentHash}', 'licenseGitBlobSha', repeat('0', 40)), candidate.content_hash, 'published', now() FROM "${applicationSchema}"."coach_problem_candidate" AS candidate JOIN "${applicationSchema}"."coach_problem" AS problem ON problem.id = candidate.target_problem_id JOIN "${applicationSchema}"."coach_problem_revision" AS current ON current.id = problem.current_revision_id WHERE candidate.id = $2`,
+        [`ci_tampered_license_revision_${Date.now()}`, candidateId]
+      );
+    },
+    'Tampered external revision license Git blob SHA'
+  );
+  await expectCatalogDatabaseRejection(
+    admin,
+    async (tx) => {
+      await tx.unsafe('SET LOCAL ROLE algocoach_catalog_publisher');
+      await tx.unsafe(
+        `UPDATE "${applicationSchema}"."coach_problem_candidate" SET approved_content_hash = 'sha256:tampered' WHERE id = $1`,
+        [candidateId]
+      );
+    },
+    'Approved binding tamper'
+  );
+  let sameActorPublishRejected = false;
+  try {
+    await store.publishCandidates([candidateId], 'ci-content-reviewer');
+  } catch {
+    sameActorPublishRejected = true;
+  }
+  if (!sameActorPublishRejected) {
+    throw new Error('The catalog approver was allowed to publish');
+  }
+  await expectCatalogDatabaseRejection(
+    admin,
+    async (tx) => {
+      await tx.unsafe('SET LOCAL ROLE algocoach_catalog_publisher');
+      await tx.unsafe(
+        `UPDATE "${applicationSchema}"."coach_problem_candidate" SET status = 'published', published_by_user_id = 'ci-release-manager', published_at = now() WHERE id = $1`,
+        [candidateId]
+      );
+    },
+    'Unaudited publication'
+  );
 
   const historyUserId = `ci_catalog_history_${Date.now()}`;
   await admin.unsafe(
@@ -467,6 +1254,79 @@ async function verifyCatalogPublicationLifecycle(
     if (publishedState?.version !== 2 || publishedState.revision_count !== 2) {
       throw new Error('Publishing did not create an immutable second revision');
     }
+
+    const [publishedEvidence] = await admin.unsafe<
+      { revision_id: string; test_id: string }[]
+    >(
+      `SELECT revision.id AS revision_id, test_case.id AS test_id FROM "${applicationSchema}"."coach_problem" AS problem JOIN "${applicationSchema}"."coach_problem_revision" AS revision ON revision.id = problem.current_revision_id JOIN "${applicationSchema}"."coach_test_case" AS test_case ON test_case.revision_id = revision.id WHERE problem.slug = $1 ORDER BY test_case.ordinal LIMIT 1`,
+      [targetProblem.slug]
+    );
+    if (!publishedEvidence) {
+      throw new Error('Published revision evidence was not created');
+    }
+    await expectCatalogDatabaseRejection(
+      admin,
+      async (tx) => {
+        await tx.unsafe('SET LOCAL ROLE algocoach_catalog_publisher');
+        await tx.unsafe(
+          `UPDATE "${applicationSchema}"."coach_problem_revision" SET title = jsonb_set(title, '{en}', '"tampered"'::jsonb) WHERE id = $1`,
+          [publishedEvidence.revision_id]
+        );
+      },
+      'Published revision update'
+    );
+    await expectCatalogDatabaseRejection(
+      admin,
+      async (tx) => {
+        await tx.unsafe('SET LOCAL ROLE algocoach_catalog_publisher');
+        await tx.unsafe(
+          `UPDATE "${applicationSchema}"."coach_test_case" SET expected = 'null'::jsonb WHERE id = $1`,
+          [publishedEvidence.test_id]
+        );
+      },
+      'Published test update'
+    );
+    await expectCatalogDatabaseRejection(
+      admin,
+      async (tx) => {
+        await tx.unsafe('SET LOCAL ROLE algocoach_catalog_sync');
+        await tx.unsafe(
+          `INSERT INTO "${applicationSchema}"."coach_catalog_review_audit" (id, candidate_id, reviewer_user_id, action, content_hash, source_revision, draft_hash, draft_revision, policy_version) SELECT $1, id, published_by_user_id, 'published', content_hash, source_revision, draft_hash, draft_revision, policy_version FROM "${applicationSchema}"."coach_problem_candidate" WHERE id = $2`,
+          [`ci_forged_publish_audit_${Date.now()}`, candidateId]
+        );
+      },
+      'Sync publication audit'
+    );
+    const [rollbackEvidence] = await admin.unsafe<
+      {
+        problem_id: string;
+        current_revision_id: string;
+        target_revision_id: string;
+      }[]
+    >(
+      `SELECT problem.id AS problem_id, problem.current_revision_id, target.id AS target_revision_id FROM "${applicationSchema}"."coach_problem" AS problem JOIN "${applicationSchema}"."coach_problem_revision" AS target ON target.problem_id = problem.id AND target.version = 1 WHERE problem.slug = $1`,
+      [targetProblem.slug]
+    );
+    if (!rollbackEvidence) throw new Error('Rollback evidence was not found');
+    await expectCatalogDatabaseRejection(
+      admin,
+      async (tx) => {
+        await tx.unsafe('SET LOCAL ROLE algocoach_catalog_publisher');
+        await tx.unsafe(
+          `UPDATE "${applicationSchema}"."coach_problem_revision" SET status = 'archived' WHERE id = $1`,
+          [rollbackEvidence.current_revision_id]
+        );
+        await tx.unsafe(
+          `UPDATE "${applicationSchema}"."coach_problem_revision" SET status = 'published' WHERE id = $1`,
+          [rollbackEvidence.target_revision_id]
+        );
+        await tx.unsafe(
+          `UPDATE "${applicationSchema}"."coach_problem" SET current_revision_id = $1, content_version = 1, updated_at = now() WHERE id = $2`,
+          [rollbackEvidence.target_revision_id, rollbackEvidence.problem_id]
+        );
+      },
+      'Unaudited rollback'
+    );
 
     await store.rollbackProblem(targetProblem.slug, 1, 'ci-release-manager');
     const [rolledBack] = await admin.unsafe<
@@ -614,7 +1474,7 @@ async function verifyAuthAndLearningIsolation(
       reviewValues
     );
     await app.unsafe(
-      `INSERT INTO "${applicationSchema}"."coach_review_item" (user_id, problem_slug, status, source, due_at, interval_days, repetitions, ease_factor, last_rating, updated_at) VALUES ($1, $2, 'resolved', 'mistake', now() + interval '3 days', 3, 1, 2.5, 'good', now()) ON CONFLICT (user_id, problem_slug) DO UPDATE SET status = excluded.status, due_at = excluded.due_at, interval_days = excluded.interval_days, repetitions = excluded.repetitions, last_rating = excluded.last_rating, updated_at = excluded.updated_at`,
+      `INSERT INTO "${applicationSchema}"."coach_review_item" (user_id, problem_slug, problem_content_version, status, source, due_at, interval_days, repetitions, ease_factor, last_rating, updated_at) VALUES ($1, $2, 1, 'resolved', 'mistake', now() + interval '3 days', 3, 1, 2.5, 'good', now()) ON CONFLICT (user_id, problem_slug, problem_content_version) DO UPDATE SET status = excluded.status, due_at = excluded.due_at, interval_days = excluded.interval_days, repetitions = excluded.repetitions, last_rating = excluded.last_rating, updated_at = excluded.updated_at`,
       reviewValues.slice(0, 2)
     );
     const firstReview = await app.unsafe<
@@ -1121,6 +1981,11 @@ export async function runPostgresIntegrationTest(): Promise<void> {
         'The applied migration journal does not match the repository'
       );
     }
+    await verifyCatalogCapabilityRoles(
+      admin,
+      applicationSchema,
+      applicationRole
+    );
     await verifyCatalogOwnershipConstraints(admin, applicationSchema);
     await verifyCatalogPublicationLifecycle(admin, applicationSchema);
 

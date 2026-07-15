@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
-import { CatalogDatabaseStore } from './catalog-store.server';
+import {
+  calculateCatalogCandidateDelta,
+  CatalogDatabaseStore,
+  countConsecutiveDiscoveryFailures,
+} from './catalog-store.server';
 
 function createApprovalDatabase(status: string) {
   const updates: Array<Record<string, unknown>> = [];
   const audits: Array<Record<string, unknown>> = [];
   const candidate = { id: 'candidate-1', status };
   const transaction = {
+    execute: async () => [],
     select: () => ({
       from: () => ({
         where: () => ({
@@ -39,6 +44,48 @@ function createApprovalDatabase(status: string) {
 }
 
 describe('PostgreSQL catalog approval gate', () => {
+  it('reports the absolute candidate delta between discovery runs', () => {
+    expect(
+      calculateCatalogCandidateDelta(
+        { discovered: 12 },
+        { selectedExercises: 7 },
+        80
+      )
+    ).toBe(5);
+    expect(calculateCatalogCandidateDelta({ discovered: 4 }, {}, 80)).toBe(4);
+    expect(calculateCatalogCandidateDelta({}, {}, 80)).toBe(80);
+    expect(
+      calculateCatalogCandidateDelta(
+        { candidateBacklog: 40, discovered: 10 },
+        { candidateBacklog: 10, discovered: 10 },
+        80
+      )
+    ).toBe(30);
+  });
+
+  it('counts discovery failures across unrelated successful sync runs', () => {
+    expect(
+      countConsecutiveDiscoveryFailures([
+        { status: 'failed', statistics: { kind: 'discovery' } },
+        { status: 'succeeded', statistics: { kind: 'sync' } },
+        { status: 'failed', statistics: { kind: 'discovery' } },
+        { status: 'succeeded', statistics: { kind: 'discovery' } },
+      ])
+    ).toBe(2);
+  });
+
+  it('rejects an invalid target-association revision before touching the database', async () => {
+    const store = new CatalogDatabaseStore({} as never);
+    await expect(
+      store.associateCandidateTarget(
+        'candidate-1',
+        'target-problem',
+        'reviewer@example.test',
+        0
+      )
+    ).rejects.toThrow(/positive integer/);
+  });
+
   it('approves a validated candidate and writes one dedicated audit', async () => {
     const { store, updates, audits } = createApprovalDatabase('validated');
 
@@ -58,7 +105,8 @@ describe('PostgreSQL catalog approval gate', () => {
       expect.objectContaining({
         candidateId: 'candidate-1',
         action: 'approved',
-        metadata: { reviewer: 'reviewer@example.test' },
+        reviewerUserId: 'reviewer@example.test',
+        metadata: { reviewerUserId: 'reviewer@example.test' },
       }),
     ]);
   });

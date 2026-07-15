@@ -31,6 +31,8 @@ export interface ProblemOriginMetadata {
   sourceRevision: string;
   contentHash: string;
   fetchedAt: string;
+  statementPath?: string;
+  licenseHash?: string;
 }
 
 export interface PublishedProblem extends Problem {
@@ -52,12 +54,10 @@ function selectProblemRows(
   slug?: string,
   version?: number
 ) {
-  const conditions: SQL[] = [
-    isNull(coachProblem.ownerUserId),
-    eq(coachProblem.status, 'published'),
-  ];
+  const conditions: SQL[] = [isNull(coachProblem.ownerUserId)];
   if (version === undefined) {
     conditions.push(
+      eq(coachProblem.status, 'published'),
       eq(coachProblemRevision.id, coachProblem.currentRevisionId),
       eq(coachProblemRevision.status, 'published')
     );
@@ -110,6 +110,12 @@ function selectProblemRows(
       sourceStatement: coachProblemRevision.sourceStatement,
       sourceUrl: coachProblemRevision.sourceUrl,
       sourceRevision: coachProblemRevision.sourceRevision,
+      revisionSourceExternalId: coachProblemRevision.sourceExternalId,
+      revisionSourceStatementPath: coachProblemRevision.sourceStatementPath,
+      revisionSourceLicenseSpdx: coachProblemRevision.sourceLicenseSpdx,
+      revisionSourceLicenseHash: coachProblemRevision.sourceLicenseHash,
+      revisionSourceAttribution: coachProblemRevision.sourceAttribution,
+      revisionSourceFetchedAt: coachProblemRevision.sourceFetchedAt,
       catalogVersion: coachProblemRevision.catalogVersion,
       revisionContentHash: coachProblemRevision.contentHash,
       revisionId: coachProblemRevision.id,
@@ -190,22 +196,33 @@ function hydrateProblem(row: ProblemRow, tests: TestCase[]): PublishedProblem {
   ) as Partial<Record<Language, string>>;
   const originSourceRevision =
     row.sourceRevision ?? row.originSourceRevision ?? undefined;
+  const originExternalId =
+    row.revisionSourceExternalId ?? row.originExternalId ?? undefined;
+  const originUpstreamUrl = row.sourceUrl ?? row.originUpstreamUrl ?? undefined;
+  const originLicenseSpdx =
+    row.revisionSourceLicenseSpdx ?? row.originLicenseSpdx ?? undefined;
+  const originAttribution =
+    row.revisionSourceAttribution ?? row.originAttribution ?? undefined;
+  const originFetchedAt =
+    row.revisionSourceFetchedAt ?? row.originFetchedAt ?? undefined;
   const origin =
-    row.originExternalId &&
-    row.originUpstreamUrl &&
-    row.originLicenseSpdx &&
-    row.originAttribution &&
+    originExternalId &&
+    originUpstreamUrl &&
+    originLicenseSpdx &&
+    originAttribution &&
     originSourceRevision &&
-    row.originFetchedAt
+    originFetchedAt
       ? {
           provider: row.originProvider ?? 'external',
-          externalId: row.originExternalId,
-          upstreamUrl: row.originUpstreamUrl,
-          licenseSpdx: row.originLicenseSpdx,
-          attribution: row.originAttribution,
+          externalId: originExternalId,
+          upstreamUrl: originUpstreamUrl,
+          licenseSpdx: originLicenseSpdx,
+          attribution: originAttribution,
           sourceRevision: originSourceRevision,
           contentHash: row.revisionContentHash,
-          fetchedAt: row.originFetchedAt.toISOString(),
+          fetchedAt: originFetchedAt.toISOString(),
+          statementPath: row.revisionSourceStatementPath ?? undefined,
+          licenseHash: row.revisionSourceLicenseHash ?? undefined,
         }
       : undefined;
 

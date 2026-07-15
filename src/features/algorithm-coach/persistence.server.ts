@@ -22,7 +22,10 @@ import {
 } from '@/config/db/schema.postgres';
 
 import { normalizeProblemLanguageConfigs } from './languages';
-import { createInitialReviewProgress } from './learning-progress';
+import {
+  createInitialReviewProgress,
+  getReviewItemKey,
+} from './learning-progress';
 import { createInitialCoachState } from './storage';
 import {
   applyCoachSyncMutations,
@@ -461,6 +464,9 @@ async function persistCoachDataInTransaction(
       .values({
         userId,
         problemSlug: item.problemSlug,
+        problemContentVersion: normalizeProblemContentVersion(
+          item.problemContentVersion
+        ),
         status: item.status,
         source: item.source,
         dueAt: asDate(item.dueAt),
@@ -478,7 +484,11 @@ async function persistCoachDataInTransaction(
         updatedAt: asDate(item.updatedAt),
       })
       .onConflictDoUpdate({
-        target: [coachReviewItem.userId, coachReviewItem.problemSlug],
+        target: [
+          coachReviewItem.userId,
+          coachReviewItem.problemSlug,
+          coachReviewItem.problemContentVersion,
+        ],
         set: {
           status: item.status,
           source: item.source,
@@ -1180,7 +1190,7 @@ async function loadCoachDataFromTransaction(
       .select()
       .from(coachPracticeSession)
       .where(eq(coachPracticeSession.userId, userId))
-      .orderBy(asc(coachPracticeSession.startedAt))
+      .orderBy(desc(coachPracticeSession.startedAt))
       .limit(100),
     tx
       .select()
@@ -1553,6 +1563,7 @@ async function loadCoachDataFromTransaction(
     reviewRows.map((row) => {
       const item: ReviewItem = {
         problemSlug: row.problemSlug,
+        problemContentVersion: row.problemContentVersion,
         status: row.status as ReviewItem['status'],
         source: row.source as ReviewItem['source'],
         dueAt: asIso(row.dueAt),
@@ -1569,7 +1580,10 @@ async function loadCoachDataFromTransaction(
           : undefined,
         lastRating: (row.lastRating as ReviewItem['lastRating']) ?? undefined,
       };
-      return [row.problemSlug, item];
+      return [
+        getReviewItemKey(row.problemSlug, row.problemContentVersion),
+        item,
+      ];
     })
   );
 

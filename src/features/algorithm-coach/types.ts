@@ -201,6 +201,8 @@ export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
 
 export interface ReviewItem {
   problemSlug: string;
+  /** Defaults to v1 for records created before versioned review keys. */
+  problemContentVersion?: number;
   status: ReviewStatus;
   source: 'mistake' | 'completion';
   dueAt: string;

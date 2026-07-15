@@ -1,7 +1,20 @@
+import { appendFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { curatedExercismProblems } from '../src/features/algorithm-coach/catalog/curated-exercism-problems';
-import { ExercismCatalogAdapter } from '../src/features/algorithm-coach/catalog/exercism-adapter';
+import {
+  discoveryDraftGeneratorFromEnv,
+  generateDiscoveryReport,
+} from '../src/features/algorithm-coach/catalog/discovery-enrichment';
+import {
+  evaluateCatalogDiscoveryAnomalies,
+  type CatalogDiscoveryMonitorState,
+} from '../src/features/algorithm-coach/catalog/discovery-monitor';
+import {
+  ExercismCatalogAdapter,
+  type ExercismDiscoveryPreviousState,
+  type ExercismRecordedEvidence,
+} from '../src/features/algorithm-coach/catalog/exercism-adapter';
 import { exercismSnapshotFixture } from '../src/features/algorithm-coach/catalog/fixtures/exercism-snapshot.fixture';
 import { emitCatalogOperationalEvent } from '../src/features/algorithm-coach/catalog/operational-events';
 import {
@@ -12,6 +25,12 @@ import {
   rollbackCatalogRelease,
   validateCatalogCandidates,
 } from '../src/features/algorithm-coach/catalog/pipeline';
+import type {
+  CatalogBootstrapSummary,
+  ExercismDiscoveryArtifact,
+  ExercismDiscoveryNotModifiedReport,
+  RawCatalogProblem,
+} from '../src/features/algorithm-coach/catalog/raw-types';
 import { validateCatalogBatch } from '../src/features/algorithm-coach/catalog/validation';
 import {
   readCatalogWorkspace,
@@ -19,6 +38,9 @@ import {
 } from '../src/features/algorithm-coach/catalog/workspace-store';
 
 type Command =
+  | 'bootstrap'
+  | 'discover'
+  | 'monitor'
   | 'dry-run'
   | 'sync'
   | 'validate'
@@ -30,8 +52,11 @@ interface CliOptions {
   command: Command;
   workspacePath?: string;
   fixture: boolean;
+  ingest: boolean;
   candidateIds: string[];
   reviewer?: string;
+  outputPath?: string;
+  maxExercises?: number;
   releaseId?: string;
   problemSlug?: string;
   revisionVersion?: number;
@@ -51,12 +76,20 @@ function parseOptions(args: string[]): CliOptions {
   const command = args[0] as Command | undefined;
   if (
     !command ||
-    !['dry-run', 'sync', 'validate', 'approve', 'publish', 'rollback'].includes(
-      command
-    )
+    ![
+      'bootstrap',
+      'discover',
+      'monitor',
+      'dry-run',
+      'sync',
+      'validate',
+      'approve',
+      'publish',
+      'rollback',
+    ].includes(command)
   ) {
     throw new Error(
-      'Usage: coach-catalog <dry-run|sync|validate|approve|publish|rollback> [options]'
+      'Usage: coach-catalog <bootstrap|discover|monitor|dry-run|sync|validate|approve|publish|rollback> [options]'
     );
   }
   const candidates = args
@@ -71,25 +104,309 @@ function parseOptions(args: string[]): CliOptions {
     .flatMap((value) => value.split(','));
 
   const workspace = optionValue(args, '--workspace');
+  const output = optionValue(args, '--output');
   const revision = optionValue(args, '--revision');
+  const maximum =
+    optionValue(args, '--max') ?? process.env.CATALOG_DISCOVERY_MAX_EXERCISES;
   if (args.includes('--fixture') && !workspace) {
     throw new Error('--fixture requires an explicit --workspace path.');
   }
+  if (command === 'discover' && !output) {
+    throw new Error('discover requires an explicit --output <path>.');
+  }
   if (revision && (!/^\d+$/.test(revision) || Number(revision) < 1)) {
     throw new Error('--revision must be a positive integer.');
+  }
+  if (
+    maximum &&
+    (!/^\d+$/.test(maximum) || Number(maximum) < 1 || Number(maximum) > 50)
+  ) {
+    throw new Error('--max must be an integer between 1 and 50.');
   }
   return {
     command,
     workspacePath: workspace ? path.resolve(workspace) : undefined,
     fixture: args.includes('--fixture'),
+    ingest: args.includes('--ingest'),
     candidateIds: candidates,
     reviewer: optionValue(args, '--reviewer'),
+    outputPath: output ? path.resolve(output) : undefined,
+    maxExercises: maximum ? Number(maximum) : undefined,
     releaseId: optionValue(args, '--release'),
     problemSlug: optionValue(args, '--problem'),
     revisionVersion: revision ? Number(revision) : undefined,
     trigger:
       optionValue(args, '--trigger') === 'scheduled' ? 'scheduled' : 'manual',
   };
+}
+
+interface BootstrapCatalogStore {
+  bootstrapExercism(
+    curatedProblems: RawCatalogProblem[],
+    adapter: ExercismCatalogAdapter,
+    actor: string
+  ): Promise<CatalogBootstrapSummary>;
+}
+
+interface DiscoveryCatalogStore {
+  recordedExercismEvidence(): Promise<ExercismRecordedEvidence[]>;
+  discoveryState(): Promise<
+    ExercismDiscoveryPreviousState & CatalogDiscoveryMonitorState
+  >;
+  recordDiscoveryFailure(
+    actor: string,
+    errorCode: string,
+    errorMessage: string,
+    trigger?: 'manual' | 'scheduled'
+  ): Promise<{ runId: string }>;
+  ingestDiscoveryReport(
+    report: Awaited<ReturnType<typeof generateDiscoveryReport>>,
+    actor: string
+  ): Promise<{
+    ingested: number;
+    alreadyPresent: number;
+    candidateIds: string[];
+  }>;
+}
+
+function positiveIntegerEnv(
+  value: string | undefined,
+  fallback: number
+): number {
+  if (value === undefined || value.trim() === '') return fallback;
+  if (!/^\d+$/.test(value) || Number(value) < 1) {
+    throw new Error(
+      'CATALOG_ANOMALY_DELTA_THRESHOLD must be a positive integer.'
+    );
+  }
+  return Number(value);
+}
+
+function githubCommandValue(value: string): string {
+  return value
+    .replaceAll('%', '%25')
+    .replaceAll('\r', '%0D')
+    .replaceAll('\n', '%0A');
+}
+
+async function monitorCatalog(): Promise<void> {
+  const threshold = positiveIntegerEnv(
+    process.env.CATALOG_ANOMALY_DELTA_THRESHOLD,
+    25
+  );
+  const { CatalogDatabaseStore } = await import(
+    '../src/features/algorithm-coach/catalog/catalog-store.server'
+  );
+  const store = new CatalogDatabaseStore() as unknown as Partial<
+    Pick<DiscoveryCatalogStore, 'discoveryState'>
+  >;
+  if (typeof store.discoveryState !== 'function') {
+    throw new Error(
+      'CatalogDatabaseStore.discoveryState is not available in this build.'
+    );
+  }
+  const state = await store.discoveryState();
+  const anomalies = evaluateCatalogDiscoveryAnomalies(state, threshold);
+  const summary = [
+    '## AlgoCoach catalog anomaly monitor',
+    '',
+    `- Consecutive failures: ${state.consecutiveFailures}`,
+    `- Tree delta threshold: ${threshold}`,
+    `- Result: ${anomalies.length === 0 ? 'pass' : 'fail'}`,
+    ...anomalies.map((item) => `- ${item.code}: ${item.message}`),
+    '',
+  ].join('\n');
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    await appendFile(process.env.GITHUB_STEP_SUMMARY, summary, 'utf8');
+  }
+  for (const anomaly of anomalies) {
+    console.error(
+      `::error title=${githubCommandValue(anomaly.code)}::${githubCommandValue(
+        anomaly.message
+      )}`
+    );
+  }
+  console.log(
+    JSON.stringify(
+      {
+        command: 'monitor',
+        threshold,
+        status: anomalies.length === 0 ? 'passed' : 'failed',
+        anomalies,
+      },
+      null,
+      2
+    )
+  );
+  if (anomalies.length > 0) {
+    throw new Error(
+      `Catalog anomaly monitor detected ${anomalies.length} issue(s).`
+    );
+  }
+}
+
+async function writeDiscoveryReport(
+  outputPath: string,
+  report: ExercismDiscoveryArtifact
+): Promise<void> {
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  const temporaryPath = `${outputPath}.${process.pid}.tmp`;
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(report, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx',
+    });
+    await rename(temporaryPath, outputPath);
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function discoverCatalog(options: CliOptions): Promise<void> {
+  if (process.env.CATALOG_DISCOVERY_ENABLED !== 'true') {
+    throw new Error(
+      'Live catalog discovery requires CATALOG_DISCOVERY_ENABLED=true.'
+    );
+  }
+  if (!options.outputPath) {
+    throw new Error('Catalog discovery requires an output path.');
+  }
+  const actor = options.reviewer?.trim();
+  let store: DiscoveryCatalogStore | undefined;
+  if (options.ingest) {
+    if (process.env.CATALOG_DISCOVERY_INGEST_ENABLED !== 'true') {
+      throw new Error(
+        'Discovery ingestion requires CATALOG_DISCOVERY_INGEST_ENABLED=true.'
+      );
+    }
+    if (!actor) {
+      throw new Error('discover --ingest requires --reviewer <identity>.');
+    }
+    const { CatalogDatabaseStore } = await import(
+      '../src/features/algorithm-coach/catalog/catalog-store.server'
+    );
+    const databaseStore = new CatalogDatabaseStore();
+    const candidateStore =
+      databaseStore as unknown as Partial<DiscoveryCatalogStore>;
+    if (
+      typeof candidateStore.recordedExercismEvidence !== 'function' ||
+      typeof candidateStore.discoveryState !== 'function' ||
+      typeof candidateStore.recordDiscoveryFailure !== 'function' ||
+      typeof candidateStore.ingestDiscoveryReport !== 'function'
+    ) {
+      throw new Error(
+        'CatalogDatabaseStore discovery ingestion contract is not available in this build.'
+      );
+    }
+    store = candidateStore as DiscoveryCatalogStore;
+  }
+
+  try {
+    const adapter = new ExercismCatalogAdapter({
+      token:
+        process.env.EXERCISM_GITHUB_TOKEN?.trim() ||
+        process.env.GITHUB_TOKEN?.trim(),
+    });
+    const [recordedEvidence, previous] = store
+      ? await Promise.all([
+          store.recordedExercismEvidence(),
+          store.discoveryState(),
+        ])
+      : [[], undefined];
+    const fetched = await adapter.fetchDiscovery(curatedExercismProblems, {
+      maxExercises: options.maxExercises,
+      recordedEvidence,
+      previous,
+    });
+    if (fetched.notModified || !fetched.snapshot) {
+      const report: ExercismDiscoveryNotModifiedReport = {
+        schemaVersion: 1,
+        notModified: true,
+        generatedAt: new Date().toISOString(),
+        revision: fetched.revision,
+        etag: fetched.etag,
+        repository: 'exercism/problem-specifications',
+        drafts: [],
+      };
+      await writeDiscoveryReport(options.outputPath, report);
+      console.log(
+        JSON.stringify(
+          {
+            command: 'discover',
+            mode: 'review-artifact',
+            notModified: true,
+            persistedToDatabase: false,
+            output: options.outputPath,
+            revision: report.revision,
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+    const snapshot = fetched.snapshot;
+    const report = await generateDiscoveryReport(
+      snapshot,
+      discoveryDraftGeneratorFromEnv()
+    );
+    await writeDiscoveryReport(options.outputPath, report);
+    const ingestion =
+      store && actor
+        ? await store.ingestDiscoveryReport(report, actor)
+        : undefined;
+    console.log(
+      JSON.stringify(
+        {
+          command: 'discover',
+          mode: 'review-artifact',
+          notModified: false,
+          persistedToDatabase: ingestion !== undefined,
+          output: options.outputPath,
+          revision: report.revision,
+          counts: report.counts,
+          reviewable: report.drafts.filter(
+            (draft) => draft.status === 'needs_human_review'
+          ).length,
+          rejected: report.drafts.filter((draft) => draft.status === 'rejected')
+            .length,
+          ingestion,
+        },
+        null,
+        2
+      )
+    );
+  } catch (error) {
+    if (store && actor) {
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        await store.recordDiscoveryFailure(
+          actor,
+          /license|MIT allowlist|SPDX/i.test(message)
+            ? 'license_changed'
+            : 'discovery_failed',
+          message,
+          options.trigger
+        );
+      } catch (recordError) {
+        const recordMessage =
+          recordError instanceof Error
+            ? recordError.message
+            : String(recordError);
+        console.error(
+          `::error title=discovery_failure_record_failed::${githubCommandValue(recordMessage)}`
+        );
+      }
+    }
+    throw error;
+  } finally {
+    if (store) {
+      const { closeDb } = await import('../src/core/db');
+      await closeDb();
+    }
+  }
 }
 
 function summary(
@@ -221,6 +538,39 @@ async function runDatabaseCommand(options: CliOptions) {
       process.env.GITHUB_TOKEN?.trim(),
   });
 
+  if (options.command === 'bootstrap') {
+    if (process.env.CATALOG_BOOTSTRAP_ENABLED !== 'true') {
+      throw new Error(
+        'Catalog bootstrap requires CATALOG_BOOTSTRAP_ENABLED=true.'
+      );
+    }
+    const actor = options.reviewer?.trim();
+    if (!actor) {
+      throw new Error('bootstrap requires --reviewer <identity>.');
+    }
+    const bootstrap = (store as unknown as Partial<BootstrapCatalogStore>)
+      .bootstrapExercism;
+    if (typeof bootstrap !== 'function') {
+      throw new Error(
+        'CatalogDatabaseStore.bootstrapExercism is not available in this build.'
+      );
+    }
+    const result = await bootstrap.call(
+      store,
+      curatedExercismProblems,
+      adapter,
+      actor
+    );
+    console.log(
+      JSON.stringify(
+        { command: options.command, mode: 'database-bootstrap', ...result },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
   if (options.command === 'dry-run') {
     const previous = await store.sourceState();
     const fetched = await adapter.fetchSnapshot(
@@ -344,6 +694,19 @@ async function runDatabaseCommand(options: CliOptions) {
 async function main() {
   const options = parseOptions(process.argv.slice(2));
   assertCuratedCatalog();
+  if (options.command === 'discover') {
+    await discoverCatalog(options);
+    return;
+  }
+  if (options.command === 'monitor') {
+    try {
+      await monitorCatalog();
+    } finally {
+      const { closeDb } = await import('../src/core/db');
+      await closeDb();
+    }
+    return;
+  }
   if (!options.workspacePath) {
     try {
       await runDatabaseCommand(options);
@@ -466,8 +829,12 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(
-    `[catalog] ${error instanceof Error ? error.message : String(error)}`
-  );
+  const message = error instanceof Error ? error.message : String(error);
+  if (/license|MIT allowlist|SPDX/i.test(message)) {
+    console.error(
+      `::error title=license_changed::${githubCommandValue(message)}`
+    );
+  }
+  console.error(`[catalog] ${message}`);
   process.exitCode = 1;
 });

@@ -33,6 +33,8 @@ import { cn } from '@/shared/lib/utils';
 
 import {
   calculateTopicMasterySnapshots,
+  getReviewItemForProblem,
+  getReviewItemKey,
   ReviewRating,
   TOPIC_LABELS,
 } from '../learning-progress';
@@ -97,6 +99,7 @@ const copy = {
       '先复述核心不变量，再写出时间与空间复杂度，最后用一个边界输入验证实现。',
     practiceTopic: '练习同类题',
     mastery: '当前掌握度',
+    version: '版本',
   },
   en: {
     title: 'Review Center',
@@ -145,6 +148,7 @@ const copy = {
       'Restate the invariant, write down time and space complexity, then validate the implementation with one boundary input.',
     practiceTopic: 'Practice this topic',
     mastery: 'Current mastery',
+    version: 'Version',
   },
 } as const;
 
@@ -167,22 +171,26 @@ export function ReviewPage() {
     const map = new Map<string, CodeRunResult[]>();
     for (const run of runs) {
       if (runPassed(run)) continue;
-      const id = String(run.problemSlug);
-      if (!id) continue;
-      map.set(id, [...(map.get(id) ?? []), run]);
+      const slug = String(run.problemSlug);
+      if (!slug) continue;
+      const key = getReviewItemKey(slug, run.problemContentVersion);
+      map.set(key, [...(map.get(key) ?? []), run]);
     }
     return map;
   }, [runs]);
 
-  const dueProblemSlugs = new Set(
-    Object.values(coach.reviewItems)
-      .filter((item) => item.status === 'due')
-      .map((item) => item.problemSlug)
-  );
-  const wrongProblems = problems.filter(
-    (problem) =>
-      dueProblemSlugs.has(problem.id) || dueProblemSlugs.has(problem.slug)
-  );
+  const wrongProblems = Object.values(coach.reviewItems)
+    .filter((item) => item.status === 'due')
+    .map((item) => ({
+      item,
+      problem: problems.find(
+        (problem) =>
+          (problem.id === item.problemSlug ||
+            problem.slug === item.problemSlug) &&
+          (problem.version?.contentVersion ?? 1) ===
+            (item.problemContentVersion ?? 1)
+      ),
+    }));
 
   const masterySnapshots = useMemo(
     () =>
@@ -192,8 +200,8 @@ export function ReviewPage() {
 
   const topicStats = useMemo(() => {
     const counts = new Map<string, number>();
-    wrongProblems.forEach((problem) =>
-      problem.topics.forEach((topic) =>
+    wrongProblems.forEach(({ problem }) =>
+      problem?.topics.forEach((topic) =>
         counts.set(topic, (counts.get(topic) ?? 0) + 1)
       )
     );
@@ -361,16 +369,24 @@ export function ReviewPage() {
           <Panel>
             {wrongProblems.length ? (
               <div className="divide-y">
-                {wrongProblems.map((problem) => {
-                  const text = localizedProblem(problem, locale);
+                {wrongProblems.map(({ item, problem }) => {
+                  const contentVersion = item.problemContentVersion ?? 1;
+                  const text = problem
+                    ? localizedProblem(problem, locale)
+                    : {
+                        titleText: `${item.problemSlug} · ${t.version} ${contentVersion}`,
+                      };
                   const failedRuns =
-                    failedByProblem.get(problem.id) ??
-                    failedByProblem.get(problem.slug) ??
-                    [];
+                    failedByProblem.get(
+                      getReviewItemKey(item.problemSlug, contentVersion)
+                    ) ?? [];
                   const latest = failedRuns.at(-1);
                   const error = String(latest?.error ?? '');
                   return (
-                    <article key={problem.id} className="p-4 md:p-5">
+                    <article
+                      key={getReviewItemKey(item.problemSlug, contentVersion)}
+                      className="p-4 md:p-5"
+                    >
                       <div className="flex flex-col gap-4 md:flex-row md:items-start">
                         <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-red-500/10 text-red-600 dark:text-red-300">
                           <FileQuestion className="size-5" />
@@ -388,7 +404,7 @@ export function ReviewPage() {
                             </Badge>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2">
-                            {problem.topics.map((topic) => (
+                            {(problem?.topics ?? []).map((topic) => (
                               <Badge
                                 key={topic}
                                 variant="secondary"
@@ -414,14 +430,19 @@ export function ReviewPage() {
                             variant="outline"
                             size="sm"
                             onClick={() =>
-                              coach.markReviewMastered(problem.slug)
+                              coach.markReviewMastered(
+                                item.problemSlug,
+                                contentVersion
+                              )
                             }
                           >
                             <Check />
                             {t.mark}
                           </Button>
                           <Button asChild size="sm">
-                            <Link href={`/practice/${problem.slug}`}>
+                            <Link
+                              href={`/practice/${item.problemSlug}?version=${contentVersion}`}
+                            >
                               {t.revisit}
                               <ArrowRight />
                             </Link>
@@ -452,9 +473,17 @@ export function ReviewPage() {
               {reviewCards.map((artifact, index) => {
                 const cardId = artifact.id ?? `review-card-${index}`;
                 const problemId = String(artifact.problemSlug ?? '');
+                const contentVersion = artifact.problemContentVersion ?? 1;
                 const problem = problems.find(
-                  (item) => item.id === problemId || item.slug === problemId
+                  (item) =>
+                    (item.id === problemId || item.slug === problemId) &&
+                    (item.version?.contentVersion ?? 1) === contentVersion
                 );
+                const reviewItem = problem
+                  ? getReviewItemForProblem(coach.reviewItems, problem)
+                  : coach.reviewItems[
+                      getReviewItemKey(problemId, contentVersion)
+                    ];
                 const title = problem
                   ? localizedProblem(problem, locale).titleText
                   : String(artifact.title ?? t.card);
@@ -568,7 +597,7 @@ export function ReviewPage() {
                         ) : null}
                       </div>
                     ) : null}
-                    {problem && coach.reviewItems[problem.slug] && revealed ? (
+                    {problemId && reviewItem && revealed ? (
                       <div className="mt-4 border-t pt-4">
                         <p className="text-muted-foreground mb-2 text-xs">
                           {t.ratePrompt}
@@ -593,9 +622,10 @@ export function ReviewPage() {
                               }
                               className="min-w-0 px-1 text-xs"
                               onClick={() =>
-                                coach.rateReview(problem.slug, rating, {
+                                coach.rateReview(problemId, rating, {
                                   attemptId: savedAttempt?.id,
                                   suggestedRating: grade?.suggestedRating,
+                                  problemContentVersion: contentVersion,
                                 })
                               }
                             >
@@ -605,14 +635,16 @@ export function ReviewPage() {
                         </div>
                       </div>
                     ) : null}
-                    {problem ? (
+                    {problemId ? (
                       <Button
                         asChild
                         variant="outline"
                         size="sm"
                         className="mt-4 self-start"
                       >
-                        <Link href={`/practice/${problem.slug}`}>
+                        <Link
+                          href={`/practice/${problemId}?version=${contentVersion}`}
+                        >
                           {t.revisit}
                           <ArrowRight />
                         </Link>

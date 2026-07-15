@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { ENABLED_LANGUAGE_IDS } from './languages';
+import { REVIEW_PROGRESS_VERSION } from './learning-progress';
 import { COACH_STORAGE_VERSION } from './storage';
 import type { JsonValue, TypeSpec } from './types';
 
@@ -536,6 +537,7 @@ const activeAssessmentSchema = z.object({
 
 export const reviewItemSchema = z.object({
   problemSlug: z.string().min(1).max(120),
+  problemContentVersion: z.number().int().min(1).optional().default(1),
   status: z.enum(['due', 'resolved', 'mastered']),
   source: z.enum(['mistake', 'completion']),
   dueAt: z.iso.datetime(),
@@ -550,7 +552,7 @@ export const reviewItemSchema = z.object({
 });
 
 const reviewItemsSchema = z
-  .record(z.string().min(1).max(120), reviewItemSchema)
+  .record(z.string().min(1).max(140), reviewItemSchema)
   .superRefine((items, context) => {
     const entries = Object.entries(items);
     if (entries.length > 500) {
@@ -564,11 +566,15 @@ const reviewItemsSchema = z
       });
     }
     entries.forEach(([slug, item]) => {
-      if (item.problemSlug !== slug) {
+      const expectedKey =
+        item.problemContentVersion === 1
+          ? item.problemSlug
+          : `${item.problemSlug}::v${item.problemContentVersion}`;
+      if (expectedKey !== slug) {
         context.addIssue({
           code: 'custom',
           path: [slug, 'problemSlug'],
-          message: 'review item key must match problemSlug',
+          message: 'review item key must match problemSlug and contentVersion',
         });
       }
     });
@@ -794,7 +800,7 @@ export const coachSyncRequestSchema = z
     importedProblem: importedProblemSchema.nullable(),
     importedDrafts: z.array(importedDraftRecordSchema).max(20).optional(),
     reviewProgress: reviewProgressSchema.optional().default({
-      version: 1,
+      version: REVIEW_PROGRESS_VERSION,
       items: {},
     }),
   })

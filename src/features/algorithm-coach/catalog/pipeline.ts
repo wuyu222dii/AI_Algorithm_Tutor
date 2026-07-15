@@ -3,6 +3,7 @@ import {
   sha256,
   withContentHash,
 } from './content-hash';
+import { isExercismLicenseEvidenceValid } from './exercism-adapter';
 import type {
   CatalogAuditEntry,
   CatalogCandidate,
@@ -64,7 +65,11 @@ export function applyExercismSnapshot(
   snapshot: ExercismSnapshot,
   actor = 'catalog-sync'
 ): CatalogSyncResult {
-  if (snapshot.licenseSpdx !== 'MIT') {
+  if (
+    snapshot.licenseSpdx !== 'MIT' ||
+    snapshot.license.spdx !== snapshot.licenseSpdx ||
+    !isExercismLicenseEvidenceValid(snapshot.license)
+  ) {
     throw new Error(
       'Only MIT-licensed Exercism snapshots may be synchronized.'
     );

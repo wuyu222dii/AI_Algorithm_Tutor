@@ -251,6 +251,36 @@ const defaultPermissions = [
     description: 'Delete AI tasks',
   },
 
+  // AlgoCoach catalog operations
+  {
+    code: 'admin.catalog.read',
+    resource: 'catalog',
+    action: 'read',
+    title: 'Read AlgoCoach Catalog',
+    description: 'View catalog candidates, validation, and source evidence',
+  },
+  {
+    code: 'admin.catalog.review',
+    resource: 'catalog',
+    action: 'review',
+    title: 'Review AlgoCoach Catalog',
+    description: 'Edit, validate, approve, and reject catalog candidates',
+  },
+  {
+    code: 'admin.catalog.publish',
+    resource: 'catalog',
+    action: 'publish',
+    title: 'Publish AlgoCoach Catalog',
+    description: 'Publish an independently approved catalog candidate',
+  },
+  {
+    code: 'admin.catalog.rollback',
+    resource: 'catalog',
+    action: 'rollback',
+    title: 'Rollback AlgoCoach Catalog',
+    description: 'Restore a previously published immutable revision',
+  },
+
   // Wildcard permission for super admin
   {
     code: '*',
@@ -288,6 +318,7 @@ const defaultRoles = [
       'admin.apikeys.*',
       'admin.settings.read',
       'admin.ai-tasks.*',
+      'admin.catalog.*',
     ],
   },
   {
@@ -302,6 +333,8 @@ const defaultRoles = [
       'admin.posts.write',
       'admin.categories.read',
       'admin.categories.write',
+      'admin.catalog.read',
+      'admin.catalog.review',
     ],
   },
   {
@@ -318,6 +351,7 @@ const defaultRoles = [
       'admin.payments.read',
       'admin.subscriptions.read',
       'admin.credits.read',
+      'admin.catalog.read',
     ],
   },
 ];

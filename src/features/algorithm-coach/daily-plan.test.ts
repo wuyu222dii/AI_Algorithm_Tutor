@@ -100,14 +100,21 @@ function session(
     status?: CodeRunResult['status'];
     startedAt?: string;
     completedAt?: string;
+    problemContentVersion?: number;
   } = {}
 ): PracticeSession {
   const startedAt = options.startedAt ?? '2026-07-14T00:00:00.000Z';
+  const problemContentVersion = options.problemContentVersion ?? 1;
   return {
     problemSlug,
-    problemContentVersion: 1,
+    problemContentVersion,
     code: {},
-    runs: [run(problemSlug, options.status ?? 'failed', startedAt)],
+    runs: [
+      {
+        ...run(problemSlug, options.status ?? 'failed', startedAt),
+        problemContentVersion,
+      },
+    ],
     hintLevel: 0,
     diagnosisCount: 0,
     correctedAfterDiagnosis: false,
@@ -264,6 +271,32 @@ describe('daily learning plan', () => {
     ).toBe(true);
   });
 
+  it('does not classify an old session using the difficulty of a newer revision', () => {
+    const revised = problem('revised', 'dfs', {
+      difficulty: 'hard',
+      contentVersion: 2,
+      estimatedMinutes: 28,
+    });
+    const target = problem('target-hard', 'dynamic-programming', {
+      difficulty: 'hard',
+      estimatedMinutes: 24,
+    });
+    const state = stateWithProfile(60);
+    state.sessions[getPracticeSessionKey(revised.slug, 1)] = session(
+      revised.slug,
+      {
+        status: 'passed',
+        problemContentVersion: 1,
+        startedAt: '2026-07-10T00:00:00.000Z',
+        completedAt: '2026-07-10T00:05:00.000Z',
+      }
+    );
+
+    expect(
+      estimateDailyPlanProblemMinutes(target, state, [revised, target])
+    ).toBe(24);
+  });
+
   it('never exceeds the daily minute budget', () => {
     const due = problem('due', 'array-hash', { estimatedMinutes: 12 });
     const weak = problem('weak', 'stack', { estimatedMinutes: 12 });
@@ -399,6 +432,47 @@ describe('daily learning plan', () => {
     expect(plan.tasks.map((task) => task.problemSlug)).toEqual([
       typescript.slug,
     ]);
+  });
+
+  it('falls back to an enabled language that the revision actually supports', () => {
+    const state = stateWithProfile();
+    state.profile = { ...profile(), preferredLanguage: 'typescript' };
+    const javascriptOnly = problem('javascript-only', 'array-hash');
+    const typescriptOnly = problem('typescript-only', 'stack', {
+      languages: ['typescript'],
+    });
+
+    const plan = createDailyLearningPlan({
+      state,
+      reviewItems: {},
+      catalog: [javascriptOnly, typescriptOnly],
+      date: NOW,
+      timeZone: TIME_ZONE,
+      enabledLanguages: ['javascript'],
+    });
+
+    expect(plan.preferredLanguage).toBe('javascript');
+    expect(plan.tasks.map((task) => task.problemSlug)).toEqual([
+      javascriptOnly.slug,
+    ]);
+  });
+
+  it('falls back when the preferred language is enabled but unsupported by the catalog', () => {
+    const state = stateWithProfile();
+    state.profile = { ...profile(), preferredLanguage: 'typescript' };
+    const javascriptOnly = problem('javascript-only', 'array-hash');
+
+    const plan = createDailyLearningPlan({
+      state,
+      reviewItems: {},
+      catalog: [javascriptOnly],
+      date: NOW,
+      timeZone: TIME_ZONE,
+      enabledLanguages: ['typescript', 'javascript'],
+    });
+
+    expect(plan.preferredLanguage).toBe('javascript');
+    expect(plan.tasks[0].problemSlug).toBe(javascriptOnly.slug);
   });
 
   it('skips a pending task immutably and records the required reason', () => {

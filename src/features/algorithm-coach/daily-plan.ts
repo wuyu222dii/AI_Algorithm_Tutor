@@ -1,7 +1,9 @@
+import { problemSupportsLanguage } from './languages';
 import {
   ALL_PROBLEM_TOPICS,
   calculateTopicMasterySnapshots,
   getProblemPracticeSession,
+  getReviewItemForProblem,
   isPracticeSessionCompleted,
 } from './learning-progress';
 import { normalizeProblemContentVersion } from './sync';
@@ -34,6 +36,7 @@ export interface DailyPlanInput {
   date: Date | string;
   timeZone: string;
   profile?: LearningProfile | null;
+  enabledLanguages?: readonly Language[];
 }
 
 type Candidate = {
@@ -48,6 +51,7 @@ type Candidate = {
 type SelectionContext = {
   state: CoachState;
   profile: LearningProfile | null;
+  preferredLanguage?: Language;
   catalog: Problem[];
   planDate: string;
   timeZone: string;
@@ -145,17 +149,18 @@ function supportsLanguage(
   problem: Problem,
   language: Language | undefined
 ): boolean {
-  if (!language) return true;
-  if (problem.languageConfigs?.[language]) return true;
-  return Boolean(problem.templates?.[language]);
+  return !language || problemSupportsLanguage(problem, language);
 }
 
 function catalogProblemForSession(
   catalog: readonly Problem[],
-  problemSlug: string
+  problemSlug: string,
+  problemContentVersion: number
 ): Problem | undefined {
   return catalog.find(
-    (problem) => problem.slug === problemSlug || problem.id === problemSlug
+    (problem) =>
+      (problem.slug === problemSlug || problem.id === problemSlug) &&
+      contentVersion(problem) === problemContentVersion
   );
 }
 
@@ -181,7 +186,11 @@ function historicalDifficultyEstimates(
 
   for (const session of Object.values(state.sessions)) {
     if (!session.completedAt) continue;
-    const problem = catalogProblemForSession(catalog, session.problemSlug);
+    const problem = catalogProblemForSession(
+      catalog,
+      session.problemSlug,
+      normalizeProblemContentVersion(session.problemContentVersion)
+    );
     if (!problem) continue;
     const startedAt = Date.parse(session.startedAt);
     const completedAt = Date.parse(session.completedAt);
@@ -246,13 +255,6 @@ function latestAssessmentWeakTopics(state: CoachState): Set<ProblemTopic> {
   return new Set(latest?.weakTopics ?? []);
 }
 
-function reviewItemForProblem(
-  reviewItems: Record<string, ReviewItem>,
-  problem: Problem
-): ReviewItem | undefined {
-  return reviewItems[problem.slug] ?? reviewItems[problem.id];
-}
-
 function compareCandidates(left: Candidate, right: Candidate): number {
   return right.score - left.score || left.catalogIndex - right.catalogIndex;
 }
@@ -266,12 +268,27 @@ function buildSelectionContext(
   const planDate = getDailyPlanDateKey(date, timeZone);
   const profile =
     input.profile === undefined ? input.state.profile : input.profile;
-  const preferredLanguage =
+  const requestedLanguage =
     planProfile?.preferredLanguage ?? profile?.preferredLanguage;
   const goal = planProfile?.goal ?? profile?.goal ?? 'foundation';
-  const catalog = currentCatalog(input.catalog).filter((problem) =>
-    supportsLanguage(problem, preferredLanguage)
-  );
+  const currentProblems = currentCatalog(input.catalog);
+  const preferredLanguage = input.enabledLanguages
+    ? requestedLanguage &&
+      input.enabledLanguages.includes(requestedLanguage) &&
+      currentProblems.some((problem) =>
+        supportsLanguage(problem, requestedLanguage)
+      )
+      ? requestedLanguage
+      : input.enabledLanguages.find((language) =>
+          currentProblems.some((problem) => supportsLanguage(problem, language))
+        )
+    : requestedLanguage;
+  const catalog =
+    input.enabledLanguages && !preferredLanguage
+      ? []
+      : currentProblems.filter((problem) =>
+          supportsLanguage(problem, preferredLanguage)
+        );
   const mastery = calculateTopicMasterySnapshots(
     input.state,
     input.reviewItems,
@@ -283,7 +300,7 @@ function buildSelectionContext(
   const dueReview = catalog
     .map((problem, catalogIndex): Candidate | undefined => {
       const topic = primaryTopic(problem);
-      const reviewItem = reviewItemForProblem(input.reviewItems, problem);
+      const reviewItem = getReviewItemForProblem(input.reviewItems, problem);
       if (
         !topic ||
         !reviewItem ||
@@ -362,6 +379,7 @@ function buildSelectionContext(
   return {
     state: input.state,
     profile,
+    preferredLanguage,
     catalog,
     planDate,
     timeZone,
@@ -482,7 +500,7 @@ export function createDailyLearningPlan(
     timeZone: context.timeZone,
     budgetMinutes,
     estimatedMinutes: totalEstimatedMinutes(tasks),
-    preferredLanguage: context.profile?.preferredLanguage,
+    preferredLanguage: context.preferredLanguage,
     goal: context.profile?.goal ?? 'foundation',
     tasks,
     changes: [],

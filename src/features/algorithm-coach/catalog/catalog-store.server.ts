@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, desc, eq, inArray, isNull, max } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, max, sql } from 'drizzle-orm';
 
 import { dbPostgres } from '@/core/db';
 import {
+  coachCatalogAdminMutation,
+  coachCatalogAiGeneration,
   coachCatalogReviewAudit,
   coachCatalogSource,
   coachCatalogSyncRun,
@@ -13,27 +15,59 @@ import {
   coachTestCase,
 } from '@/config/db/schema.postgres';
 
+import { COACH_MODEL_WHITELIST, type CoachModel } from '../model';
 import {
   calculateCandidateContentHash,
+  calculateCanonicalDataHash,
   calculateCatalogContentFingerprint,
+  sha256,
+  stableStringify,
 } from './content-hash';
-import { ExercismCatalogAdapter } from './exercism-adapter';
+import {
+  assertDiscoveryDraftBoundary,
+  calculateDiscoveryContentHash,
+  CATALOG_AI_DRAFT_PROMPT_VERSION,
+} from './discovery-enrichment';
+import {
+  calculateGitBlobSha,
+  ExercismCatalogAdapter,
+  isExercismLicenseEvidenceValid,
+} from './exercism-adapter';
 import { emitCatalogOperationalEvent } from './operational-events';
 import type {
+  CatalogBootstrapSummary,
+  CatalogCandidateState,
+  CatalogJsonValue,
   CatalogValidationResult,
+  ExercismDiscoveryReport,
   ExercismSnapshot,
   ExercismUpstreamProblem,
   RawCatalogProblem,
 } from './raw-types';
+import { validateCatalogRunnerCompatibility } from './runner-compatibility.server';
 import {
   candidateStateForValidation,
   mergeCatalogValidationResults,
   validateCandidatePayload,
+  validateCanonicalTestProvenance,
   validateCatalogBatch,
 } from './validation';
 
 const EXERCISM_SOURCE_ID = 'catalog_source_exercism';
 const EXERCISM_SOURCE_KEY = 'exercism-problem-specifications';
+export const CATALOG_POLICY_VERSION = 'catalog-policy-v1';
+
+const REVIEWER_ROLE = 'algocoach_catalog_reviewer';
+const PUBLISHER_ROLE = 'algocoach_catalog_publisher';
+const AI_FINISH_REASONS = new Set([
+  'stop',
+  'length',
+  'content-filter',
+  'tool-calls',
+  'error',
+  'other',
+  'unknown',
+]);
 
 type Database = ReturnType<typeof dbPostgres>;
 type CatalogTransaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -41,6 +75,77 @@ type CatalogTransaction = Parameters<Parameters<Database['transaction']>[0]>[0];
 interface CandidatePayload {
   problem: RawCatalogProblem;
   upstream: ExercismUpstreamProblem;
+}
+
+type CandidateRow = typeof coachProblemCandidate.$inferSelect;
+
+export interface CatalogCandidateListOptions {
+  status?: CatalogCandidateState | CatalogCandidateState[];
+  changeKind?: CandidateRow['changeKind'];
+  limit?: number;
+  offset?: number;
+}
+
+export interface CatalogCandidateDetails {
+  candidate: CandidateRow;
+  targetProblemSlug?: string;
+  audits: Array<typeof coachCatalogReviewAudit.$inferSelect>;
+  aiGenerations: Array<typeof coachCatalogAiGeneration.$inferSelect>;
+}
+
+export interface CatalogDiscoveryIngestionSummary {
+  ingested: number;
+  alreadyPresent: number;
+  candidateIds: string[];
+  discovered: number;
+  duplicates: number;
+  quarantined: string[];
+  rejected: string[];
+}
+
+export interface CatalogAdminMutationClaim {
+  mutation: typeof coachCatalogAdminMutation.$inferSelect;
+  claimed: boolean;
+}
+
+export interface RecordedExercismEvidence {
+  externalId: string;
+  sourceRevision: string;
+  statementBlobSha?: string;
+  canonicalBlobSha?: string;
+  rawContentHash?: string;
+  originOnly: boolean;
+}
+
+export interface CatalogDiscoveryState {
+  etag?: string;
+  revision?: string;
+  backlogComplete: boolean;
+  consecutiveFailures: number;
+  previousLicenseSpdx?: string;
+  previousLicenseContentHash?: string;
+  latestLicenseSpdx?: string;
+  latestLicenseContentHash?: string;
+  previousTreeExercises?: number;
+  latestTreeExercises?: number;
+  latestCandidateDelta?: number;
+  candidateCount: number;
+}
+
+export interface ClaimCatalogAdminMutationInput {
+  actorUserId: string;
+  idempotencyKey: string;
+  action:
+    | 'update_draft'
+    | 'validate'
+    | 'approve'
+    | 'reject'
+    | 'publish'
+    | 'rollback'
+    | 'bootstrap';
+  targetType: 'candidate' | 'problem' | 'revision' | 'catalog';
+  targetId: string;
+  requestHash: string;
 }
 
 export interface DatabaseSyncSummary {
@@ -51,6 +156,48 @@ export interface DatabaseSyncSummary {
   notModified: boolean;
   discovered: number;
   candidateIds: string[];
+}
+
+export function calculateCatalogCandidateDelta(
+  latestStatistics: Record<string, unknown>,
+  previousStatistics: Record<string, unknown>,
+  totalCandidateCount: number
+): number {
+  const count = (statistics: Record<string, unknown>) => {
+    const value =
+      statistics.candidateBacklog ??
+      statistics.undiscoveredExercises ??
+      statistics.discovered ??
+      statistics.selectedExercises ??
+      undefined;
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.max(0, value)
+      : undefined;
+  };
+  const latest = count(latestStatistics);
+  const previous = count(previousStatistics);
+  if (latest !== undefined && previous !== undefined) {
+    return Math.abs(latest - previous);
+  }
+  if (latest !== undefined) return latest;
+  return Math.max(0, totalCandidateCount);
+}
+
+export function countConsecutiveDiscoveryFailures(
+  runs: Array<{ status: string; statistics: unknown }>
+): number {
+  const discoveryRuns = runs.filter(
+    (run) =>
+      run.statistics !== null &&
+      typeof run.statistics === 'object' &&
+      (run.statistics as { kind?: unknown }).kind === 'discovery'
+  );
+  let failures = 0;
+  for (const run of discoveryRuns) {
+    if (run.status !== 'failed') break;
+    failures += 1;
+  }
+  return failures;
 }
 
 export interface DatabaseValidationSummary {
@@ -111,6 +258,552 @@ function candidatePayload(value: unknown): CandidatePayload {
   return payload as CandidatePayload;
 }
 
+function candidatePayloadOrUndefined(
+  value: unknown
+): CandidatePayload | undefined {
+  try {
+    return candidatePayload(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function actorUserId(actor: string): string {
+  const value = actor.trim();
+  if (!value) throw new Error('A catalog actor user id is required.');
+  return value;
+}
+
+async function setLocalCapabilityRole(
+  tx: CatalogTransaction,
+  role: typeof REVIEWER_ROLE | typeof PUBLISHER_ROLE
+): Promise<void> {
+  await tx.execute(
+    role === REVIEWER_ROLE
+      ? sql.raw(`SET LOCAL ROLE ${REVIEWER_ROLE}`)
+      : sql.raw(`SET LOCAL ROLE ${PUBLISHER_ROLE}`)
+  );
+}
+
+function jsonHash(value: unknown): string {
+  return sha256(stableStringify(value as CatalogJsonValue));
+}
+
+function assertCandidatePayloadMatchesRawEvidence(
+  candidate: CandidateRow,
+  payload: CandidatePayload
+): void {
+  const raw =
+    candidate.rawPayload && typeof candidate.rawPayload === 'object'
+      ? (candidate.rawPayload as Record<string, unknown>)
+      : {};
+  const source =
+    raw.source && typeof raw.source === 'object'
+      ? (raw.source as Record<string, unknown>)
+      : raw;
+  const checks: Array<[unknown, unknown]> = [
+    [payload.problem.origin.externalId, candidate.externalId],
+    [payload.problem.origin.sourceRevision, candidate.sourceRevision],
+    [payload.problem.origin.upstreamUrl, candidate.upstreamUrl],
+    [payload.problem.origin.licenseSpdx, candidate.licenseSpdx],
+    [payload.upstream.externalId, candidate.externalId],
+    [payload.upstream.upstreamUrl, candidate.upstreamUrl],
+    [payload.upstream.statementPath, source.statementPath],
+    [payload.upstream.statementHash, source.statementHash],
+    [payload.upstream.canonicalDataHash, source.canonicalDataHash],
+  ];
+  if (
+    checks.some(
+      ([actual, expected]) =>
+        typeof expected === 'string' && actual !== expected
+    )
+  ) {
+    throw new Error(
+      'Catalog draft does not match immutable upstream evidence.'
+    );
+  }
+  if (
+    typeof source.licenseText === 'string' &&
+    (typeof source.licenseContentHash !== 'string' ||
+      sha256(source.licenseText) !== source.licenseContentHash ||
+      typeof source.licenseGitBlobSha !== 'string' ||
+      calculateGitBlobSha(source.licenseText) !== source.licenseGitBlobSha ||
+      source.licenseSpdx !== candidate.licenseSpdx ||
+      source.attribution !== candidate.attribution)
+  ) {
+    throw new Error('Catalog license evidence is invalid.');
+  }
+}
+
+function candidateHasDiscoveryEvidence(candidate: CandidateRow): boolean {
+  if (!candidate.rawPayload || typeof candidate.rawPayload !== 'object') {
+    return false;
+  }
+  const raw = candidate.rawPayload as {
+    schemaVersion?: unknown;
+    publishable?: unknown;
+    source?: { statementBlobSha?: unknown };
+    upstream?: { statementBlobSha?: unknown };
+  };
+  return (
+    raw.schemaVersion === 1 &&
+    raw.publishable === false &&
+    typeof raw.source?.statementBlobSha === 'string' &&
+    typeof raw.upstream?.statementBlobSha === 'string'
+  );
+}
+
+function candidateSourceEvidence(
+  candidate: CandidateRow
+): Record<string, unknown> {
+  if (!candidate.rawPayload || typeof candidate.rawPayload !== 'object') {
+    return {};
+  }
+  const raw = candidate.rawPayload as Record<string, unknown>;
+  return raw.source && typeof raw.source === 'object'
+    ? (raw.source as Record<string, unknown>)
+    : raw;
+}
+
+function candidateLicenseEvidenceIssues(
+  candidate: CandidateRow
+): CatalogValidationResult['issues'] {
+  const source = candidateSourceEvidence(candidate);
+  if (
+    typeof source.licenseSpdx !== 'string' ||
+    typeof source.licenseText !== 'string' ||
+    typeof source.licenseGitBlobSha !== 'string' ||
+    typeof source.licenseContentHash !== 'string'
+  ) {
+    return [
+      {
+        code: 'invalid_license',
+        message:
+          'Candidate must retain the exact verified MIT license text, Git blob SHA, content hash, and attribution.',
+        path: 'rawPayload.source',
+      },
+    ];
+  }
+  if (
+    !isExercismLicenseEvidenceValid({
+      path: 'LICENSE',
+      spdx: source.licenseSpdx,
+      text: source.licenseText,
+      gitBlobSha: source.licenseGitBlobSha,
+      contentHash: source.licenseContentHash,
+    }) ||
+    source.licenseSpdx !== candidate.licenseSpdx ||
+    source.attribution !== candidate.attribution
+  ) {
+    return [
+      {
+        code: 'invalid_license',
+        message:
+          'Candidate must retain the exact verified MIT license text, Git blob SHA, content hash, and attribution.',
+        path: 'rawPayload.source',
+      },
+    ];
+  }
+  return [];
+}
+
+function candidateTestProvenanceIssues(
+  candidate: CandidateRow,
+  problem: RawCatalogProblem
+): CatalogValidationResult['issues'] {
+  if (!candidateHasDiscoveryEvidence(candidate)) return [];
+  const raw = candidate.rawPayload as {
+    upstream?: { canonicalData?: unknown };
+  };
+  const canonicalData = raw.upstream?.canonicalData;
+  if (
+    canonicalData === undefined ||
+    canonicalData === null ||
+    (typeof canonicalData !== 'object' &&
+      !['string', 'number', 'boolean'].includes(typeof canonicalData))
+  ) {
+    return [
+      {
+        code: 'invalid_upstream_data',
+        message: 'Immutable canonical test evidence is missing.',
+        path: 'rawPayload.upstream.canonicalData',
+      },
+    ];
+  }
+  return validateCanonicalTestProvenance(
+    problem,
+    canonicalData as CatalogJsonValue
+  ).issues;
+}
+
+async function priorTestEvidenceIssues(
+  tx: CatalogTransaction,
+  candidate: CandidateRow,
+  problem: RawCatalogProblem
+): Promise<CatalogValidationResult['issues']> {
+  if (!candidate.targetProblemId) return [];
+  const prior = await tx
+    .select({
+      args: coachTestCase.args,
+      expected: coachTestCase.expected,
+      sourceTestUuid: coachTestCase.sourceTestUuid,
+    })
+    .from(coachTestCase)
+    .where(eq(coachTestCase.problemId, candidate.targetProblemId));
+  const expectedByArgs = new Map(
+    prior.map((test) => [
+      stableStringify(test.args as CatalogJsonValue),
+      stableStringify(test.expected as CatalogJsonValue),
+    ])
+  );
+  const argsByCanonicalUuid = new Map(
+    prior.flatMap((test) =>
+      test.sourceTestUuid
+        ? [
+            [
+              test.sourceTestUuid,
+              stableStringify(test.args as CatalogJsonValue),
+            ] as const,
+          ]
+        : []
+    )
+  );
+  const issues: CatalogValidationResult['issues'] = [];
+  problem.tests.forEach((test, index) => {
+    const args = stableStringify(test.args as CatalogJsonValue);
+    const expected = stableStringify(test.expected as CatalogJsonValue);
+    const priorExpected = expectedByArgs.get(args);
+    if (priorExpected !== undefined && priorExpected !== expected) {
+      issues.push({
+        code: 'invalid_upstream_data',
+        message:
+          'A prior revision has the same test arguments with a different expected result.',
+        path: `tests.${index}`,
+      });
+    }
+    if (
+      test.sourceKind === 'canonical' &&
+      test.sourceTestUuid &&
+      argsByCanonicalUuid.has(test.sourceTestUuid) &&
+      argsByCanonicalUuid.get(test.sourceTestUuid) !== args
+    ) {
+      issues.push({
+        code: 'invalid_upstream_data',
+        message: 'Canonical test UUID maps to a different prior test vector.',
+        path: `tests.${index}.sourceTestUuid`,
+      });
+    }
+  });
+  return issues;
+}
+
+function normalizedTestSetSignature(
+  signature: unknown,
+  tests: Array<{ args: unknown; expected: unknown }>
+): string {
+  const vectors = tests
+    .map((test) =>
+      stableStringify({
+        args: test.args as CatalogJsonValue,
+        expected: test.expected as CatalogJsonValue,
+      })
+    )
+    .sort((left, right) => left.localeCompare(right));
+  return sha256(
+    stableStringify({
+      signature: (signature ?? null) as CatalogJsonValue,
+      vectors,
+    })
+  );
+}
+
+async function duplicateCatalogIdentityIssues(
+  tx: CatalogTransaction,
+  candidate: CandidateRow,
+  problem: RawCatalogProblem
+): Promise<CatalogValidationResult['issues']> {
+  const candidateSignature = normalizedTestSetSignature(
+    problem.languageConfigs.javascript.signature,
+    problem.tests
+  );
+  const issues: CatalogValidationResult['issues'] = [];
+  const issueKeys = new Set<string>();
+  const addIssue = (
+    matchedId: string,
+    reason: string,
+    matchedProblemId?: string | null
+  ) => {
+    if (
+      matchedProblemId &&
+      candidate.targetProblemId &&
+      matchedProblemId === candidate.targetProblemId
+    ) {
+      return;
+    }
+    const key = `${matchedProblemId ?? matchedId}:${reason}`;
+    if (issueKeys.has(key)) return;
+    issueKeys.add(key);
+    issues.push({
+      code:
+        reason === 'external mapping'
+          ? 'duplicate_external_id'
+          : 'duplicate_content',
+      message: `Candidate matches existing ${reason} ${matchedId}; associate it to the existing external problem before validation.`,
+      path: 'targetProblemId',
+    });
+  };
+
+  const existingCandidates = await tx.select().from(coachProblemCandidate);
+  for (const existing of existingCandidates) {
+    if (existing.id === candidate.id || existing.status === 'rejected')
+      continue;
+    const existingPayload = candidatePayloadOrUndefined(
+      existing.normalizedProblem
+    );
+    const inferredProblemId =
+      existing.targetProblemId ??
+      (existing.status === 'published'
+        ? stableId('problem', existing.sourceId, existing.externalId)
+        : null);
+    if (existing.externalId === candidate.externalId) {
+      addIssue(existing.id, 'external mapping', inferredProblemId);
+    }
+    if (existing.contentHash === candidate.contentHash) {
+      addIssue(existing.id, 'candidate content hash', inferredProblemId);
+    }
+    if (
+      existingPayload?.problem.origin.contentHash === problem.origin.contentHash
+    ) {
+      addIssue(existing.id, 'local content hash', inferredProblemId);
+    }
+    if (
+      existingPayload &&
+      normalizedTestSetSignature(
+        existingPayload.problem.languageConfigs.javascript.signature,
+        existingPayload.problem.tests
+      ) === candidateSignature
+    ) {
+      addIssue(
+        existing.id,
+        'complete test-vector signature',
+        inferredProblemId
+      );
+    }
+  }
+
+  const revisions = await tx
+    .select({
+      id: coachProblemRevision.id,
+      problemId: coachProblemRevision.problemId,
+      contentHash: coachProblemRevision.contentHash,
+      sourceExternalId: coachProblemRevision.sourceExternalId,
+      signature: coachProblemRevision.signature,
+    })
+    .from(coachProblemRevision)
+    .where(inArray(coachProblemRevision.status, ['published', 'archived']));
+  if (revisions.length === 0) return issues;
+  const revisionIds = revisions.map((revision) => revision.id);
+  const revisionTests = await tx
+    .select({
+      revisionId: coachTestCase.revisionId,
+      args: coachTestCase.args,
+      expected: coachTestCase.expected,
+    })
+    .from(coachTestCase)
+    .where(inArray(coachTestCase.revisionId, revisionIds));
+  const testsByRevision = new Map<
+    string,
+    Array<{ args: unknown; expected: unknown }>
+  >();
+  for (const test of revisionTests) {
+    const tests = testsByRevision.get(test.revisionId) ?? [];
+    tests.push({ args: test.args, expected: test.expected });
+    testsByRevision.set(test.revisionId, tests);
+  }
+  for (const revision of revisions) {
+    if (revision.sourceExternalId === candidate.externalId) {
+      addIssue(revision.id, 'external mapping', revision.problemId);
+    }
+    if (revision.contentHash === candidate.contentHash) {
+      addIssue(revision.id, 'revision content hash', revision.problemId);
+    }
+    const tests = testsByRevision.get(revision.id);
+    if (
+      tests?.length === problem.tests.length &&
+      normalizedTestSetSignature(revision.signature, tests) ===
+        candidateSignature
+    ) {
+      addIssue(
+        revision.id,
+        'complete test-vector signature',
+        revision.problemId
+      );
+    }
+  }
+  return issues;
+}
+
+async function validateRunnerCompatibility(
+  problem: RawCatalogProblem
+): Promise<CatalogValidationResult> {
+  try {
+    const result = await validateCatalogRunnerCompatibility(problem);
+    return {
+      valid: result.valid,
+      issues: result.issues.map((item) => ({
+        code: 'invalid_function_protocol' as const,
+        message: [
+          item.language ? `[${item.language}]` : '[catalog]',
+          `[${item.stage}]`,
+          item.testId ? `[test:${item.testId}]` : '',
+          item.message,
+        ]
+          .filter(Boolean)
+          .join(' '),
+        path:
+          item.path ??
+          (item.language
+            ? `languageConfigs.${item.language}`
+            : item.testId
+              ? `tests.${item.testId}`
+              : 'runnerCompatibility'),
+      })),
+      runnerCompatibility: {
+        valid: result.valid,
+        testCount: result.testCount,
+        checks: result.checks,
+        issues: result.issues,
+      },
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Unknown runner gate failure.';
+    return {
+      valid: false,
+      issues: [
+        {
+          code: 'invalid_function_protocol',
+          message: `Runner compatibility gate failed: ${message.slice(0, 1000)}`,
+          path: 'runnerCompatibility',
+        },
+      ],
+      runnerCompatibility: {
+        valid: false,
+        testCount: problem.tests.length,
+        checks: [],
+        issues: [
+          {
+            code: 'runtime_protocol_error',
+            stage: 'runtime',
+            message: message.slice(0, 1000),
+          },
+        ],
+      },
+    };
+  }
+}
+
+function boundedLimit(value: number | undefined, fallback = 50): number {
+  if (value === undefined) return fallback;
+  if (!Number.isInteger(value))
+    throw new Error('Catalog limit must be an integer.');
+  return Math.max(1, Math.min(100, value));
+}
+
+async function reconcileAdminMutationResult(
+  tx: CatalogTransaction,
+  mutation: typeof coachCatalogAdminMutation.$inferSelect
+): Promise<Record<string, unknown> | undefined> {
+  if (mutation.targetType === 'candidate') {
+    const [candidate] = await tx
+      .select({ status: coachProblemCandidate.status })
+      .from(coachProblemCandidate)
+      .where(eq(coachProblemCandidate.id, mutation.targetId))
+      .limit(1);
+    if (!candidate) return undefined;
+    const audits = await tx
+      .select({
+        action: coachCatalogReviewAudit.action,
+        createdAt: coachCatalogReviewAudit.createdAt,
+      })
+      .from(coachCatalogReviewAudit)
+      .where(eq(coachCatalogReviewAudit.candidateId, mutation.targetId))
+      .orderBy(desc(coachCatalogReviewAudit.createdAt))
+      .limit(100);
+    const actions = new Set(
+      audits
+        .filter((audit) => audit.createdAt >= mutation.claimedAt)
+        .map((audit) => audit.action)
+    );
+    const applied =
+      (mutation.action === 'approve' &&
+        ['approved', 'published'].includes(candidate.status) &&
+        actions.has('approved')) ||
+      (mutation.action === 'publish' &&
+        candidate.status === 'published' &&
+        actions.has('published')) ||
+      (mutation.action === 'reject' &&
+        candidate.status === 'rejected' &&
+        actions.has('rejected')) ||
+      (mutation.action === 'update_draft' && actions.has('draft_updated')) ||
+      (mutation.action === 'validate' && actions.has('submitted'));
+    return applied
+      ? {
+          reconciled: true,
+          action: mutation.action,
+          targetId: mutation.targetId,
+          candidateStatus: candidate.status,
+        }
+      : undefined;
+  }
+  if (
+    mutation.action === 'rollback' &&
+    ['problem', 'revision'].includes(mutation.targetType)
+  ) {
+    const audits = await tx
+      .select()
+      .from(coachCatalogReviewAudit)
+      .where(
+        mutation.targetType === 'problem'
+          ? eq(coachCatalogReviewAudit.problemId, mutation.targetId)
+          : eq(coachCatalogReviewAudit.revisionId, mutation.targetId)
+      )
+      .orderBy(desc(coachCatalogReviewAudit.createdAt))
+      .limit(20);
+    if (
+      audits.some(
+        (audit) =>
+          audit.action === 'rolled_back' &&
+          audit.createdAt >= mutation.claimedAt
+      )
+    ) {
+      return {
+        reconciled: true,
+        action: mutation.action,
+        targetId: mutation.targetId,
+      };
+    }
+  }
+  if (mutation.action === 'bootstrap') {
+    const runs = await tx
+      .select()
+      .from(coachCatalogSyncRun)
+      .orderBy(desc(coachCatalogSyncRun.createdAt))
+      .limit(20);
+    if (
+      runs.some(
+        (run) =>
+          run.createdAt >= mutation.claimedAt &&
+          (run.statistics as { kind?: unknown })?.kind === 'bootstrap' &&
+          run.status === 'succeeded'
+      )
+    ) {
+      return { reconciled: true, action: mutation.action };
+    }
+  }
+  return undefined;
+}
+
 async function ensureExercismSource(database: Database | CatalogTransaction) {
   await database
     .insert(coachCatalogSource)
@@ -147,6 +840,516 @@ async function ensureExercismSource(database: Database | CatalogTransaction) {
 export class CatalogDatabaseStore {
   constructor(private readonly database: Database = dbPostgres()) {}
 
+  async listCandidates(
+    options: CatalogCandidateListOptions = {}
+  ): Promise<CandidateRow[]> {
+    return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, REVIEWER_ROLE);
+      const filters = [];
+      if (options.status) {
+        filters.push(
+          Array.isArray(options.status)
+            ? inArray(coachProblemCandidate.status, options.status)
+            : eq(coachProblemCandidate.status, options.status)
+        );
+      }
+      if (options.changeKind) {
+        filters.push(eq(coachProblemCandidate.changeKind, options.changeKind));
+      }
+      return tx
+        .select()
+        .from(coachProblemCandidate)
+        .where(filters.length > 0 ? and(...filters) : undefined)
+        .orderBy(desc(coachProblemCandidate.updatedAt))
+        .limit(boundedLimit(options.limit))
+        .offset(Math.max(0, Math.trunc(options.offset ?? 0)));
+    });
+  }
+
+  async getCandidate(
+    candidateId: string
+  ): Promise<CatalogCandidateDetails | undefined> {
+    return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, REVIEWER_ROLE);
+      const [candidate] = await tx
+        .select()
+        .from(coachProblemCandidate)
+        .where(eq(coachProblemCandidate.id, candidateId))
+        .limit(1);
+      if (!candidate) return undefined;
+      const [targetProblem] = candidate.targetProblemId
+        ? await tx
+            .select({ slug: coachProblem.slug })
+            .from(coachProblem)
+            .where(eq(coachProblem.id, candidate.targetProblemId))
+            .limit(1)
+        : [];
+      const audits = await tx
+        .select()
+        .from(coachCatalogReviewAudit)
+        .where(eq(coachCatalogReviewAudit.candidateId, candidateId))
+        .orderBy(desc(coachCatalogReviewAudit.createdAt))
+        .limit(100);
+      const aiGenerations = await tx
+        .select()
+        .from(coachCatalogAiGeneration)
+        .where(eq(coachCatalogAiGeneration.candidateId, candidateId))
+        .orderBy(desc(coachCatalogAiGeneration.createdAt))
+        .limit(50);
+      return {
+        candidate,
+        ...(targetProblem?.slug
+          ? { targetProblemSlug: targetProblem.slug }
+          : {}),
+        audits,
+        aiGenerations,
+      };
+    });
+  }
+
+  async updateCandidateDraft(
+    candidateId: string,
+    draft: unknown,
+    actor: string,
+    expectedDraftRevision: number
+  ): Promise<CandidateRow> {
+    const reviewerUserId = actorUserId(actor);
+    if (!Number.isInteger(expectedDraftRevision) || expectedDraftRevision < 1) {
+      throw new Error('Expected draft revision must be a positive integer.');
+    }
+    return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, REVIEWER_ROLE);
+      const [candidate] = await tx
+        .select()
+        .from(coachProblemCandidate)
+        .where(eq(coachProblemCandidate.id, candidateId))
+        .for('update');
+      if (!candidate) throw new Error('Catalog candidate was not found.');
+      if (candidate.draftRevision !== expectedDraftRevision) {
+        throw new Error('Catalog candidate draft revision is stale.');
+      }
+      if (['approved', 'published', 'archived'].includes(candidate.status)) {
+        throw new Error('Approved or published catalog drafts are immutable.');
+      }
+
+      const previousPayload = candidatePayloadOrUndefined(
+        candidate.normalizedProblem
+      );
+      const proposedPayload = candidatePayloadOrUndefined(draft);
+      if (proposedPayload) {
+        assertCandidatePayloadMatchesRawEvidence(candidate, proposedPayload);
+      }
+      const proposedProblem =
+        proposedPayload?.problem ??
+        (previousPayload && draft && typeof draft === 'object'
+          ? (draft as RawCatalogProblem)
+          : undefined);
+      const normalizedProblem =
+        proposedPayload ??
+        (proposedProblem && previousPayload
+          ? { problem: proposedProblem, upstream: previousPayload.upstream }
+          : candidate.normalizedProblem);
+      const nextContentHash = proposedPayload
+        ? calculateCandidateContentHash(
+            proposedPayload.problem,
+            proposedPayload.upstream
+          )
+        : proposedProblem && previousPayload
+          ? calculateCandidateContentHash(
+              proposedProblem,
+              previousPayload.upstream
+            )
+          : candidate.contentHash;
+      const nextDraftRevision = candidate.draftRevision + 1;
+      const nextDraftHash = jsonHash(draft);
+      const [updated] = await tx
+        .update(coachProblemCandidate)
+        .set({
+          draft,
+          draftHash: nextDraftHash,
+          draftRevision: nextDraftRevision,
+          normalizedProblem,
+          contentHash: nextContentHash,
+          validation: {},
+          status: 'quarantined',
+          rejectionReason: null,
+          approvedByUserId: null,
+          approvedAt: null,
+          approvedContentHash: null,
+          approvedSourceRevision: null,
+          approvedDraftHash: null,
+          approvedDraftRevision: null,
+          approvedPolicyVersion: null,
+          publishedByUserId: null,
+          publishedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(coachProblemCandidate.id, candidateId))
+        .returning();
+      if (!updated) throw new Error('Catalog candidate draft update failed.');
+      await tx.insert(coachCatalogReviewAudit).values({
+        id: `catalog_audit_${randomUUID()}`,
+        candidateId,
+        reviewerUserId,
+        action: 'draft_updated',
+        contentHash: updated.contentHash,
+        sourceRevision: updated.sourceRevision,
+        draftHash: updated.draftHash,
+        draftRevision: updated.draftRevision,
+        policyVersion: updated.policyVersion,
+        metadata: {
+          fromDraftRevision: candidate.draftRevision,
+          toDraftRevision: updated.draftRevision,
+        },
+      });
+      return updated;
+    });
+  }
+
+  async associateCandidateTarget(
+    candidateId: string,
+    targetProblemSlug: string | null,
+    actor: string,
+    expectedDraftRevision: number
+  ): Promise<CandidateRow> {
+    const reviewerUserId = actorUserId(actor);
+    if (!Number.isInteger(expectedDraftRevision) || expectedDraftRevision < 1) {
+      throw new Error('Expected draft revision must be a positive integer.');
+    }
+    return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, REVIEWER_ROLE);
+      const [candidate] = await tx
+        .select()
+        .from(coachProblemCandidate)
+        .where(eq(coachProblemCandidate.id, candidateId))
+        .for('update');
+      if (!candidate) throw new Error('Catalog candidate was not found.');
+      if (candidate.draftRevision !== expectedDraftRevision) {
+        throw new Error('Catalog candidate draft revision is stale.');
+      }
+      if (['approved', 'published', 'archived'].includes(candidate.status)) {
+        throw new Error(
+          'Approved or published catalog target associations are immutable.'
+        );
+      }
+
+      let targetProblemId: string | null = null;
+      if (targetProblemSlug !== null) {
+        const slug = targetProblemSlug.trim();
+        if (!slug) throw new Error('Target problem slug cannot be blank.');
+        const [target] = await tx
+          .select({
+            id: coachProblem.id,
+            source: coachProblem.source,
+            status: coachProblem.status,
+          })
+          .from(coachProblem)
+          .where(
+            and(eq(coachProblem.slug, slug), isNull(coachProblem.ownerUserId))
+          )
+          .limit(1);
+        if (
+          !target ||
+          target.source !== 'external' ||
+          target.status !== 'published'
+        ) {
+          throw new Error(
+            'Target must be a published shared external catalog problem.'
+          );
+        }
+        targetProblemId = target.id;
+      }
+      const changeKind = targetProblemId ? 'content_update' : 'new';
+      if (
+        candidate.targetProblemId === targetProblemId &&
+        candidate.changeKind === changeKind
+      ) {
+        return candidate;
+      }
+      const nextDraftRevision = candidate.draftRevision + 1;
+      const nextDraftHash = jsonHash({
+        draft: candidate.draft,
+        targetProblemId,
+        changeKind,
+      });
+      const [updated] = await tx
+        .update(coachProblemCandidate)
+        .set({
+          targetProblemId,
+          changeKind,
+          draftRevision: nextDraftRevision,
+          draftHash: nextDraftHash,
+          validation: {},
+          status: 'quarantined',
+          rejectionReason: null,
+          approvedByUserId: null,
+          approvedAt: null,
+          approvedContentHash: null,
+          approvedSourceRevision: null,
+          approvedDraftHash: null,
+          approvedDraftRevision: null,
+          approvedPolicyVersion: null,
+          publishedByUserId: null,
+          publishedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(coachProblemCandidate.id, candidateId))
+        .returning();
+      if (!updated) throw new Error('Catalog target association failed.');
+      await tx.insert(coachCatalogReviewAudit).values({
+        id: `catalog_audit_${randomUUID()}`,
+        candidateId,
+        reviewerUserId,
+        action: 'draft_updated',
+        contentHash: updated.contentHash,
+        sourceRevision: updated.sourceRevision,
+        draftHash: updated.draftHash,
+        draftRevision: updated.draftRevision,
+        policyVersion: updated.policyVersion,
+        metadata: {
+          kind: 'target_association',
+          previousTargetProblemId: candidate.targetProblemId,
+          targetProblemId,
+          changeKind,
+        },
+      });
+      return updated;
+    });
+  }
+
+  async rejectCandidate(
+    candidateId: string,
+    actor: string,
+    reason: string
+  ): Promise<CandidateRow> {
+    const reviewerUserId = actorUserId(actor);
+    const normalizedReason = reason.trim();
+    if (!normalizedReason) throw new Error('A rejection reason is required.');
+    return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, REVIEWER_ROLE);
+      const [candidate] = await tx
+        .select()
+        .from(coachProblemCandidate)
+        .where(eq(coachProblemCandidate.id, candidateId))
+        .for('update');
+      if (!candidate) throw new Error('Catalog candidate was not found.');
+      if (candidate.status === 'published' || candidate.status === 'archived') {
+        throw new Error('Published catalog candidates cannot be rejected.');
+      }
+      if (candidate.status === 'rejected') return candidate;
+      const [updated] = await tx
+        .update(coachProblemCandidate)
+        .set({
+          status: 'rejected',
+          rejectionReason: normalizedReason.slice(0, 2000),
+          approvedByUserId: null,
+          approvedAt: null,
+          approvedContentHash: null,
+          approvedSourceRevision: null,
+          approvedDraftHash: null,
+          approvedDraftRevision: null,
+          approvedPolicyVersion: null,
+          publishedByUserId: null,
+          publishedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(coachProblemCandidate.id, candidateId))
+        .returning();
+      if (!updated) throw new Error('Catalog candidate rejection failed.');
+      await tx.insert(coachCatalogReviewAudit).values({
+        id: `catalog_audit_${randomUUID()}`,
+        candidateId,
+        reviewerUserId,
+        action: 'rejected',
+        notes: normalizedReason.slice(0, 2000),
+        contentHash: candidate.contentHash,
+        sourceRevision: candidate.sourceRevision,
+        draftHash: candidate.draftHash,
+        draftRevision: candidate.draftRevision,
+        policyVersion: candidate.policyVersion,
+        metadata: { reason: normalizedReason.slice(0, 2000) },
+      });
+      return updated;
+    });
+  }
+
+  async recordAiGeneration(input: {
+    candidateId: string;
+    actorUserId: string;
+    kind: 'translation' | 'topic_mapping' | 'difficulty' | 'review_summary';
+    provider: string;
+    model: string;
+    promptVersion: string;
+    inputHash: string;
+    outputHash: string;
+    status: 'generated' | 'accepted' | 'rejected';
+    metadata?: Record<string, unknown>;
+  }): Promise<typeof coachCatalogAiGeneration.$inferSelect> {
+    const userId = actorUserId(input.actorUserId);
+    return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, REVIEWER_ROLE);
+      const [record] = await tx
+        .insert(coachCatalogAiGeneration)
+        .values({
+          id: `catalog_ai_${randomUUID()}`,
+          candidateId: input.candidateId,
+          actorUserId: userId,
+          kind: input.kind,
+          provider: input.provider,
+          model: input.model,
+          promptVersion: input.promptVersion,
+          inputHash: input.inputHash,
+          outputHash: input.outputHash,
+          status: input.status,
+          metadata: input.metadata ?? {},
+        })
+        .returning();
+      if (!record) throw new Error('Catalog AI generation was not recorded.');
+      return record;
+    });
+  }
+
+  async claimAdminMutation(
+    input: ClaimCatalogAdminMutationInput
+  ): Promise<CatalogAdminMutationClaim> {
+    const userId = actorUserId(input.actorUserId);
+    const role = ['publish', 'rollback'].includes(input.action)
+      ? PUBLISHER_ROLE
+      : REVIEWER_ROLE;
+    return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, role);
+      const id = stableId('catalog_mutation', userId, input.idempotencyKey);
+      const now = new Date();
+      const leaseExpiresAt = new Date(now.getTime() + 5 * 60 * 1000);
+      const inserted = await tx
+        .insert(coachCatalogAdminMutation)
+        .values({
+          id,
+          actorUserId: userId,
+          idempotencyKey: input.idempotencyKey,
+          action: input.action,
+          targetType: input.targetType,
+          targetId: input.targetId,
+          requestHash: input.requestHash,
+          status: 'claimed',
+          claimedAt: now,
+          leaseExpiresAt,
+          attemptCount: 1,
+        })
+        .onConflictDoNothing({
+          target: [
+            coachCatalogAdminMutation.actorUserId,
+            coachCatalogAdminMutation.idempotencyKey,
+          ],
+        })
+        .returning();
+      let [mutation] = inserted.length
+        ? inserted
+        : await tx
+            .select()
+            .from(coachCatalogAdminMutation)
+            .where(
+              and(
+                eq(coachCatalogAdminMutation.actorUserId, userId),
+                eq(
+                  coachCatalogAdminMutation.idempotencyKey,
+                  input.idempotencyKey
+                )
+              )
+            )
+            .limit(1)
+            .for('update');
+      if (!mutation) throw new Error('Catalog admin mutation claim failed.');
+      if (
+        mutation.requestHash !== input.requestHash ||
+        mutation.action !== input.action ||
+        mutation.targetType !== input.targetType ||
+        mutation.targetId !== input.targetId
+      ) {
+        throw new Error('Idempotency key was reused with a different request.');
+      }
+      if (
+        inserted.length === 0 &&
+        mutation.status === 'claimed' &&
+        mutation.leaseExpiresAt <= now
+      ) {
+        const reconciled = await reconcileAdminMutationResult(tx, mutation);
+        if (reconciled) {
+          [mutation] = await tx
+            .update(coachCatalogAdminMutation)
+            .set({
+              status: 'completed',
+              result: reconciled,
+              completedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(coachCatalogAdminMutation.id, mutation.id))
+            .returning();
+          if (!mutation) {
+            throw new Error('Catalog admin mutation reconciliation failed.');
+          }
+          return { mutation, claimed: false };
+        }
+        [mutation] = await tx
+          .update(coachCatalogAdminMutation)
+          .set({
+            claimedAt: now,
+            leaseExpiresAt,
+            attemptCount: mutation.attemptCount + 1,
+            errorCode: null,
+            updatedAt: now,
+          })
+          .where(eq(coachCatalogAdminMutation.id, mutation.id))
+          .returning();
+        if (!mutation)
+          throw new Error('Catalog admin mutation reclaim failed.');
+        return { mutation, claimed: true };
+      }
+      return { mutation, claimed: inserted.length > 0 };
+    });
+  }
+
+  async completeAdminMutation(
+    mutationId: string,
+    actor: string,
+    outcome: {
+      status: 'completed' | 'failed';
+      result?: Record<string, unknown>;
+      errorCode?: string;
+    }
+  ): Promise<typeof coachCatalogAdminMutation.$inferSelect> {
+    const userId = actorUserId(actor);
+    return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, REVIEWER_ROLE);
+      const [mutation] = await tx
+        .select()
+        .from(coachCatalogAdminMutation)
+        .where(
+          and(
+            eq(coachCatalogAdminMutation.id, mutationId),
+            eq(coachCatalogAdminMutation.actorUserId, userId)
+          )
+        )
+        .for('update');
+      if (!mutation) throw new Error('Catalog admin mutation was not found.');
+      if (mutation.status !== 'claimed') return mutation;
+      const [updated] = await tx
+        .update(coachCatalogAdminMutation)
+        .set({
+          status: outcome.status,
+          result: outcome.result ?? {},
+          errorCode: outcome.errorCode ?? null,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(coachCatalogAdminMutation.id, mutationId))
+        .returning();
+      if (!updated)
+        throw new Error('Catalog admin mutation completion failed.');
+      return updated;
+    });
+  }
+
   async sourceState(): Promise<{
     etag?: string;
     revision?: string;
@@ -181,6 +1384,735 @@ export class CatalogDatabaseStore {
           ? statistics.localContentFingerprint
           : undefined,
     };
+  }
+
+  async recordedExercismExternalIds(): Promise<string[]> {
+    return (await this.recordedExercismEvidence()).map(
+      (entry) => entry.externalId
+    );
+  }
+
+  async recordedExercismEvidence(): Promise<RecordedExercismEvidence[]> {
+    const [source] = await this.database
+      .select({ id: coachCatalogSource.id })
+      .from(coachCatalogSource)
+      .where(eq(coachCatalogSource.key, EXERCISM_SOURCE_KEY))
+      .limit(1);
+    if (!source) return [];
+    const [origins, candidates, runs] = await Promise.all([
+      this.database
+        .select({
+          externalId: coachProblemOrigin.externalId,
+          sourceRevision: coachProblemOrigin.sourceRevision,
+        })
+        .from(coachProblemOrigin)
+        .where(eq(coachProblemOrigin.sourceId, source.id)),
+      this.database
+        .select()
+        .from(coachProblemCandidate)
+        .where(eq(coachProblemCandidate.sourceId, source.id))
+        .orderBy(desc(coachProblemCandidate.createdAt)),
+      this.database
+        .select({ statistics: coachCatalogSyncRun.statistics })
+        .from(coachCatalogSyncRun)
+        .where(
+          and(
+            eq(coachCatalogSyncRun.sourceId, source.id),
+            eq(coachCatalogSyncRun.status, 'succeeded'),
+            sql`${coachCatalogSyncRun.statistics}->>'kind' = 'bootstrap'`
+          )
+        )
+        .orderBy(desc(coachCatalogSyncRun.createdAt))
+        .limit(1),
+    ]);
+    const bootstrapStatistics = runs
+      .map((run) => run.statistics)
+      .find(
+        (statistics) =>
+          statistics !== null &&
+          typeof statistics === 'object' &&
+          (statistics as { kind?: unknown }).kind === 'bootstrap'
+      ) as { baselineHashes?: unknown } | undefined;
+    const bootstrapEvidence = new Map<
+      string,
+      { statementBlobSha: string; canonicalBlobSha?: string }
+    >();
+    if (Array.isArray(bootstrapStatistics?.baselineHashes)) {
+      for (const item of bootstrapStatistics.baselineHashes) {
+        if (!item || typeof item !== 'object') continue;
+        const value = item as Record<string, unknown>;
+        if (
+          typeof value.externalId !== 'string' ||
+          typeof value.statementBlobSha !== 'string'
+        ) {
+          continue;
+        }
+        bootstrapEvidence.set(value.externalId, {
+          statementBlobSha: value.statementBlobSha,
+          ...(typeof value.canonicalBlobSha === 'string'
+            ? { canonicalBlobSha: value.canonicalBlobSha }
+            : {}),
+        });
+      }
+    }
+    const evidence = new Map<string, RecordedExercismEvidence>();
+    for (const candidate of candidates) {
+      if (evidence.has(candidate.externalId)) continue;
+      const sourceEvidence = candidateSourceEvidence(candidate);
+      const statementBlobSha =
+        typeof sourceEvidence.statementBlobSha === 'string'
+          ? sourceEvidence.statementBlobSha
+          : undefined;
+      const canonicalBlobSha =
+        typeof sourceEvidence.canonicalBlobSha === 'string'
+          ? sourceEvidence.canonicalBlobSha
+          : undefined;
+      evidence.set(candidate.externalId, {
+        externalId: candidate.externalId,
+        sourceRevision: candidate.sourceRevision,
+        ...(statementBlobSha ? { statementBlobSha } : {}),
+        ...(canonicalBlobSha ? { canonicalBlobSha } : {}),
+        ...(candidate.rawContentHash
+          ? { rawContentHash: candidate.rawContentHash }
+          : {}),
+        originOnly: !statementBlobSha,
+      });
+    }
+    for (const origin of origins) {
+      if (evidence.has(origin.externalId)) continue;
+      const baseline = bootstrapEvidence.get(origin.externalId);
+      evidence.set(origin.externalId, {
+        externalId: origin.externalId,
+        sourceRevision: origin.sourceRevision,
+        ...(baseline?.statementBlobSha
+          ? { statementBlobSha: baseline.statementBlobSha }
+          : {}),
+        ...(baseline?.canonicalBlobSha
+          ? { canonicalBlobSha: baseline.canonicalBlobSha }
+          : {}),
+        originOnly: !baseline?.statementBlobSha,
+      });
+    }
+    return [...evidence.values()].sort((left, right) =>
+      left.externalId.localeCompare(right.externalId)
+    );
+  }
+
+  async discoveryState(): Promise<CatalogDiscoveryState> {
+    const [source] = await this.database
+      .select({ id: coachCatalogSource.id })
+      .from(coachCatalogSource)
+      .where(eq(coachCatalogSource.key, EXERCISM_SOURCE_KEY))
+      .limit(1);
+    if (!source) {
+      return {
+        backlogComplete: false,
+        consecutiveFailures: 0,
+        candidateCount: 0,
+      };
+    }
+    const [runs, candidates] = await Promise.all([
+      this.database
+        .select()
+        .from(coachCatalogSyncRun)
+        .where(eq(coachCatalogSyncRun.sourceId, source.id))
+        .orderBy(desc(coachCatalogSyncRun.createdAt))
+        .limit(100),
+      this.database
+        .select({ id: coachProblemCandidate.id })
+        .from(coachProblemCandidate)
+        .where(eq(coachProblemCandidate.sourceId, source.id)),
+    ]);
+    const discoveries = runs.filter((run) => {
+      const statistics = run.statistics as { kind?: unknown };
+      return statistics?.kind === 'discovery';
+    });
+    const consecutiveFailures = countConsecutiveDiscoveryFailures(runs);
+    const latest = discoveries[0];
+    const previous = discoveries[1];
+    const latestStats = (latest?.statistics ?? {}) as Record<string, unknown>;
+    const previousStats = (previous?.statistics ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const optionalString = (value: unknown) =>
+      typeof value === 'string' ? value : undefined;
+    const optionalNumber = (value: unknown) =>
+      typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+    const previousTreeExercises = optionalNumber(previousStats.treeExercises);
+    const latestTreeExercises = optionalNumber(latestStats.treeExercises);
+    const latestCandidateDelta = calculateCatalogCandidateDelta(
+      latestStats,
+      previousStats,
+      candidates.length
+    );
+    return {
+      ...(latest?.cursor ? { etag: latest.cursor } : {}),
+      ...(latest?.upstreamRevision
+        ? { revision: latest.upstreamRevision }
+        : {}),
+      backlogComplete: latestStats.backlogComplete === true,
+      consecutiveFailures,
+      ...(optionalString(previousStats.licenseSpdx)
+        ? { previousLicenseSpdx: optionalString(previousStats.licenseSpdx) }
+        : {}),
+      ...(optionalString(previousStats.licenseContentHash)
+        ? {
+            previousLicenseContentHash: optionalString(
+              previousStats.licenseContentHash
+            ),
+          }
+        : {}),
+      ...(optionalString(latestStats.licenseSpdx)
+        ? { latestLicenseSpdx: optionalString(latestStats.licenseSpdx) }
+        : {}),
+      ...(optionalString(latestStats.licenseContentHash)
+        ? {
+            latestLicenseContentHash: optionalString(
+              latestStats.licenseContentHash
+            ),
+          }
+        : {}),
+      ...(previousTreeExercises === undefined ? {} : { previousTreeExercises }),
+      ...(latestTreeExercises === undefined ? {} : { latestTreeExercises }),
+      latestCandidateDelta,
+      candidateCount: candidates.length,
+    };
+  }
+
+  async recordDiscoveryFailure(
+    actor: string,
+    errorCode: string,
+    errorMessage: string,
+    trigger: 'manual' | 'scheduled' = 'scheduled'
+  ): Promise<{ runId: string }> {
+    const actorIdentity = actor.trim();
+    const code = errorCode.trim().slice(0, 200) || 'discovery_failed';
+    const message = errorMessage.trim().slice(0, 2000) || 'Unknown failure.';
+    if (!actorIdentity) throw new Error('Discovery failure actor is required.');
+    const source = await ensureExercismSource(this.database);
+    const runId = `catalog_discovery_failure_${randomUUID()}`;
+    const now = new Date();
+    await this.database.insert(coachCatalogSyncRun).values({
+      id: runId,
+      sourceId: source.id,
+      trigger,
+      status: 'failed',
+      statistics: {
+        kind: 'discovery',
+        actor: actorIdentity.slice(0, 200),
+        backlogComplete: false,
+        failureRecorded: true,
+      },
+      errorCode: code,
+      errorMessage: message,
+      startedAt: now,
+      completedAt: now,
+    });
+    return { runId };
+  }
+
+  async bootstrapExercism(
+    curatedProblems: RawCatalogProblem[],
+    adapter: ExercismCatalogAdapter,
+    actor: string
+  ): Promise<CatalogBootstrapSummary> {
+    const actorIdentity = actor.trim();
+    if (!actorIdentity) throw new Error('Catalog bootstrap actor is required.');
+    const seedRevisions = [
+      ...new Set(
+        curatedProblems.map((problem) => problem.origin.sourceRevision)
+      ),
+    ];
+    if (
+      seedRevisions.length !== 1 ||
+      !/^[a-f0-9]{40}$/.test(seedRevisions[0] ?? '')
+    ) {
+      throw new Error(
+        'Catalog bootstrap requires one full immutable seed commit SHA.'
+      );
+    }
+    const fetched = await adapter.fetchSnapshotAtRevision(
+      curatedProblems,
+      seedRevisions[0]!
+    );
+    const snapshot = fetched.snapshot;
+    if (!snapshot || fetched.notModified) {
+      throw new Error('Catalog bootstrap requires a complete fixed snapshot.');
+    }
+    if (
+      snapshot.licenseSpdx !== snapshot.license.spdx ||
+      !isExercismLicenseEvidenceValid(snapshot.license)
+    ) {
+      throw new Error('Catalog bootstrap snapshot license is not allowed.');
+    }
+    const localContentFingerprint =
+      calculateCatalogContentFingerprint(curatedProblems);
+    if (snapshot.localContentFingerprint !== localContentFingerprint) {
+      throw new Error('Catalog bootstrap local content fingerprint is stale.');
+    }
+    const upstreamByExternalId = new Map(
+      snapshot.problems.map((problem) => [problem.externalId, problem])
+    );
+    if (
+      upstreamByExternalId.size !== curatedProblems.length ||
+      curatedProblems.some(
+        (problem) => !upstreamByExternalId.has(problem.origin.externalId)
+      )
+    ) {
+      throw new Error(
+        'Catalog bootstrap snapshot does not cover the curated set.'
+      );
+    }
+    const runId = stableId(
+      'catalog_bootstrap',
+      snapshot.revision,
+      localContentFingerprint
+    );
+
+    return this.database.transaction(async (tx) => {
+      const source = await ensureExercismSource(tx);
+      const origins = await tx
+        .select()
+        .from(coachProblemOrigin)
+        .where(eq(coachProblemOrigin.sourceId, source.id));
+      if (origins.length !== curatedProblems.length) {
+        throw new Error(
+          `Catalog bootstrap expected ${curatedProblems.length} origins but found ${origins.length}.`
+        );
+      }
+      const originByExternalId = new Map(
+        origins.map((origin) => [origin.externalId, origin])
+      );
+      for (const localProblem of curatedProblems) {
+        const upstream = upstreamByExternalId.get(
+          localProblem.origin.externalId
+        );
+        const origin = originByExternalId.get(localProblem.origin.externalId);
+        if (!upstream || !origin) {
+          throw new Error(
+            `Catalog bootstrap source mismatch: ${localProblem.origin.externalId}`
+          );
+        }
+        const expectedHash = localProblem.origin.contentHash;
+        const [problem] = await tx
+          .select()
+          .from(coachProblem)
+          .where(eq(coachProblem.id, origin.problemId))
+          .limit(1);
+        if (!problem?.currentRevisionId || problem.status !== 'published') {
+          throw new Error(
+            `Catalog bootstrap problem is not published: ${localProblem.origin.externalId}`
+          );
+        }
+        const [revision] = await tx
+          .select()
+          .from(coachProblemRevision)
+          .where(eq(coachProblemRevision.id, problem.currentRevisionId))
+          .limit(1);
+        if (
+          !revision ||
+          revision.problemId !== problem.id ||
+          revision.status !== 'published' ||
+          revision.contentHash !== expectedHash ||
+          revision.sourceRevision !== snapshot.revision ||
+          origin.contentHash !== expectedHash ||
+          origin.sourceRevision !== snapshot.revision ||
+          origin.upstreamUrl !== upstream.upstreamUrl ||
+          origin.licenseSpdx !== snapshot.licenseSpdx ||
+          localProblem.origin.statementPath !== upstream.statementPath
+        ) {
+          throw new Error(
+            `Catalog bootstrap evidence mismatch: ${localProblem.origin.externalId}`
+          );
+        }
+      }
+
+      const inserted = await tx
+        .insert(coachCatalogSyncRun)
+        .values({
+          id: runId,
+          sourceId: source.id,
+          trigger: 'manual',
+          status: 'succeeded',
+          upstreamRevision: snapshot.revision,
+          cursor: fetched.etag ?? snapshot.etag,
+          statistics: {
+            kind: 'bootstrap',
+            actor: actorIdentity,
+            verified: curatedProblems.length,
+            localContentFingerprint,
+            license: snapshot.license,
+            baselineHashes: curatedProblems.map((problem) => {
+              const upstreamProblem = upstreamByExternalId.get(
+                problem.origin.externalId
+              )!;
+              return {
+                externalId: problem.origin.externalId,
+                publishedContentHash: problem.origin.contentHash,
+                combinedContentHash: calculateCandidateContentHash(
+                  problem,
+                  upstreamProblem
+                ),
+                statementPath: upstreamProblem.statementPath,
+                statementHash: upstreamProblem.statementHash,
+                statementBlobSha: upstreamProblem.statementBlobSha,
+                canonicalPath: upstreamProblem.canonicalPath,
+                ...(upstreamProblem.canonicalBlobSha
+                  ? { canonicalBlobSha: upstreamProblem.canonicalBlobSha }
+                  : {}),
+              };
+            }),
+          },
+          startedAt: new Date(snapshot.fetchedAt),
+          completedAt: new Date(),
+        })
+        .onConflictDoNothing({ target: coachCatalogSyncRun.id })
+        .returning({ id: coachCatalogSyncRun.id });
+      await tx
+        .update(coachCatalogSource)
+        .set({
+          lastSuccessfulRevision: snapshot.revision,
+          updatedAt: new Date(),
+        })
+        .where(eq(coachCatalogSource.id, source.id));
+      return {
+        runId,
+        revision: snapshot.revision,
+        etag: fetched.etag ?? snapshot.etag,
+        localContentFingerprint,
+        baselined: inserted.length > 0 ? curatedProblems.length : 0,
+        alreadyBaselined: inserted.length > 0 ? 0 : curatedProblems.length,
+      };
+    });
+  }
+
+  async ingestDiscoveryReport(
+    report: ExercismDiscoveryReport,
+    actor = 'catalog-sync'
+  ): Promise<CatalogDiscoveryIngestionSummary> {
+    if (
+      report.schemaVersion !== 1 ||
+      report.notModified !== false ||
+      report.repository !== 'exercism/problem-specifications' ||
+      report.license.spdx !== 'MIT' ||
+      !report.license.text.trim() ||
+      sha256(report.license.text) !== report.license.contentHash ||
+      calculateGitBlobSha(report.license.text) !== report.license.gitBlobSha ||
+      !/^[a-f0-9]{40}$/.test(report.license.gitBlobSha) ||
+      !/^sha256:[a-f0-9]{64}$/.test(report.license.contentHash) ||
+      !/^[a-f0-9]{40}$/.test(report.revision)
+    ) {
+      throw new Error('Exercism discovery report provenance is invalid.');
+    }
+    const reportHash = jsonHash(report);
+    const runId = stableId('catalog_discovery', report.revision, reportHash);
+    return this.database.transaction(async (tx) => {
+      const source = await ensureExercismSource(tx);
+      await tx
+        .insert(coachCatalogSyncRun)
+        .values({
+          id: runId,
+          sourceId: source.id,
+          trigger: 'manual',
+          status: 'running',
+          upstreamRevision: report.revision,
+          cursor: report.etag,
+          statistics: {
+            kind: 'discovery',
+            actor,
+            generatorId: report.generatorId,
+            reportHash,
+          },
+          startedAt: new Date(),
+        })
+        .onConflictDoNothing({ target: coachCatalogSyncRun.id });
+
+      const candidateIds: string[] = [];
+      const quarantined: string[] = [];
+      const rejected: string[] = [];
+      let duplicates = 0;
+      for (const discoveryDraft of report.drafts) {
+        assertDiscoveryDraftBoundary(discoveryDraft, {
+          repository: report.repository,
+          revision: report.revision,
+          licenseSpdx: report.license.spdx,
+          licenseText: report.license.text,
+          licenseGitBlobSha: report.license.gitBlobSha,
+          licenseContentHash: report.license.contentHash,
+          exercise: discoveryDraft.upstream,
+        });
+        if (
+          discoveryDraft.schemaVersion !== 1 ||
+          discoveryDraft.publishable !== false ||
+          discoveryDraft.source.revision !== report.revision ||
+          discoveryDraft.source.licenseSpdx !== 'MIT' ||
+          discoveryDraft.source.licenseContentHash !==
+            report.license.contentHash ||
+          discoveryDraft.source.licenseText !== report.license.text ||
+          discoveryDraft.source.licenseGitBlobSha !==
+            report.license.gitBlobSha ||
+          !/^[a-f0-9]{40}$/.test(discoveryDraft.source.statementBlobSha) ||
+          (discoveryDraft.source.canonicalBlobSha !== undefined &&
+            !/^[a-f0-9]{40}$/.test(discoveryDraft.source.canonicalBlobSha)) ||
+          !/^sha256:[a-f0-9]{64}$/.test(discoveryDraft.source.statementHash) ||
+          !/^sha256:[a-f0-9]{64}$/.test(
+            discoveryDraft.source.canonicalDataHash
+          ) ||
+          calculateDiscoveryContentHash({
+            externalId: discoveryDraft.externalId,
+            revision: discoveryDraft.source.revision,
+            statementHash: discoveryDraft.source.statementHash,
+            statementBlobSha: discoveryDraft.source.statementBlobSha,
+            canonicalDataHash: discoveryDraft.source.canonicalDataHash,
+            canonicalBlobSha: discoveryDraft.source.canonicalBlobSha,
+            licenseGitBlobSha: discoveryDraft.source.licenseGitBlobSha,
+            licenseContentHash: discoveryDraft.source.licenseContentHash,
+          }) !== discoveryDraft.discoveryContentHash ||
+          !discoveryDraft.source.attribution.trim() ||
+          discoveryDraft.upstream.externalId !== discoveryDraft.externalId ||
+          discoveryDraft.upstream.upstreamUrl !==
+            discoveryDraft.source.upstreamUrl ||
+          discoveryDraft.upstream.statementPath !==
+            discoveryDraft.source.statementPath ||
+          discoveryDraft.upstream.statementHash !==
+            discoveryDraft.source.statementHash ||
+          sha256(discoveryDraft.upstream.statementMarkdown) !==
+            discoveryDraft.source.statementHash ||
+          calculateGitBlobSha(discoveryDraft.upstream.statementMarkdown) !==
+            discoveryDraft.source.statementBlobSha ||
+          discoveryDraft.upstream.statementBlobSha !==
+            discoveryDraft.source.statementBlobSha ||
+          discoveryDraft.upstream.canonicalPath !==
+            discoveryDraft.source.canonicalPath ||
+          discoveryDraft.upstream.canonicalDataHash !==
+            discoveryDraft.source.canonicalDataHash ||
+          calculateCanonicalDataHash(discoveryDraft.upstream.canonicalData) !==
+            discoveryDraft.source.canonicalDataHash ||
+          discoveryDraft.upstream.canonicalBlobSha !==
+            discoveryDraft.source.canonicalBlobSha ||
+          (discoveryDraft.upstream.canonicalDataStatus === 'available' &&
+            !discoveryDraft.upstream.canonicalBlobSha) ||
+          (discoveryDraft.upstream.canonicalDataStatus === 'missing' &&
+            (discoveryDraft.upstream.canonicalBlobSha !== undefined ||
+              discoveryDraft.upstream.canonicalData !== null)) ||
+          (discoveryDraft.aiMetadata !== undefined &&
+            (discoveryDraft.aiMetadata.provider !== 'openrouter' ||
+              !COACH_MODEL_WHITELIST.includes(
+                discoveryDraft.aiMetadata.model as CoachModel
+              ) ||
+              discoveryDraft.aiMetadata.promptVersion !==
+                CATALOG_AI_DRAFT_PROMPT_VERSION ||
+              !AI_FINISH_REASONS.has(discoveryDraft.aiMetadata.finishReason) ||
+              !/^sha256:[a-f0-9]{64}$/.test(
+                discoveryDraft.aiMetadata.inputHash
+              ) ||
+              !/^sha256:[a-f0-9]{64}$/.test(
+                discoveryDraft.aiMetadata.outputHash
+              ) ||
+              !Number.isInteger(discoveryDraft.aiMetadata.latencyMs) ||
+              discoveryDraft.aiMetadata.latencyMs < 0 ||
+              (discoveryDraft.aiMetadata.inputTokens !== undefined &&
+                (!Number.isInteger(discoveryDraft.aiMetadata.inputTokens) ||
+                  discoveryDraft.aiMetadata.inputTokens < 0)) ||
+              (discoveryDraft.aiMetadata.outputTokens !== undefined &&
+                (!Number.isInteger(discoveryDraft.aiMetadata.outputTokens) ||
+                  discoveryDraft.aiMetadata.outputTokens < 0)) ||
+              (discoveryDraft.aiMetadata.estimatedCostUsd !== undefined &&
+                (!Number.isFinite(discoveryDraft.aiMetadata.estimatedCostUsd) ||
+                  discoveryDraft.aiMetadata.estimatedCostUsd < 0))))
+        ) {
+          throw new Error(
+            `Discovery draft provenance is invalid: ${discoveryDraft.externalId}`
+          );
+        }
+        const rawContentHash = discoveryDraft.discoveryContentHash;
+        const candidateId = stableId(
+          'catalog_candidate',
+          source.id,
+          discoveryDraft.externalId,
+          rawContentHash
+        );
+        const [origin] = await tx
+          .select({ problemId: coachProblemOrigin.problemId })
+          .from(coachProblemOrigin)
+          .where(
+            and(
+              eq(coachProblemOrigin.sourceId, source.id),
+              eq(coachProblemOrigin.externalId, discoveryDraft.externalId)
+            )
+          )
+          .limit(1);
+        const status =
+          discoveryDraft.status === 'rejected'
+            ? ('rejected' as const)
+            : ('quarantined' as const);
+        const draftHash = jsonHash(discoveryDraft.proposed);
+        const inserted = await tx
+          .insert(coachProblemCandidate)
+          .values({
+            id: candidateId,
+            sourceId: source.id,
+            syncRunId: runId,
+            externalId: discoveryDraft.externalId,
+            upstreamUrl: discoveryDraft.source.upstreamUrl,
+            sourceRevision: discoveryDraft.source.revision,
+            contentHash: rawContentHash,
+            licenseSpdx: discoveryDraft.source.licenseSpdx,
+            attribution: discoveryDraft.source.attribution,
+            rawPayload: discoveryDraft,
+            rawContentHash,
+            draft: discoveryDraft.proposed,
+            draftHash,
+            draftRevision: 1,
+            policyVersion: CATALOG_POLICY_VERSION,
+            changeKind: origin ? 'content_update' : 'new',
+            targetProblemId: origin?.problemId,
+            normalizedProblem: {
+              schemaVersion: 1,
+              discoveryDraft,
+              publishable: false,
+            },
+            validation: {
+              valid: false,
+              issues: [
+                {
+                  code:
+                    status === 'rejected'
+                      ? 'invalid_upstream_data'
+                      : 'manual_review_required',
+                  message:
+                    status === 'rejected'
+                      ? discoveryDraft.warnings.join(' ')
+                      : 'Discovery drafts require human normalization and executable tests.',
+                },
+              ],
+            },
+            status,
+            rejectionReason:
+              status === 'rejected'
+                ? discoveryDraft.warnings.join(',').slice(0, 2000)
+                : null,
+          })
+          .onConflictDoNothing({
+            target: [
+              coachProblemCandidate.sourceId,
+              coachProblemCandidate.externalId,
+              coachProblemCandidate.contentHash,
+            ],
+          })
+          .returning({ id: coachProblemCandidate.id });
+        if (inserted.length === 0) {
+          duplicates += 1;
+          continue;
+        }
+        candidateIds.push(candidateId);
+        (status === 'rejected' ? rejected : quarantined).push(candidateId);
+        await tx.insert(coachCatalogReviewAudit).values({
+          id: `catalog_audit_${randomUUID()}`,
+          candidateId,
+          action: 'submitted',
+          contentHash: rawContentHash,
+          sourceRevision: report.revision,
+          draftHash,
+          draftRevision: 1,
+          policyVersion: CATALOG_POLICY_VERSION,
+          metadata: {
+            stage: 'discovery',
+            actor,
+            generatorId: report.generatorId,
+            status,
+            reportHash,
+          },
+        });
+        if (discoveryDraft.aiMetadata) {
+          const ai = discoveryDraft.aiMetadata;
+          await tx.insert(coachCatalogAiGeneration).values({
+            id: stableId(
+              'catalog_ai',
+              candidateId,
+              ai.promptVersion,
+              ai.outputHash
+            ),
+            candidateId,
+            actorUserId: null,
+            kind: 'review_summary',
+            provider: ai.provider,
+            model: ai.model,
+            promptVersion: ai.promptVersion,
+            inputHash: ai.inputHash,
+            outputHash: ai.outputHash,
+            status: 'generated',
+            metadata: {
+              generatorId: report.generatorId,
+              reportHash,
+              nonPublishable: true,
+              finishReason: ai.finishReason,
+              latencyMs: ai.latencyMs,
+              ...(ai.inputTokens === undefined
+                ? {}
+                : { inputTokens: ai.inputTokens }),
+              ...(ai.outputTokens === undefined
+                ? {}
+                : { outputTokens: ai.outputTokens }),
+              ...(ai.estimatedCostUsd === undefined
+                ? {}
+                : { estimatedCostUsd: ai.estimatedCostUsd }),
+            },
+          });
+        }
+      }
+      await tx
+        .update(coachCatalogSyncRun)
+        .set({
+          status:
+            rejected.length > 0 || report.counts.selectionTruncated
+              ? 'partial'
+              : 'succeeded',
+          cursor: report.etag,
+          statistics: {
+            kind: 'discovery',
+            actor,
+            generatorId: report.generatorId,
+            reportHash,
+            etag: report.etag,
+            backlogComplete: !report.counts.selectionTruncated,
+            selectionTruncated: report.counts.selectionTruncated,
+            treeExercises: report.counts.treeExercises,
+            knownExercises: report.counts.knownExercises,
+            newExercises: report.counts.newExercises,
+            changedExercises: report.counts.changedExercises,
+            unchangedExercises: report.counts.unchangedExercises,
+            candidateBacklog: report.counts.undiscoveredExercises,
+            undiscoveredExercises: report.counts.undiscoveredExercises,
+            licenseSpdx: report.license.spdx,
+            licenseContentHash: report.license.contentHash,
+            licenseGitBlobSha: report.license.gitBlobSha,
+            discovered: candidateIds.length,
+            duplicates,
+            quarantined: quarantined.length,
+            rejected: rejected.length,
+          },
+          completedAt: new Date(),
+        })
+        .where(eq(coachCatalogSyncRun.id, runId));
+      await tx
+        .update(coachCatalogSource)
+        .set({
+          lastSuccessfulRevision: report.revision,
+          updatedAt: new Date(),
+        })
+        .where(eq(coachCatalogSource.id, source.id));
+      return {
+        ingested: candidateIds.length,
+        alreadyPresent: duplicates,
+        candidateIds,
+        discovered: candidateIds.length,
+        duplicates,
+        quarantined,
+        rejected,
+      };
+    });
   }
 
   async syncExercism(
@@ -230,9 +2162,17 @@ export class CatalogDatabaseStore {
             upstreamRevision: fetched.revision ?? previous.revision,
             cursor: fetched.etag ?? previous.etag,
             statistics: {
+              kind: 'sync',
               discovered: candidateIds.length,
               notModified: fetched.notModified,
               localContentFingerprint: fetched.localContentFingerprint,
+              ...(fetched.snapshot
+                ? {
+                    licenseSpdx: fetched.snapshot.license.spdx,
+                    licenseContentHash: fetched.snapshot.license.contentHash,
+                    licenseGitBlobSha: fetched.snapshot.license.gitBlobSha,
+                  }
+                : {}),
             },
             completedAt,
           })
@@ -296,7 +2236,10 @@ export class CatalogDatabaseStore {
     snapshot: ExercismSnapshot,
     curatedProblems: RawCatalogProblem[]
   ): Promise<string[]> {
-    if (snapshot.licenseSpdx !== 'MIT') {
+    if (
+      snapshot.licenseSpdx !== snapshot.license.spdx ||
+      !isExercismLicenseEvidenceValid(snapshot.license)
+    ) {
       throw new Error('Catalog snapshot license is not allowed.');
     }
     if (
@@ -331,6 +2274,54 @@ export class CatalogDatabaseStore {
         problem: versionedProblem,
         upstream,
       };
+      if (
+        calculateGitBlobSha(upstream.statementMarkdown) !==
+          upstream.statementBlobSha ||
+        !/^[a-f0-9]{40}$/.test(upstream.statementBlobSha) ||
+        !/^exercises\/[a-z0-9]+(?:-[a-z0-9]+)*\/canonical-data\.json$/.test(
+          upstream.canonicalPath
+        ) ||
+        (upstream.canonicalBlobSha !== undefined &&
+          !/^[a-f0-9]{40}$/.test(upstream.canonicalBlobSha))
+      ) {
+        throw new Error(
+          `Catalog upstream blob evidence is invalid: ${upstream.externalId}`
+        );
+      }
+      const rawPayload = {
+        schemaVersion: 1,
+        evidenceKind: 'legacy_sync',
+        source: {
+          provider: 'exercism',
+          repository: snapshot.repository,
+          revision: snapshot.revision,
+          upstreamUrl: upstream.upstreamUrl,
+          statementPath: upstream.statementPath,
+          statementHash: upstream.statementHash,
+          statementBlobSha: upstream.statementBlobSha,
+          canonicalPath: upstream.canonicalPath,
+          canonicalDataHash: upstream.canonicalDataHash,
+          ...(upstream.canonicalBlobSha
+            ? { canonicalBlobSha: upstream.canonicalBlobSha }
+            : {}),
+          licenseSpdx: snapshot.license.spdx,
+          licenseText: snapshot.license.text,
+          licenseGitBlobSha: snapshot.license.gitBlobSha,
+          licenseContentHash: snapshot.license.contentHash,
+          attribution: problem.origin.attribution,
+        },
+        upstream,
+      };
+      const [existingOrigin] = await tx
+        .select({ problemId: coachProblemOrigin.problemId })
+        .from(coachProblemOrigin)
+        .where(
+          and(
+            eq(coachProblemOrigin.sourceId, sourceId),
+            eq(coachProblemOrigin.externalId, upstream.externalId)
+          )
+        )
+        .limit(1);
       const inserted = await tx
         .insert(coachProblemCandidate)
         .values({
@@ -343,6 +2334,14 @@ export class CatalogDatabaseStore {
           contentHash,
           licenseSpdx: snapshot.licenseSpdx,
           attribution: problem.origin.attribution,
+          rawPayload,
+          rawContentHash: jsonHash(rawPayload),
+          draft: versionedProblem,
+          draftHash: jsonHash(versionedProblem),
+          draftRevision: 1,
+          policyVersion: CATALOG_POLICY_VERSION,
+          changeKind: existingOrigin ? 'content_update' : 'new',
+          targetProblemId: existingOrigin?.problemId,
           normalizedProblem: payload,
           validation: {},
           status: 'discovered',
@@ -355,41 +2354,98 @@ export class CatalogDatabaseStore {
           ],
         })
         .returning({ id: coachProblemCandidate.id });
-      if (inserted.length > 0) candidateIds.push(id);
+      if (inserted.length > 0) {
+        candidateIds.push(id);
+        await tx.insert(coachCatalogReviewAudit).values({
+          id: `catalog_audit_${randomUUID()}`,
+          candidateId: id,
+          action: 'submitted',
+          contentHash,
+          sourceRevision: snapshot.revision,
+          draftHash: jsonHash(versionedProblem),
+          draftRevision: 1,
+          policyVersion: CATALOG_POLICY_VERSION,
+          metadata: { stage: 'sync', externalId: upstream.externalId },
+        });
+      }
     }
     return candidateIds;
   }
 
   async validateCandidates(
-    candidateIds?: string[]
+    candidateIds?: string[],
+    capability: 'sync' | 'reviewer' = 'sync'
   ): Promise<DatabaseValidationSummary> {
-    const filters = [
-      inArray(coachProblemCandidate.status, ['discovered', 'quarantined']),
-    ];
-    if (candidateIds && candidateIds.length > 0) {
-      filters.push(inArray(coachProblemCandidate.id, candidateIds));
-    }
-    const rows = await this.database
-      .select()
-      .from(coachProblemCandidate)
-      .where(and(...filters));
-    const payloads = rows.map((row) => ({
-      row,
-      payload: candidatePayload(row.normalizedProblem),
-    }));
-    const batch = validateCatalogBatch(
-      payloads.map(({ payload }) => payload.problem)
-    );
-    let validated = 0;
-    let quarantined = 0;
-    let rejected = 0;
-    const rejectedCandidates: Array<{
-      candidateId: string;
-      issueCodes: string[];
-    }> = [];
+    const outcome = await this.database.transaction(async (tx) => {
+      if (capability === 'reviewer') {
+        await setLocalCapabilityRole(tx, REVIEWER_ROLE);
+      }
+      const filters = [
+        inArray(coachProblemCandidate.status, [
+          'discovered',
+          'drafting',
+          'quarantined',
+        ]),
+      ];
+      if (candidateIds && candidateIds.length > 0) {
+        filters.push(inArray(coachProblemCandidate.id, candidateIds));
+      }
+      const rows = await tx
+        .select()
+        .from(coachProblemCandidate)
+        .where(and(...filters))
+        .for('update');
+      const payloads = rows.map((row) => ({
+        row,
+        payload: candidatePayloadOrUndefined(row.normalizedProblem),
+      }));
+      const batch = validateCatalogBatch(
+        payloads.flatMap(({ payload }) => (payload ? [payload.problem] : []))
+      );
+      let validated = 0;
+      let quarantined = 0;
+      let rejected = 0;
+      const rejectedCandidates: Array<{
+        candidateId: string;
+        issueCodes: string[];
+      }> = [];
 
-    await this.database.transaction(async (tx) => {
       for (const { row, payload } of payloads) {
+        if (!payload) {
+          const validation: CatalogValidationResult = {
+            valid: false,
+            issues: [
+              {
+                code: 'manual_review_required',
+                message:
+                  'The discovery draft is intentionally incomplete and must be normalized by a human reviewer.',
+                path: 'draft',
+              },
+            ],
+          };
+          quarantined += 1;
+          await tx
+            .update(coachProblemCandidate)
+            .set({
+              validation,
+              status: 'quarantined',
+              rejectionReason: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(coachProblemCandidate.id, row.id));
+          await tx.insert(coachCatalogReviewAudit).values({
+            id: `catalog_audit_${randomUUID()}`,
+            candidateId: row.id,
+            action: 'submitted',
+            contentHash: row.contentHash,
+            sourceRevision: row.sourceRevision,
+            draftHash: row.draftHash,
+            draftRevision: row.draftRevision,
+            policyVersion: row.policyVersion,
+            metadata: { status: 'quarantined', validation },
+          });
+          continue;
+        }
         const base = batch.get(payload.problem.slug) ?? {
           valid: false,
           issues: [
@@ -400,6 +2456,26 @@ export class CatalogDatabaseStore {
           ],
         };
         const persistedIssues: CatalogValidationResult['issues'] = [];
+        persistedIssues.push(
+          ...candidateLicenseEvidenceIssues(row),
+          ...candidateTestProvenanceIssues(row, payload.problem)
+        );
+        persistedIssues.push(
+          ...(await priorTestEvidenceIssues(tx, row, payload.problem))
+        );
+        persistedIssues.push(
+          ...(await duplicateCatalogIdentityIssues(tx, row, payload.problem))
+        );
+        try {
+          assertCandidatePayloadMatchesRawEvidence(row, payload);
+        } catch {
+          persistedIssues.push({
+            code: 'invalid_origin',
+            message:
+              'Candidate payload does not match immutable upstream evidence.',
+            path: 'rawPayload',
+          });
+        }
         if (row.licenseSpdx !== 'MIT') {
           persistedIssues.push({
             code: 'invalid_license',
@@ -425,7 +2501,7 @@ export class CatalogDatabaseStore {
             path: 'normalizedProblem',
           });
         }
-        const validation = mergeCatalogValidationResults(
+        const staticValidation = mergeCatalogValidationResults(
           base,
           validateCandidatePayload(
             payload.problem,
@@ -437,7 +2513,16 @@ export class CatalogDatabaseStore {
             issues: persistedIssues,
           }
         );
-        const status = candidateStateForValidation(validation);
+        const validation = staticValidation.valid
+          ? mergeCatalogValidationResults(
+              staticValidation,
+              await validateRunnerCompatibility(payload.problem)
+            )
+          : staticValidation;
+        const status =
+          row.status === 'drafting'
+            ? ('quarantined' as const)
+            : candidateStateForValidation(validation);
         if (validation.valid) validated += 1;
         else if (status === 'rejected') {
           rejected += 1;
@@ -465,12 +2550,27 @@ export class CatalogDatabaseStore {
         await tx.insert(coachCatalogReviewAudit).values({
           id: `catalog_audit_${randomUUID()}`,
           candidateId: row.id,
-          action: status === 'rejected' ? 'rejected' : 'submitted',
+          action: 'submitted',
+          contentHash: row.contentHash,
+          sourceRevision: row.sourceRevision,
+          draftHash: row.draftHash,
+          draftRevision: row.draftRevision,
+          policyVersion: row.policyVersion,
           metadata: { status, validation },
         });
       }
+      return {
+        summary: {
+          checked: rows.length,
+          validated,
+          quarantined,
+          rejected,
+          candidateIds: rows.map((row) => row.id),
+        },
+        rejectedCandidates,
+      };
     });
-    for (const item of rejectedCandidates) {
+    for (const item of outcome.rejectedCandidates) {
       emitCatalogOperationalEvent('catalog_candidate_rejected', {
         mode: 'database',
         outcome: 'rejected',
@@ -478,27 +2578,20 @@ export class CatalogDatabaseStore {
         issueCodes: item.issueCodes,
       });
     }
-    return {
-      checked: rows.length,
-      validated,
-      quarantined,
-      rejected,
-      candidateIds: rows.map((row) => row.id),
-    };
+    return outcome.summary;
   }
 
   async approveCandidates(
     candidateIds: string[],
-    reviewer: string
+    reviewer: string,
+    notes?: string
   ): Promise<DatabaseApprovalSummary> {
-    const reviewerIdentity = reviewer.trim();
-    if (!reviewerIdentity) {
-      throw new Error('Approving requires a reviewer identity.');
-    }
+    const reviewerUserId = actorUserId(reviewer);
     const ids = [...new Set(candidateIds)];
     if (ids.length === 0) throw new Error('No candidate ids were supplied.');
 
     return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, REVIEWER_ROLE);
       const candidates = await tx
         .select()
         .from(coachProblemCandidate)
@@ -532,14 +2625,32 @@ export class CatalogDatabaseStore {
         }
         await tx
           .update(coachProblemCandidate)
-          .set({ status: 'approved', updatedAt: new Date() })
+          .set({
+            status: 'approved',
+            approvedByUserId: reviewerUserId,
+            approvedAt: new Date(),
+            approvedContentHash: candidate.contentHash,
+            approvedSourceRevision: candidate.sourceRevision,
+            approvedDraftHash: candidate.draftHash,
+            approvedDraftRevision: candidate.draftRevision,
+            approvedPolicyVersion: candidate.policyVersion,
+            updatedAt: new Date(),
+          })
           .where(eq(coachProblemCandidate.id, candidate.id));
         await tx.insert(coachCatalogReviewAudit).values({
           id: `catalog_audit_${randomUUID()}`,
           candidateId: candidate.id,
+          reviewerUserId,
           action: 'approved',
-          notes: `Reviewed by ${reviewerIdentity}`,
-          metadata: { reviewer: reviewerIdentity },
+          notes:
+            notes?.trim().slice(0, 2000) ||
+            `Approved by user ${reviewerUserId}`,
+          contentHash: candidate.contentHash,
+          sourceRevision: candidate.sourceRevision,
+          draftHash: candidate.draftHash,
+          draftRevision: candidate.draftRevision,
+          policyVersion: candidate.policyVersion,
+          metadata: { reviewerUserId },
         });
         approved += 1;
       }
@@ -554,14 +2665,15 @@ export class CatalogDatabaseStore {
 
   async publishCandidates(
     candidateIds: string[],
-    reviewer: string
+    reviewer: string,
+    notes?: string
   ): Promise<DatabasePublishSummary> {
-    if (!reviewer.trim())
-      throw new Error('Publishing requires a reviewer identity.');
+    const publisherUserId = actorUserId(reviewer);
     const ids = [...new Set(candidateIds)];
     if (ids.length === 0) throw new Error('No candidate ids were supplied.');
 
     const committed = await this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, PUBLISHER_ROLE);
       const candidates = await tx
         .select()
         .from(coachProblemCandidate)
@@ -580,6 +2692,28 @@ export class CatalogDatabaseStore {
           'Every catalog candidate must be approved before publishing.'
         );
       }
+      for (const candidate of candidates) {
+        if (candidate.status === 'published') continue;
+        if (!candidate.approvedByUserId) {
+          throw new Error(
+            'Catalog approval does not identify a real reviewer.'
+          );
+        }
+        if (candidate.approvedByUserId === publisherUserId) {
+          throw new Error(
+            'Catalog approver and publisher must be different users.'
+          );
+        }
+        if (
+          candidate.approvedContentHash !== candidate.contentHash ||
+          candidate.approvedSourceRevision !== candidate.sourceRevision ||
+          candidate.approvedDraftHash !== candidate.draftHash ||
+          candidate.approvedDraftRevision !== candidate.draftRevision ||
+          candidate.approvedPolicyVersion !== candidate.policyVersion
+        ) {
+          throw new Error('Catalog approval binding is stale.');
+        }
+      }
 
       const payloads = candidates.map((candidate) => ({
         candidate,
@@ -594,6 +2728,30 @@ export class CatalogDatabaseStore {
       }> = [];
       for (const { candidate, payload } of payloads) {
         const persistedIssues: CatalogValidationResult['issues'] = [];
+        persistedIssues.push(
+          ...candidateLicenseEvidenceIssues(candidate),
+          ...candidateTestProvenanceIssues(candidate, payload.problem)
+        );
+        persistedIssues.push(
+          ...(await priorTestEvidenceIssues(tx, candidate, payload.problem))
+        );
+        persistedIssues.push(
+          ...(await duplicateCatalogIdentityIssues(
+            tx,
+            candidate,
+            payload.problem
+          ))
+        );
+        try {
+          assertCandidatePayloadMatchesRawEvidence(candidate, payload);
+        } catch {
+          persistedIssues.push({
+            code: 'invalid_origin',
+            message:
+              'Candidate payload does not match immutable upstream evidence.',
+            path: 'rawPayload',
+          });
+        }
         if (candidate.licenseSpdx !== 'MIT') {
           persistedIssues.push({
             code: 'invalid_license',
@@ -613,7 +2771,7 @@ export class CatalogDatabaseStore {
             path: 'normalizedProblem',
           });
         }
-        const validation = mergeCatalogValidationResults(
+        const staticValidation = mergeCatalogValidationResults(
           batch.get(payload.problem.slug)!,
           validateCandidatePayload(
             payload.problem,
@@ -625,6 +2783,12 @@ export class CatalogDatabaseStore {
             issues: persistedIssues,
           }
         );
+        const validation = staticValidation.valid
+          ? mergeCatalogValidationResults(
+              staticValidation,
+              await validateRunnerCompatibility(payload.problem)
+            )
+          : staticValidation;
         if (!validation.valid) {
           invalid.push({ candidateId: candidate.id, validation });
         }
@@ -642,12 +2806,22 @@ export class CatalogDatabaseStore {
               status: targetState,
               rejectionReason:
                 targetState === 'rejected' ? issueCodes.join(',') : null,
+              approvedByUserId: null,
+              approvedAt: null,
+              approvedContentHash: null,
+              approvedSourceRevision: null,
+              approvedDraftHash: null,
+              approvedDraftRevision: null,
+              approvedPolicyVersion: null,
+              publishedByUserId: null,
+              publishedAt: null,
               updatedAt: new Date(),
             })
             .where(eq(coachProblemCandidate.id, item.candidateId));
           await tx.insert(coachCatalogReviewAudit).values({
             id: `catalog_audit_${randomUUID()}`,
             candidateId: item.candidateId,
+            reviewerUserId: publisherUserId,
             action: targetState === 'rejected' ? 'rejected' : 'submitted',
             metadata: {
               stage: 'publish',
@@ -673,23 +2847,56 @@ export class CatalogDatabaseStore {
           candidate.normalizedProblem
         );
         const sourceId = candidate.sourceId;
-        const problemId = stableId(
+        const sourceEvidence = candidateSourceEvidence(candidate);
+        const derivedProblemId = stableId(
           'external_problem',
           sourceId,
           problem.origin.externalId
         );
+        const problemId = candidate.targetProblemId ?? derivedProblemId;
         const [existingProblem] = await tx
           .select()
           .from(coachProblem)
           .where(
+            candidate.targetProblemId
+              ? and(
+                  eq(coachProblem.id, candidate.targetProblemId),
+                  isNull(coachProblem.ownerUserId)
+                )
+              : and(
+                  eq(coachProblem.slug, problem.slug),
+                  isNull(coachProblem.ownerUserId)
+                )
+          )
+          .limit(1);
+        if (
+          candidate.targetProblemId &&
+          (!existingProblem || existingProblem.source !== 'external')
+        ) {
+          throw new Error('Catalog association target is no longer valid.');
+        }
+        if (
+          !candidate.targetProblemId &&
+          existingProblem &&
+          existingProblem.id !== problemId
+        ) {
+          throw new Error(`Catalog slug is already owned: ${problem.slug}`);
+        }
+        const publishedSlug = existingProblem?.slug ?? problem.slug;
+        const [externalOrigin] = await tx
+          .select({ problemId: coachProblemOrigin.problemId })
+          .from(coachProblemOrigin)
+          .where(
             and(
-              eq(coachProblem.slug, problem.slug),
-              isNull(coachProblem.ownerUserId)
+              eq(coachProblemOrigin.sourceId, sourceId),
+              eq(coachProblemOrigin.externalId, candidate.externalId)
             )
           )
           .limit(1);
-        if (existingProblem && existingProblem.id !== problemId) {
-          throw new Error(`Catalog slug is already owned: ${problem.slug}`);
+        if (externalOrigin && externalOrigin.problemId !== problemId) {
+          throw new Error(
+            'Catalog external origin is already associated with another problem.'
+          );
         }
         const [publishedRevision] = await tx
           .select()
@@ -708,11 +2915,11 @@ export class CatalogDatabaseStore {
             );
           }
           alreadyPublished += 1;
-          problemSlugs.push(problem.slug);
+          problemSlugs.push(publishedSlug);
           revisionIds.push(publishedRevision.id);
           publishedEvents.push({
             outcome: 'already_published',
-            problemSlug: problem.slug,
+            problemSlug: publishedSlug,
             revisionId: publishedRevision.id,
           });
           continue;
@@ -729,6 +2936,8 @@ export class CatalogDatabaseStore {
             topics: problem.topics,
             entryPoint: legacyEntryPoint(problem),
             templates: templatesFrom(problem),
+            languageConfigs: problem.languageConfigs,
+            signature: problem.languageConfigs.javascript.signature,
             examples: [],
             constraints: problem.constraints,
             hints: problem.hints,
@@ -771,10 +2980,49 @@ export class CatalogDatabaseStore {
               constraints: problem.constraints,
               hints: problem.hints,
               reviewPoints: problem.reviewPoints,
+              learningObjectives: problem.learningObjectives ?? [],
+              prerequisiteTopics: problem.prerequisiteTopics ?? [],
+              solutionPatterns: problem.solutionPatterns ?? [],
               estimatedMinutes: problem.estimatedMinutes,
               sourceStatement: upstream.statementMarkdown,
               sourceUrl: problem.origin.upstreamUrl,
               sourceRevision: problem.origin.sourceRevision,
+              candidateId: candidate.id,
+              catalogSourceId: candidate.sourceId,
+              sourceExternalId: candidate.externalId,
+              sourceStatementPath: problem.origin.statementPath,
+              sourceLicenseSpdx: candidate.licenseSpdx,
+              sourceLicenseHash:
+                typeof sourceEvidence.licenseContentHash === 'string'
+                  ? sourceEvidence.licenseContentHash
+                  : null,
+              sourceAttribution: candidate.attribution,
+              sourceFetchedAt: candidate.createdAt,
+              policyVersion: candidate.policyVersion,
+              draftRevision: candidate.draftRevision,
+              draftHash: candidate.draftHash,
+              provenance: {
+                candidateId: candidate.id,
+                sourceId: candidate.sourceId,
+                externalId: candidate.externalId,
+                upstreamUrl: candidate.upstreamUrl,
+                sourceRevision: candidate.sourceRevision,
+                licenseSpdx: candidate.licenseSpdx,
+                attribution: candidate.attribution,
+                policyVersion: candidate.policyVersion,
+                draftRevision: candidate.draftRevision,
+                draftHash: candidate.draftHash,
+                rawContentHash: candidate.rawContentHash,
+                ...(typeof sourceEvidence.licenseText === 'string'
+                  ? { licenseText: sourceEvidence.licenseText }
+                  : {}),
+                ...(typeof sourceEvidence.licenseContentHash === 'string'
+                  ? { licenseContentHash: sourceEvidence.licenseContentHash }
+                  : {}),
+                ...(typeof sourceEvidence.licenseGitBlobSha === 'string'
+                  ? { licenseGitBlobSha: sourceEvidence.licenseGitBlobSha }
+                  : {}),
+              },
               catalogVersion: `exercism@${problem.origin.sourceRevision.slice(
                 0,
                 12
@@ -793,6 +3041,17 @@ export class CatalogDatabaseStore {
               args: test.args,
               expected: test.expected,
               isSample: test.isSample,
+              sourceKind: test.sourceKind ?? 'manual',
+              sourceTestUuid:
+                test.sourceKind === 'canonical'
+                  ? test.sourceTestUuid?.trim()
+                  : null,
+              reviewNote:
+                test.sourceKind === 'manual'
+                  ? test.reviewNote?.trim()
+                  : test.sourceKind === 'canonical'
+                    ? null
+                    : `Curated adapter test ${test.id} approved in candidate ${candidate.id} by reviewer ${candidate.approvedByUserId}.`,
             }))
           );
         }
@@ -825,6 +3084,8 @@ export class CatalogDatabaseStore {
             topics: revision.topics,
             entryPoint: revision.entryPoint,
             templates: revision.templates,
+            languageConfigs: revision.languageConfigs,
+            signature: revision.signature,
             examples: revision.examples,
             constraints: revision.constraints,
             hints: revision.hints,
@@ -838,9 +3099,28 @@ export class CatalogDatabaseStore {
             updatedAt: new Date(),
           })
           .where(eq(coachProblem.id, problemId));
-        await tx
-          .insert(coachProblemOrigin)
-          .values({
+        const [problemOrigin] = await tx
+          .select({ id: coachProblemOrigin.id })
+          .from(coachProblemOrigin)
+          .where(eq(coachProblemOrigin.problemId, problemId))
+          .limit(1);
+        if (problemOrigin) {
+          await tx
+            .update(coachProblemOrigin)
+            .set({
+              sourceId,
+              externalId: problem.origin.externalId,
+              upstreamUrl: problem.origin.upstreamUrl,
+              licenseSpdx: problem.origin.licenseSpdx,
+              attribution: problem.origin.attribution,
+              sourceRevision: problem.origin.sourceRevision,
+              contentHash: candidate.contentHash,
+              fetchedAt: candidate.createdAt,
+              updatedAt: new Date(),
+            })
+            .where(eq(coachProblemOrigin.id, problemOrigin.id));
+        } else {
+          await tx.insert(coachProblemOrigin).values({
             id: stableId('problem_origin', sourceId, problem.origin.externalId),
             problemId,
             sourceId,
@@ -851,42 +3131,43 @@ export class CatalogDatabaseStore {
             sourceRevision: problem.origin.sourceRevision,
             contentHash: candidate.contentHash,
             fetchedAt: candidate.createdAt,
-          })
-          .onConflictDoUpdate({
-            target: [
-              coachProblemOrigin.sourceId,
-              coachProblemOrigin.externalId,
-            ],
-            set: {
-              problemId,
-              upstreamUrl: problem.origin.upstreamUrl,
-              licenseSpdx: problem.origin.licenseSpdx,
-              attribution: problem.origin.attribution,
-              sourceRevision: problem.origin.sourceRevision,
-              contentHash: candidate.contentHash,
-              fetchedAt: candidate.createdAt,
-              updatedAt: new Date(),
-            },
           });
+        }
         await tx
           .update(coachProblemCandidate)
-          .set({ status: 'published', updatedAt: new Date() })
+          .set({
+            status: 'published',
+            publishedByUserId: publisherUserId,
+            publishedAt: new Date(),
+            updatedAt: new Date(),
+          })
           .where(eq(coachProblemCandidate.id, candidate.id));
         await tx.insert(coachCatalogReviewAudit).values({
           id: `catalog_audit_${randomUUID()}`,
           candidateId: candidate.id,
           problemId,
           revisionId: revision.id,
+          reviewerUserId: publisherUserId,
           action: 'published',
-          notes: `Published by ${reviewer}`,
-          metadata: { reviewer },
+          notes:
+            notes?.trim().slice(0, 2000) ||
+            `Published by user ${publisherUserId}`,
+          contentHash: candidate.contentHash,
+          sourceRevision: candidate.sourceRevision,
+          draftHash: candidate.draftHash,
+          draftRevision: candidate.draftRevision,
+          policyVersion: candidate.policyVersion,
+          metadata: {
+            publisherUserId,
+            approverUserId: candidate.approvedByUserId,
+          },
         });
-        problemSlugs.push(problem.slug);
+        problemSlugs.push(publishedSlug);
         revisionIds.push(revision.id);
         published += 1;
         publishedEvents.push({
           outcome: 'published',
-          problemSlug: problem.slug,
+          problemSlug: publishedSlug,
           revisionId: revision.id,
         });
       }
@@ -931,11 +3212,12 @@ export class CatalogDatabaseStore {
   async rollbackProblem(
     problemSlug: string,
     targetVersion: number,
-    reviewer: string
+    reviewer: string,
+    notes?: string
   ): Promise<{ problemSlug: string; fromVersion: number; toVersion: number }> {
-    if (!reviewer.trim())
-      throw new Error('Rollback requires a reviewer identity.');
+    const publisherUserId = actorUserId(reviewer);
     const result = await this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, PUBLISHER_ROLE);
       const [problem] = await tx
         .select()
         .from(coachProblem)
@@ -996,6 +3278,8 @@ export class CatalogDatabaseStore {
           topics: target.topics,
           entryPoint: target.entryPoint,
           templates: target.templates,
+          languageConfigs: target.languageConfigs,
+          signature: target.signature,
           examples: target.examples,
           constraints: target.constraints,
           hints: target.hints,
@@ -1012,8 +3296,11 @@ export class CatalogDatabaseStore {
         .update(coachProblemOrigin)
         .set({
           upstreamUrl: target.sourceUrl ?? '',
+          licenseSpdx: target.sourceLicenseSpdx ?? 'MIT',
+          attribution: target.sourceAttribution ?? '',
           sourceRevision: target.sourceRevision ?? '',
           contentHash: target.contentHash,
+          fetchedAt: target.sourceFetchedAt ?? target.createdAt,
           updatedAt: new Date(),
         })
         .where(eq(coachProblemOrigin.problemId, problem.id));
@@ -1021,10 +3308,18 @@ export class CatalogDatabaseStore {
         id: `catalog_audit_${randomUUID()}`,
         problemId: problem.id,
         revisionId: target.id,
+        reviewerUserId: publisherUserId,
         action: 'rolled_back',
-        notes: `Rolled back by ${reviewer}`,
+        notes:
+          notes?.trim().slice(0, 2000) ||
+          `Rolled back by user ${publisherUserId}`,
+        contentHash: target.contentHash,
+        sourceRevision: target.sourceRevision,
+        draftHash: target.draftHash,
+        draftRevision: target.draftRevision,
+        policyVersion: target.policyVersion,
         metadata: {
-          reviewer,
+          publisherUserId,
           fromVersion: current.version,
           toVersion: target.version,
         },

@@ -177,4 +177,66 @@ describe('PostgreSQL catalog repository', () => {
     ).resolves.toBeUndefined();
     expect(mocks.builders).toHaveLength(1);
   });
+
+  it('hydrates an explicitly requested historical revision', async () => {
+    mocks.queryResults.push(
+      [{ ...revisionRow, version: 2, revisionId: 'revision-ac-001-v2' }],
+      [
+        {
+          revisionId: 'revision-ac-001-v2',
+          id: 'historical-test',
+          args: [[1]],
+          expected: 0,
+          isSample: true,
+          label: null,
+        },
+      ]
+    );
+
+    const problem = await getPublishedProblemBySlug('first-unique-position', 2);
+
+    expect(problem).toMatchObject({
+      slug: 'first-unique-position',
+      version: { contentVersion: 2 },
+      tests: [{ id: 'historical-test' }],
+    });
+    expect(mocks.builders).toHaveLength(2);
+  });
+
+  it('prefers immutable revision provenance over the mutable current origin', async () => {
+    mocks.queryResults.push(
+      [
+        {
+          ...revisionRow,
+          sourceUrl: 'https://example.test/two-fer/v1',
+          sourceRevision: 'revision-sha-v1',
+          revisionSourceExternalId: 'two-fer',
+          revisionSourceStatementPath: 'exercises/two-fer/instructions.md',
+          revisionSourceLicenseSpdx: 'MIT',
+          revisionSourceLicenseHash: 'sha256:license-v1',
+          revisionSourceAttribution: 'Revision one attribution',
+          revisionSourceFetchedAt: new Date('2026-06-01T00:00:00.000Z'),
+          originUpstreamUrl: 'https://example.test/two-fer/current',
+          originSourceRevision: 'revision-sha-current',
+          originAttribution: 'Current attribution',
+        },
+      ],
+      []
+    );
+
+    const problem = await getPublishedProblemBySlug('first-unique-position', 1);
+
+    expect(problem?.origin).toEqual({
+      provider: 'exercism',
+      externalId: 'two-fer',
+      upstreamUrl: 'https://example.test/two-fer/v1',
+      licenseSpdx: 'MIT',
+      attribution: 'Revision one attribution',
+      sourceRevision: 'revision-sha-v1',
+      contentHash: 'sha256:revision-v1',
+      fetchedAt: '2026-06-01T00:00:00.000Z',
+      statementPath: 'exercises/two-fer/instructions.md',
+      licenseHash: 'sha256:license-v1',
+    });
+  });
 });

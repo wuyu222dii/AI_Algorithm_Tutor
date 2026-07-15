@@ -148,16 +148,10 @@ function taskProblem(
   task: DailyPlanTask,
   problems: readonly Problem[]
 ): Problem | undefined {
-  return (
-    problems.find(
-      (problem) =>
-        (problem.slug === task.problemSlug || problem.id === task.problemId) &&
-        (problem.version?.contentVersion ?? 1) === task.problemContentVersion
-    ) ??
-    problems.find(
-      (problem) =>
-        problem.slug === task.problemSlug || problem.id === task.problemId
-    )
+  return problems.find(
+    (problem) =>
+      (problem.slug === task.problemSlug || problem.id === task.problemId) &&
+      (problem.version?.contentVersion ?? 1) === task.problemContentVersion
   );
 }
 

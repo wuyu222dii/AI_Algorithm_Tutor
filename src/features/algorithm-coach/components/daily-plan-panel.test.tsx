@@ -203,4 +203,14 @@ describe('DailyPlanPanel', () => {
     expect(screen.getByText('今天没有待安排任务')).toBeVisible();
     expect(screen.queryByRole('button', { name: /开始练习/ })).toBeNull();
   });
+
+  it('uses metadata from the task revision instead of the current revision', () => {
+    const historical = problem('versioned', '历史题目标题', 'stack', 1);
+    const current = problem('versioned', '当前题目标题', 'binary-search', 2);
+
+    renderPanel([task(historical)], [current, historical]);
+
+    expect(screen.getByText('历史题目标题')).toBeVisible();
+    expect(screen.queryByText('当前题目标题')).not.toBeInTheDocument();
+  });
 });

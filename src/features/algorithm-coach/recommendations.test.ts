@@ -166,4 +166,76 @@ describe('adaptive problem recommendations', () => {
 
     expect(recommendation?.reason).toBe('retry');
   });
+
+  it('uses only enabled languages and revisions that support the fallback', () => {
+    const javascriptOnly = {
+      ...problems[0],
+      slug: 'javascript-only',
+      id: 'javascript-only',
+      languageConfigs: {
+        javascript: {
+          entryPoint: 'solve',
+          template: 'function solve(value) { return value; }',
+        },
+      },
+      templates: undefined,
+    };
+    const typescriptOnly = {
+      ...problems[1],
+      slug: 'typescript-only',
+      id: 'typescript-only',
+      languageConfigs: {
+        typescript: {
+          entryPoint: 'solve',
+          template: 'function solve(value: number): number { return value; }',
+        },
+      },
+      templates: undefined,
+    };
+    const state = createInitialCoachState();
+    state.profile = {
+      goal: 'foundation',
+      preferredLanguage: 'typescript',
+      weeklyTarget: 5,
+      onboardingCompleted: true,
+      onboardedAt: '2026-07-01T00:00:00.000Z',
+    };
+
+    const recommendations = getProblemRecommendations(state, {
+      catalog: [javascriptOnly, typescriptOnly],
+      enabledLanguages: ['javascript'],
+    });
+
+    expect(recommendations.map(({ problem }) => problem.slug)).toEqual([
+      javascriptOnly.slug,
+    ]);
+  });
+
+  it('falls back when the preferred language has no compatible revision', () => {
+    const javascriptOnly = {
+      ...problems[0],
+      languageConfigs: {
+        javascript: {
+          entryPoint: 'solve',
+          template: 'function solve(value) { return value; }',
+        },
+      },
+      templates: undefined,
+    };
+    const state = createInitialCoachState();
+    state.profile = {
+      goal: 'foundation',
+      preferredLanguage: 'typescript',
+      weeklyTarget: 5,
+      onboardingCompleted: true,
+      onboardedAt: '2026-07-01T00:00:00.000Z',
+    };
+
+    const recommendations = getProblemRecommendations(state, {
+      catalog: [javascriptOnly],
+      enabledLanguages: ['typescript', 'javascript'],
+    });
+
+    expect(recommendations[0].problem.slug).toBe(javascriptOnly.slug);
+  });
 });

@@ -113,7 +113,7 @@ test('keeps legacy template routes disabled for public beta', async ({
     expect(response.status(), endpoint).toBe(404);
   }
 
-  for (const route of ['/pricing', '/blog', '/docs', '/admin']) {
+  for (const route of ['/pricing', '/blog', '/docs']) {
     await page.goto(route);
     await expect(page).toHaveURL(/\/learn$/);
   }

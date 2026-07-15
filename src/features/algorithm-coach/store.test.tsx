@@ -434,6 +434,13 @@ describe('CoachProvider persistence', () => {
         type: 'diagnose',
         problemSlug: slug,
       });
+      result.current.saveCode(
+        slug,
+        'javascript',
+        'updated-version-one-code',
+        1
+      );
+      result.current.revealHint(slug, 1);
     });
 
     const v2Key = getPracticeSessionKey(slug, 2);
@@ -457,8 +464,8 @@ describe('CoachProvider persistence', () => {
     );
     expect(result.current.state.sessions[slug]).toMatchObject({
       problemContentVersion: 1,
-      code: { javascript: 'version-one-code' },
-      hintLevel: 2,
+      code: { javascript: 'updated-version-one-code' },
+      hintLevel: 3,
       diagnosisCount: 0,
       runs: [],
     });

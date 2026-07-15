@@ -21,8 +21,10 @@ export type {
   ReviewStatus,
 } from './types';
 
-export const REVIEW_PROGRESS_VERSION = 1;
+export const REVIEW_PROGRESS_VERSION = 2;
 export const REVIEW_PROGRESS_STORAGE_KEY = `algocoach:review-progress:v${REVIEW_PROGRESS_VERSION}`;
+const LEGACY_REVIEW_PROGRESS_STORAGE_KEY = 'algocoach:review-progress:v1';
+const REVIEW_VERSION_SEPARATOR = '::v';
 
 export const ALL_PROBLEM_TOPICS: ProblemTopic[] = [
   'array-hash',
@@ -45,6 +47,48 @@ export const TOPIC_LABELS: Record<ProblemTopic, { zh: string; en: string }> = {
   bfs: { zh: '广度优先搜索', en: 'Breadth-first search' },
   dfs: { zh: '深度优先搜索', en: 'Depth-first search' },
 };
+
+export function getReviewItemKey(
+  problemSlug: string,
+  problemContentVersion: number | undefined = 1
+): string {
+  const version = normalizeProblemContentVersion(problemContentVersion);
+  return version === 1
+    ? problemSlug
+    : `${problemSlug}${REVIEW_VERSION_SEPARATOR}${version}`;
+}
+
+function parseReviewItemKey(key: string): {
+  problemSlug: string;
+  problemContentVersion: number;
+} {
+  const separatorIndex = key.lastIndexOf(REVIEW_VERSION_SEPARATOR);
+  if (separatorIndex < 1) {
+    return { problemSlug: key, problemContentVersion: 1 };
+  }
+  const version = Number(
+    key.slice(separatorIndex + REVIEW_VERSION_SEPARATOR.length)
+  );
+  return Number.isInteger(version) && version > 1
+    ? {
+        problemSlug: key.slice(0, separatorIndex),
+        problemContentVersion: version,
+      }
+    : { problemSlug: key, problemContentVersion: 1 };
+}
+
+export function getReviewItemForProblem(
+  reviewItems: Record<string, ReviewItem>,
+  problem: Pick<Problem, 'id' | 'slug' | 'version'>
+): ReviewItem | undefined {
+  const version = normalizeProblemContentVersion(
+    problem.version?.contentVersion
+  );
+  return (
+    reviewItems[getReviewItemKey(problem.slug, version)] ??
+    reviewItems[getReviewItemKey(problem.id, version)]
+  );
+}
 
 export interface TopicMasterySnapshot {
   topic: ProblemTopic;
@@ -78,10 +122,11 @@ function validDate(value: unknown, fallback: string): string {
   return new Date(value).toISOString();
 }
 
-function scopedReviewKey(scope: CoachStorageScope): string {
-  return scope === 'guest'
-    ? REVIEW_PROGRESS_STORAGE_KEY
-    : `${REVIEW_PROGRESS_STORAGE_KEY}:${scope}`;
+function scopedReviewKey(
+  scope: CoachStorageScope,
+  baseKey = REVIEW_PROGRESS_STORAGE_KEY
+): string {
+  return scope === 'guest' ? baseKey : `${baseKey}:${scope}`;
 }
 
 function getStorage(storage?: Storage): Storage | undefined {
@@ -101,8 +146,19 @@ export function migrateReviewProgress(value: unknown): ReviewProgressState {
   const items: Record<string, ReviewItem> = {};
   for (const [key, raw] of Object.entries(value.items)) {
     if (!isRecord(raw)) continue;
-    const problemSlug = String(raw.problemSlug ?? key).trim();
+    const keyReference = parseReviewItemKey(key);
+    const rawReference = parseReviewItemKey(
+      String(raw.problemSlug ?? keyReference.problemSlug).trim()
+    );
+    const problemSlug = rawReference.problemSlug;
     if (!problemSlug) continue;
+    const problemContentVersion = normalizeProblemContentVersion(
+      typeof raw.problemContentVersion === 'number'
+        ? raw.problemContentVersion
+        : keyReference.problemContentVersion > 1
+          ? keyReference.problemContentVersion
+          : rawReference.problemContentVersion
+    );
     const fallback = new Date(0).toISOString();
     const updatedAt = validDate(raw.updatedAt, fallback);
     const status: ReviewStatus = ['due', 'resolved', 'mastered'].includes(
@@ -116,8 +172,10 @@ export function migrateReviewProgress(value: unknown): ReviewProgressState {
       ? (raw.lastRating as ReviewRating)
       : undefined;
 
-    items[problemSlug] = {
+    const reviewKey = getReviewItemKey(problemSlug, problemContentVersion);
+    const item: ReviewItem = {
       problemSlug,
+      problemContentVersion,
       status,
       source: raw.source === 'completion' ? 'completion' : 'mistake',
       dueAt: validDate(raw.dueAt, updatedAt),
@@ -139,6 +197,13 @@ export function migrateReviewProgress(value: unknown): ReviewProgressState {
           : undefined,
       lastRating: rating,
     };
+    const existing = items[reviewKey];
+    if (
+      !existing ||
+      Date.parse(existing.updatedAt) <= Date.parse(item.updatedAt)
+    ) {
+      items[reviewKey] = item;
+    }
   }
 
   return { version: REVIEW_PROGRESS_VERSION, items };
@@ -151,10 +216,20 @@ export function loadReviewProgress(
   const target = getStorage(storage);
   if (!target) return createInitialReviewProgress();
   try {
-    const raw = target.getItem(scopedReviewKey(scope));
-    return raw
+    const currentKey = scopedReviewKey(scope);
+    const legacyKey = scopedReviewKey(
+      scope,
+      LEGACY_REVIEW_PROGRESS_STORAGE_KEY
+    );
+    const raw = target.getItem(currentKey) ?? target.getItem(legacyKey);
+    const migrated = raw
       ? migrateReviewProgress(JSON.parse(raw))
       : createInitialReviewProgress();
+    if (raw && !target.getItem(currentKey)) {
+      saveReviewProgress(migrated, target, scope);
+      target.removeItem(legacyKey);
+    }
+    return migrated;
   } catch {
     return createInitialReviewProgress();
   }
@@ -172,6 +247,9 @@ export function saveReviewProgress(
       scopedReviewKey(scope),
       JSON.stringify({ ...progress, version: REVIEW_PROGRESS_VERSION })
     );
+    target.removeItem(
+      scopedReviewKey(scope, LEGACY_REVIEW_PROGRESS_STORAGE_KEY)
+    );
   } catch {
     // Review persistence remains best-effort when browser storage is restricted.
   }
@@ -185,6 +263,9 @@ export function clearReviewProgress(
   if (!target) return;
   try {
     target.removeItem(scopedReviewKey(scope));
+    target.removeItem(
+      scopedReviewKey(scope, LEGACY_REVIEW_PROGRESS_STORAGE_KEY)
+    );
   } catch {
     // Reset still clears in-memory review progress when storage is unavailable.
   }
@@ -213,7 +294,12 @@ export function hasReviewProgress(
   const target = getStorage(storage);
   if (!target) return false;
   try {
-    return Boolean(target.getItem(scopedReviewKey(scope)));
+    return Boolean(
+      target.getItem(scopedReviewKey(scope)) ??
+        target.getItem(
+          scopedReviewKey(scope, LEGACY_REVIEW_PROGRESS_STORAGE_KEY)
+        )
+    );
   } catch {
     return false;
   }
@@ -610,7 +696,7 @@ export function calculateTopicMasterySnapshots(
         problemScore(
           state,
           problem,
-          reviewItems[problem.slug] ?? reviewItems[problem.id]
+          getReviewItemForProblem(reviewItems, problem)
         )
       )
       .filter((item): item is NonNullable<typeof item> => Boolean(item));
@@ -685,15 +771,18 @@ export function reconcileReviewProgress(
   for (const problem of options.catalog ?? []) {
     const evidence = reviewEvidence(state, problem);
     if (!evidence) continue;
-    const existing = items[problem.slug] ?? items[problem.id];
+    const contentVersion = problemContentVersion(problem);
+    const reviewKey = getReviewItemKey(problem.slug, contentVersion);
+    const existing = getReviewItemForProblem(items, problem);
     const observedAt = Date.parse(existing?.lastObservedRunAt ?? '');
     const evidenceAt = Date.parse(evidence.at);
 
     if (!existing || !Number.isFinite(observedAt) || evidenceAt > observedAt) {
       changed = true;
       if (!evidence.passed) {
-        items[problem.slug] = {
+        items[reviewKey] = {
           problemSlug: problem.slug,
+          problemContentVersion: contentVersion,
           status: 'due',
           source: 'mistake',
           dueAt: evidence.at,
@@ -709,8 +798,9 @@ export function reconcileReviewProgress(
       } else {
         const intervalDays = initialReviewIntervalDays(state, problem);
         const keepMastered = existing?.status === 'mastered';
-        items[problem.slug] = {
+        items[reviewKey] = {
           problemSlug: problem.slug,
+          problemContentVersion: contentVersion,
           status: keepMastered ? 'mastered' : 'resolved',
           source: evidence.hadFailure ? 'mistake' : 'completion',
           dueAt: keepMastered
@@ -786,30 +876,34 @@ export function rateReviewItem(
   progress: ReviewProgressState,
   problemSlug: string,
   rating: ReviewRating,
-  reviewedAt = new Date()
+  reviewedAt = new Date(),
+  problemContentVersion = 1
 ): ReviewProgressState {
-  const existing = progress.items[problemSlug];
+  const reviewKey = getReviewItemKey(problemSlug, problemContentVersion);
+  const existing = progress.items[reviewKey];
   if (!existing) return progress;
   const result = scheduleReview(existing, rating, reviewedAt);
   return {
     version: REVIEW_PROGRESS_VERSION,
-    items: { ...progress.items, [problemSlug]: result.item },
+    items: { ...progress.items, [reviewKey]: result.item },
   };
 }
 
 export function markReviewItemMastered(
   progress: ReviewProgressState,
   problemSlug: string,
-  masteredAt = new Date()
+  masteredAt = new Date(),
+  problemContentVersion = 1
 ): ReviewProgressState {
-  const existing = progress.items[problemSlug];
+  const reviewKey = getReviewItemKey(problemSlug, problemContentVersion);
+  const existing = progress.items[reviewKey];
   if (!existing) return progress;
   const timestamp = masteredAt.toISOString();
   return {
     version: REVIEW_PROGRESS_VERSION,
     items: {
       ...progress.items,
-      [problemSlug]: {
+      [reviewKey]: {
         ...existing,
         status: 'mastered',
         updatedAt: timestamp,

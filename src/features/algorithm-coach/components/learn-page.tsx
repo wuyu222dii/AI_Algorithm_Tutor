@@ -499,7 +499,7 @@ export function LearnPage() {
                 router.push(
                   task.kind === 'due-review'
                     ? '/review'
-                    : `/practice/${task.problemSlug}`
+                    : `/practice/${task.problemSlug}?version=${task.problemContentVersion}`
                 );
               }}
             />

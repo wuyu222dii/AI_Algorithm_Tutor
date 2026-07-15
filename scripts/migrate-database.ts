@@ -4,6 +4,11 @@ import { pathToFileURL } from 'node:url';
 import { readMigrationFiles } from 'drizzle-orm/migrator';
 import postgres from 'postgres';
 
+import {
+  automaticMigrationsEnabled,
+  resolveMigrationDatabaseUrl,
+} from '../src/core/db/migration-config';
+
 type MigrationRow = {
   hash: string;
   created_at: string | number | null;
@@ -14,6 +19,8 @@ const READ_ONLY_CATALOG_TABLES = [
   'coach_catalog_source',
   'coach_catalog_sync_run',
   'coach_problem_candidate',
+  'coach_catalog_ai_generation',
+  'coach_catalog_admin_mutation',
   'coach_problem_revision',
   'coach_problem_origin',
   'coach_catalog_review_audit',
@@ -38,15 +45,11 @@ function positiveInteger(value: string | undefined, fallback: number): number {
 
 export async function migrateDatabase(options?: {
   databaseUrl?: string;
-  allowApplicationDatabaseUrl?: boolean;
   respectAutoMigrateFlag?: boolean;
   applicationRole?: string;
   requireApplicationRole?: boolean;
 }): Promise<void> {
-  if (
-    options?.respectAutoMigrateFlag &&
-    process.env.DB_AUTO_MIGRATE === 'false'
-  ) {
+  if (options?.respectAutoMigrateFlag && !automaticMigrationsEnabled()) {
     console.log('[database] automatic migrations are disabled');
     return;
   }
@@ -58,19 +61,9 @@ export async function migrateDatabase(options?: {
     );
   }
 
-  const databaseUrl =
-    options?.databaseUrl?.trim() ||
-    process.env.MIGRATION_DATABASE_URL?.trim() ||
-    (options?.allowApplicationDatabaseUrl
-      ? process.env.DATABASE_URL?.trim()
-      : undefined);
-  if (!databaseUrl) {
-    throw new Error(
-      options?.allowApplicationDatabaseUrl
-        ? 'MIGRATION_DATABASE_URL or DATABASE_URL is required for development migrations'
-        : 'MIGRATION_DATABASE_URL is required for release migrations'
-    );
-  }
+  const databaseUrl = resolveMigrationDatabaseUrl({
+    databaseUrl: options?.databaseUrl,
+  });
 
   const migrationsFolder = path.resolve(
     process.cwd(),
@@ -247,6 +240,18 @@ export async function migrateDatabase(options?: {
 
         const applicationSchemaSql = quotedIdentifier(applicationSchema);
         const applicationRoleSql = quotedIdentifier(applicationRole);
+        const [applicationCapability] = await transaction<
+          { exists: boolean }[]
+        >`
+          select exists(
+            select 1 from pg_roles where rolname = 'algocoach_application'
+          ) as exists
+        `;
+        if (applicationCapability?.exists) {
+          await transaction.unsafe(
+            `GRANT algocoach_application TO ${applicationRoleSql}`
+          );
+        }
         await transaction.unsafe(
           `REVOKE CREATE ON SCHEMA ${applicationSchemaSql} FROM ${applicationRoleSql}`
         );
@@ -297,9 +302,6 @@ const entryPoint = process.argv[1]
 
 if (import.meta.url === entryPoint) {
   migrateDatabase({
-    allowApplicationDatabaseUrl: process.argv.includes(
-      '--allow-application-database-url'
-    ),
     requireApplicationRole: process.argv.includes('--require-application-role'),
   }).catch((error) => {
     console.error(

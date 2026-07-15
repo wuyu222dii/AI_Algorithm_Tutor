@@ -53,7 +53,8 @@ const FORBIDDEN_TEMPLATE_RULES: Array<[RegExp, string]> = [
 ];
 
 const TRANSITIONS: Record<CatalogCandidateState, CatalogCandidateState[]> = {
-  discovered: ['quarantined', 'validated', 'rejected'],
+  discovered: ['drafting', 'quarantined', 'validated', 'rejected'],
+  drafting: ['quarantined', 'rejected'],
   quarantined: ['validated', 'rejected'],
   validated: ['approved', 'rejected'],
   approved: ['published', 'rejected'],
@@ -293,6 +294,236 @@ export function validateExercismUpstream(
   return { valid: issues.length === 0, issues };
 }
 
+interface CanonicalCaseEvidence {
+  uuid: string;
+  hasInput: boolean;
+  input?: CatalogJsonValue;
+  hasExpected: boolean;
+  expected?: CatalogJsonValue;
+}
+
+function collectCanonicalCases(
+  value: CatalogJsonValue,
+  output: CanonicalCaseEvidence[]
+) {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectCanonicalCases(item, output));
+    return;
+  }
+  if (value === null || typeof value !== 'object') return;
+  if (typeof value.uuid === 'string') {
+    output.push({
+      uuid: value.uuid,
+      hasInput: Object.hasOwn(value, 'input'),
+      ...(Object.hasOwn(value, 'input')
+        ? { input: value.input as CatalogJsonValue }
+        : {}),
+      hasExpected: Object.hasOwn(value, 'expected'),
+      ...(Object.hasOwn(value, 'expected')
+        ? { expected: value.expected as CatalogJsonValue }
+        : {}),
+    });
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (key === 'input' || key === 'expected') continue;
+    collectCanonicalCases(child, output);
+  }
+}
+
+function valueMatchesTypeSpec(
+  value: CatalogJsonValue,
+  type: RawCatalogProblem['languageConfigs']['javascript']['signature']['returns']
+): boolean {
+  switch (type.kind) {
+    case 'unknown':
+      return false;
+    case 'integer':
+      return typeof value === 'number' && Number.isInteger(value);
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    case 'string':
+      return typeof value === 'string';
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'null':
+      return value === null;
+    case 'array':
+      return (
+        Array.isArray(value) &&
+        value.every((item) => valueMatchesTypeSpec(item, type.items))
+      );
+    case 'object':
+      return (
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        Object.entries(type.fields).every(
+          ([key, fieldType]) =>
+            Object.hasOwn(value, key) &&
+            valueMatchesTypeSpec(value[key]!, fieldType)
+        )
+      );
+    case 'union':
+      return type.options.some((option) => valueMatchesTypeSpec(value, option));
+  }
+}
+
+function canonicalInputToArgs(
+  input: CatalogJsonValue,
+  problem: RawCatalogProblem
+): CatalogJsonValue[] | undefined {
+  const parameters = problem.languageConfigs.javascript.signature.parameters;
+  if (parameters.length === 0) {
+    return (Array.isArray(input) && input.length === 0) ||
+      (input !== null &&
+        typeof input === 'object' &&
+        !Array.isArray(input) &&
+        Object.keys(input).length === 0)
+      ? []
+      : undefined;
+  }
+  if (
+    input !== null &&
+    typeof input === 'object' &&
+    !Array.isArray(input) &&
+    Array.isArray(input.args)
+  ) {
+    return input.args.length === parameters.length &&
+      input.args.every((value, index) =>
+        valueMatchesTypeSpec(value, parameters[index]!.type)
+      )
+      ? input.args
+      : undefined;
+  }
+  if (
+    input !== null &&
+    typeof input === 'object' &&
+    !Array.isArray(input) &&
+    parameters.every((parameter) => Object.hasOwn(input, parameter.name))
+  ) {
+    const args = parameters.map((parameter) => input[parameter.name]!);
+    return args.every((value, index) =>
+      valueMatchesTypeSpec(value, parameters[index]!.type)
+    )
+      ? args
+      : undefined;
+  }
+  if (parameters.length === 1) {
+    return valueMatchesTypeSpec(input, parameters[0]!.type)
+      ? [input]
+      : undefined;
+  }
+  if (
+    Array.isArray(input) &&
+    input.length === parameters.length &&
+    input.every((value, index) =>
+      valueMatchesTypeSpec(value, parameters[index]!.type)
+    )
+  ) {
+    return input;
+  }
+  return undefined;
+}
+
+/** Strict evidence gate used only for candidates backed by immutable discovery data. */
+export function validateCanonicalTestProvenance(
+  problem: RawCatalogProblem,
+  canonicalData: CatalogJsonValue
+): CatalogValidationResult {
+  const issues: CatalogValidationIssue[] = [];
+  const canonicalCases: CanonicalCaseEvidence[] = [];
+  collectCanonicalCases(canonicalData, canonicalCases);
+  const byUuid = new Map<string, CanonicalCaseEvidence>();
+  for (const item of canonicalCases) {
+    if (!byUuid.has(item.uuid)) byUuid.set(item.uuid, item);
+  }
+  const usedCanonicalUuids = new Set<string>();
+  problem.tests.forEach((test, index) => {
+    const path = `tests.${index}`;
+    if (test.sourceKind === 'manual') {
+      if (!test.reviewNote?.trim()) {
+        issues.push(
+          issue(
+            'invalid_upstream_data',
+            'manual tests require an explicit review note',
+            `${path}.reviewNote`
+          )
+        );
+      }
+      return;
+    }
+    if (test.sourceKind !== 'canonical' || !test.sourceTestUuid?.trim()) {
+      issues.push(
+        issue(
+          'invalid_upstream_data',
+          'discovered tests must reference a canonical UUID or use manual provenance with a review note',
+          path
+        )
+      );
+      return;
+    }
+    const uuid = test.sourceTestUuid.trim();
+    if (usedCanonicalUuids.has(uuid)) {
+      issues.push(
+        issue(
+          'invalid_upstream_data',
+          'canonical UUIDs must be unique within the reviewed candidate',
+          `${path}.sourceTestUuid`
+        )
+      );
+      return;
+    }
+    usedCanonicalUuids.add(uuid);
+    const canonical = byUuid.get(uuid);
+    if (!canonical) {
+      issues.push(
+        issue(
+          'invalid_upstream_data',
+          'canonical UUID does not exist in immutable upstream data',
+          `${path}.sourceTestUuid`
+        )
+      );
+      return;
+    }
+    if (!canonical.hasInput) {
+      issues.push(
+        issue(
+          'invalid_upstream_data',
+          'canonical input cannot be mapped exactly; use manual provenance with a review note',
+          `${path}.args`
+        )
+      );
+    } else {
+      const canonicalArgs = canonicalInputToArgs(canonical.input!, problem);
+      if (
+        !canonicalArgs ||
+        stableStringify(canonicalArgs) !== stableStringify(test.args)
+      ) {
+        issues.push(
+          issue(
+            'invalid_upstream_data',
+            'reviewed arguments do not match the canonical UUID exactly; use manual provenance when mapping is ambiguous',
+            `${path}.args`
+          )
+        );
+      }
+    }
+    if (
+      !canonical.hasExpected ||
+      stableStringify(canonical.expected!) !== stableStringify(test.expected)
+    ) {
+      issues.push(
+        issue(
+          'invalid_upstream_data',
+          'reviewed expected result does not match the canonical UUID',
+          `${path}.expected`
+        )
+      );
+    }
+  });
+  return { valid: issues.length === 0, issues };
+}
+
 export function mergeCatalogValidationResults(
   ...results: CatalogValidationResult[]
 ): CatalogValidationResult {
@@ -307,7 +538,14 @@ export function mergeCatalogValidationResults(
             candidate.message === item.message
         ) === index
     );
-  return { valid: issues.length === 0, issues };
+  const runnerCompatibility = results.findLast(
+    (result) => result.runnerCompatibility !== undefined
+  )?.runnerCompatibility;
+  return {
+    valid: issues.length === 0,
+    issues,
+    ...(runnerCompatibility ? { runnerCompatibility } : {}),
+  };
 }
 
 export function validateCandidatePayload(
@@ -486,6 +724,50 @@ export function validateCatalogProblem(
       issue('invalid_problem', 'bilingual title and description are required')
     );
   }
+  if (
+    problem.learningObjectives !== undefined &&
+    (problem.learningObjectives.length < 1 ||
+      problem.learningObjectives.length > 6 ||
+      problem.learningObjectives.some(
+        (objective) => !isNonEmpty(objective.zh) || !isNonEmpty(objective.en)
+      ))
+  ) {
+    issues.push(
+      issue(
+        'invalid_problem',
+        'learningObjectives must contain 1-6 bilingual items when provided',
+        'learningObjectives'
+      )
+    );
+  }
+  if (
+    problem.prerequisiteTopics !== undefined &&
+    (problem.prerequisiteTopics.length > 12 ||
+      problem.prerequisiteTopics.some(
+        (topic) => !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(topic)
+      ))
+  ) {
+    issues.push(
+      issue(
+        'invalid_problem',
+        'prerequisiteTopics must contain valid topic slugs',
+        'prerequisiteTopics'
+      )
+    );
+  }
+  if (
+    problem.solutionPatterns !== undefined &&
+    (problem.solutionPatterns.length > 12 ||
+      problem.solutionPatterns.some((pattern) => !isNonEmpty(pattern)))
+  ) {
+    issues.push(
+      issue(
+        'invalid_problem',
+        'solutionPatterns must contain non-empty values',
+        'solutionPatterns'
+      )
+    );
+  }
 
   const localizedContent = [
     ['title.zh', problem.title.zh],
@@ -506,6 +788,13 @@ export function validateCatalogProblem(
       [`reviewPoints.${index}.zh`, value.zh] as [string, string],
       [`reviewPoints.${index}.en`, value.en] as [string, string],
     ]),
+    ...(problem.learningObjectives ?? []).flatMap((value, index) => [
+      [`learningObjectives.${index}.zh`, value.zh] as [string, string],
+      [`learningObjectives.${index}.en`, value.en] as [string, string],
+    ]),
+    ...(problem.solutionPatterns ?? []).map(
+      (value, index) => [`solutionPatterns.${index}`, value] as [string, string]
+    ),
     ['origin.attribution', problem.origin.attribution],
   ] as Array<[string, string]>;
   if (upstreamStatement !== undefined) {
@@ -593,6 +882,20 @@ export function validateCatalogProblem(
       );
     }
     testIds.add(test.id);
+    if (
+      test.sourceKind === 'legacy' ||
+      (test.sourceKind === 'canonical' && !test.sourceTestUuid?.trim()) ||
+      (test.sourceKind === 'manual' && !test.reviewNote?.trim()) ||
+      (!test.sourceKind && (test.sourceTestUuid || test.reviewNote))
+    ) {
+      issues.push(
+        issue(
+          'invalid_upstream_data',
+          'test provenance must be canonical with a UUID or manual with a review note',
+          `tests.${index}`
+        )
+      );
+    }
     try {
       JSON.stringify({ args: test.args, expected: test.expected });
     } catch {

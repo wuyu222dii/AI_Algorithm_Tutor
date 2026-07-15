@@ -21,7 +21,6 @@ const legacyPagePrefixes = [
   '/ai-video-generator',
   '/chat',
   '/pricing',
-  '/admin',
   '/blog',
   '/docs',
   '/showcases',

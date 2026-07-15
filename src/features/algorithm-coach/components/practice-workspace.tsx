@@ -131,6 +131,9 @@ const copy = {
     noVerifiedTests: '无验证测试',
     notFound: '没有找到这道题',
     notFoundDetail: '题目可能已被移除，或导入草稿已从浏览器中清除。',
+    versionUnavailable: '这个题目版本不可用',
+    versionUnavailableDetail:
+      '无法加载计划或历史记录指定的题目版本。为避免混用测试，系统不会回退到最新版本。',
     live: '在线 AI',
     local: '本地演示',
     reviewCard: '复习卡片',
@@ -204,6 +207,9 @@ const copy = {
     notFound: 'Problem not found',
     notFoundDetail:
       'It may have been removed, or the imported draft was cleared from this browser.',
+    versionUnavailable: 'This problem version is unavailable',
+    versionUnavailableDetail:
+      'The version referenced by this plan or history could not be loaded. The latest version is not substituted because its tests may differ.',
     live: 'Live AI',
     local: 'Local demo',
     reviewCard: 'Review card',
@@ -258,16 +264,46 @@ class ChatRequestError extends Error {
   }
 }
 
-export function PracticeWorkspace({ slug }: { slug: string }) {
+export function PracticeWorkspace({
+  slug,
+  initialProblem,
+  requestedContentVersion,
+  versionUnavailable = false,
+}: {
+  slug: string;
+  initialProblem?: Problem;
+  requestedContentVersion?: number;
+  versionUnavailable?: boolean;
+}) {
   const locale = localeKey(useLocale());
   const t = copy[locale];
   const coach = useCoachStore();
+  const saveCode = coach.saveCode;
   const state = coach.state;
   const loaded = coach.hydrated;
   const imported = isImportedDraftSlug(slug);
   const problem: Problem | null = useMemo(() => {
     if (!imported) {
-      return coach.problems.find((item) => item.slug === slug) ?? null;
+      if (requestedContentVersion !== undefined) {
+        if (
+          initialProblem?.slug === slug &&
+          getProblemContentVersion(initialProblem) === requestedContentVersion
+        ) {
+          return initialProblem;
+        }
+        return (
+          coach.problems.find(
+            (item) =>
+              item.slug === slug &&
+              getProblemContentVersion(item) === requestedContentVersion
+          ) ?? null
+        );
+      }
+      return (
+        initialProblem ??
+        coach.problems.find((item) => item.slug === slug) ??
+        null
+      );
     }
     if (!coach.storageScope) return null;
     const stored = coach.importedDrafts.find(
@@ -280,7 +316,9 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
     coach.importedProblem,
     coach.problems,
     coach.storageScope,
+    initialProblem,
     imported,
+    requestedContentVersion,
     slug,
   ]);
   const [selectedLanguage, setLanguage] = useState<Language>(
@@ -424,17 +462,12 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
 
   useEffect(() => {
     if (!problem || !codeInitializedFor.current) return;
-    const save = coach.saveCode as (
-      problemSlug: string,
-      lang: Language,
-      value: string
-    ) => void;
     const timeout = window.setTimeout(
-      () => save(problem.slug, language, code),
+      () => saveCode(problem.slug, language, code, problemContentVersion),
       350
     );
     return () => window.clearTimeout(timeout);
-  }, [coach.saveCode, code, language, problem]);
+  }, [code, language, problem, problemContentVersion, saveCode]);
 
   useEffect(() => {
     if (!loaded || !problem || !coach.storageScope) return;
@@ -499,7 +532,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
 
   function switchLanguage(nextLanguage: Language) {
     if (!problem) return;
-    coach.saveCode(problem.slug, language, code);
+    coach.saveCode(problem.slug, language, code, problemContentVersion);
     setLanguage(nextLanguage);
     coach.setPreferredLanguage(nextLanguage);
     setResult(null);
@@ -511,7 +544,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
     setRunning(scope);
     setActiveMobileTab('code');
     try {
-      coach.saveCode(problem.slug, language, code);
+      coach.saveCode(problem.slug, language, code, problemContentVersion);
       const rawResult = await runCode({
         problem,
         language,
@@ -632,7 +665,7 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
       }
       if (action === 'hint') {
         setHintLevel(nextHintLevel);
-        coach.revealHint(problem.slug);
+        coach.revealHint(problem.slug, problemContentVersion);
         coach.trackEvent('experiment_exposed', {
           problemSlug: problem.slug,
           properties: {
@@ -830,12 +863,18 @@ export function PracticeWorkspace({ slug }: { slug: string }) {
   }
 
   if (!problem || !text) {
+    const exactVersionUnavailable =
+      versionUnavailable || requestedContentVersion !== undefined;
     return (
       <div className="mx-auto flex min-h-[70svh] max-w-xl flex-col items-center justify-center px-6 text-center">
         <CircleAlert className="text-muted-foreground size-10" />
-        <h1 className="mt-5 text-xl font-semibold">{t.notFound}</h1>
+        <h1 className="mt-5 text-xl font-semibold">
+          {exactVersionUnavailable ? t.versionUnavailable : t.notFound}
+        </h1>
         <p className="text-muted-foreground mt-2 text-sm leading-6">
-          {t.notFoundDetail}
+          {exactVersionUnavailable
+            ? t.versionUnavailableDetail
+            : t.notFoundDetail}
         </p>
         <Button asChild className="mt-5">
           <Link href="/problems">{t.back}</Link>

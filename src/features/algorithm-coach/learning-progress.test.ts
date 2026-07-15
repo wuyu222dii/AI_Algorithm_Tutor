@@ -8,10 +8,13 @@ import {
   claimGuestReviewProgress,
   countNaturalWeekCompletions,
   createInitialReviewProgress,
+  getReviewItemKey,
   loadReviewProgress,
   markReviewItemMastered,
   rateReviewItem,
   reconcileReviewProgress,
+  REVIEW_PROGRESS_STORAGE_KEY,
+  REVIEW_PROGRESS_VERSION,
   saveReviewProgress,
   scheduleReview,
 } from './learning-progress';
@@ -262,11 +265,13 @@ describe('learning progress', () => {
         catalog: currentCatalog,
       }
     );
-    expect(progress.items[slug]).toMatchObject({
+    expect(progress.items[getReviewItemKey(slug, 2)]).toMatchObject({
+      problemContentVersion: 2,
       status: 'due',
       lastObservedRunAt: currentFailure.executedAt,
       lastFailureAt: currentFailure.executedAt,
     });
+    expect(progress.items[slug]).toBeUndefined();
     expect(
       calculateTopicMasterySnapshots(state, progress.items, currentCatalog)[
         'array-hash'
@@ -373,5 +378,59 @@ describe('learning progress', () => {
     expect(
       loadReviewProgress(storage, 'user:test-account').items['dependency-cycle']
     ).toMatchObject({ lastRating: 'good', repetitions: 1 });
+  });
+
+  it('migrates v1 review storage and keeps revisions independent', () => {
+    const storage = createMemoryStorage();
+    storage.setItem(
+      'algocoach:review-progress:v1',
+      JSON.stringify({
+        version: 1,
+        items: {
+          'dependency-cycle': {
+            problemSlug: 'dependency-cycle',
+            status: 'due',
+            source: 'mistake',
+            dueAt: '2026-07-14T10:00:00.000Z',
+            intervalDays: 1,
+            repetitions: 0,
+            easeFactor: 2.5,
+            updatedAt: '2026-07-14T10:00:00.000Z',
+          },
+        },
+      })
+    );
+
+    const migrated = loadReviewProgress(storage);
+    expect(migrated.version).toBe(REVIEW_PROGRESS_VERSION);
+    expect(migrated.items['dependency-cycle']).toMatchObject({
+      problemSlug: 'dependency-cycle',
+      problemContentVersion: 1,
+    });
+    expect(storage.getItem('algocoach:review-progress:v1')).toBeNull();
+    expect(storage.getItem(REVIEW_PROGRESS_STORAGE_KEY)).not.toBeNull();
+
+    const versionTwoKey = getReviewItemKey('dependency-cycle', 2);
+    const withVersionTwo = {
+      ...migrated,
+      items: {
+        ...migrated.items,
+        [versionTwoKey]: {
+          ...migrated.items['dependency-cycle'],
+          problemContentVersion: 2,
+          updatedAt: '2026-07-15T10:00:00.000Z',
+        },
+      },
+    };
+    const rated = rateReviewItem(
+      withVersionTwo,
+      'dependency-cycle',
+      'good',
+      new Date('2026-07-15T12:00:00.000Z'),
+      2
+    );
+
+    expect(rated.items[versionTwoKey].lastRating).toBe('good');
+    expect(rated.items['dependency-cycle'].lastRating).toBeUndefined();
   });
 });

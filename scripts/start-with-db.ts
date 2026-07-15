@@ -10,7 +10,6 @@ async function main() {
   }
 
   await migrateDatabase({
-    allowApplicationDatabaseUrl: true,
     respectAutoMigrateFlag: true,
   });
 

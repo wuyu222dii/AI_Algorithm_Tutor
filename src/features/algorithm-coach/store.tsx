@@ -161,9 +161,14 @@ export interface CoachStoreValue {
   retrySync: () => void;
   completeOnboarding: (profile: OnboardingInput) => void;
   setPreferredLanguage: (language: Language) => void;
-  saveCode: (problemSlug: string, language: Language, code: string) => void;
+  saveCode: (
+    problemSlug: string,
+    language: Language,
+    code: string,
+    problemContentVersion?: number
+  ) => void;
   recordRun: RecordRun;
-  revealHint: (problemSlug: string) => void;
+  revealHint: (problemSlug: string, problemContentVersion?: number) => void;
   addArtifact: (artifact: LearningArtifact) => void;
   startAssessment: (
     problemSlugs?: string[],
@@ -181,9 +186,16 @@ export interface CoachStoreValue {
   rateReview: (
     problemSlug: string,
     rating: ReviewRating,
-    options?: { attemptId?: string; suggestedRating?: ReviewRating }
+    options?: {
+      attemptId?: string;
+      suggestedRating?: ReviewRating;
+      problemContentVersion?: number;
+    }
   ) => void;
-  markReviewMastered: (problemSlug: string) => void;
+  markReviewMastered: (
+    problemSlug: string,
+    problemContentVersion?: number
+  ) => void;
   trackEvent: (
     name: ProductEventName,
     options?: {
@@ -967,9 +979,16 @@ export function CoachProvider({
   );
 
   const saveCode = useCallback(
-    (problemSlug: string, language: Language, code: string) => {
+    (
+      problemSlug: string,
+      language: Language,
+      code: string,
+      requestedContentVersion?: number
+    ) => {
       setState((current) => {
-        const contentVersion = problemContentVersion(problemSlug);
+        const contentVersion = normalizeProblemContentVersion(
+          requestedContentVersion ?? problemContentVersion(problemSlug)
+        );
         const sessionKey = getPracticeSessionKey(problemSlug, contentVersion);
         const existing = current.sessions[sessionKey];
         const session = existing ?? createSession(problemSlug, contentVersion);
@@ -1178,9 +1197,11 @@ export function CoachProvider({
   ) as RecordRun;
 
   const revealHint = useCallback(
-    (problemSlug: string) => {
+    (problemSlug: string, requestedContentVersion?: number) => {
       setState((current) => {
-        const contentVersion = problemContentVersion(problemSlug);
+        const contentVersion = normalizeProblemContentVersion(
+          requestedContentVersion ?? problemContentVersion(problemSlug)
+        );
         const sessionKey = getPracticeSessionKey(problemSlug, contentVersion);
         const session =
           current.sessions[sessionKey] ??
@@ -1379,6 +1400,7 @@ export function CoachProvider({
           catalog: problems,
           date: timestamp,
           timeZone,
+          enabledLanguages,
         });
         if (current.dailyPlans[plan.id]) return current;
         const event = trackProductEvent('daily_plan_viewed', {
@@ -1400,7 +1422,7 @@ export function CoachProvider({
         };
       });
     },
-    [problems]
+    [enabledLanguages, problems]
   );
 
   const skipDailyPlanTask = useCallback(
@@ -1438,6 +1460,7 @@ export function CoachProvider({
           catalog: problems,
           date: new Date(),
           timeZone: plan.timeZone,
+          enabledLanguages,
         });
         const nextTask = changed.tasks.find((item) => item.id === taskId);
         const latestChange = changed.changes.at(-1);
@@ -1458,7 +1481,7 @@ export function CoachProvider({
         };
       });
     },
-    [problems]
+    [enabledLanguages, problems]
   );
 
   const recordReviewAttempt = useCallback((attempt: ReviewAttempt) => {
@@ -1493,13 +1516,21 @@ export function CoachProvider({
     (
       problemSlug: string,
       rating: ReviewRating,
-      options: { attemptId?: string; suggestedRating?: ReviewRating } = {}
+      options: {
+        attemptId?: string;
+        suggestedRating?: ReviewRating;
+        problemContentVersion?: number;
+      } = {}
     ) => {
+      const reviewedAt = new Date();
+      const contentVersion = normalizeProblemContentVersion(
+        options.problemContentVersion ?? problemContentVersion(problemSlug)
+      );
       setReviewProgress((current) =>
-        rateReviewItem(current, problemSlug, rating)
+        rateReviewItem(current, problemSlug, rating, reviewedAt, contentVersion)
       );
       setState((current) => {
-        const reviewedAt = now();
+        const reviewedAtIso = reviewedAt.toISOString();
         const event = trackProductEvent('review_completed', {
           problemSlug,
           properties: {
@@ -1538,8 +1569,8 @@ export function CoachProvider({
         const planCompletion = completeMatchingDailyPlanTasks(
           current.dailyPlans,
           problemSlug,
-          problemContentVersion(problemSlug),
-          reviewedAt,
+          contentVersion,
+          reviewedAtIso,
           new Set(['due-review'])
         );
         const planEvents = planCompletion.completedTaskIds.map((taskId) =>
@@ -1564,18 +1595,27 @@ export function CoachProvider({
     [problemContentVersion]
   );
 
-  const markReviewMastered = useCallback((problemSlug: string) => {
-    setReviewProgress((current) =>
-      markReviewItemMastered(current, problemSlug)
-    );
-    setState((current) => {
-      const event = trackProductEvent('review_completed', {
-        problemSlug,
-        properties: { rating: 'mastered' },
+  const markReviewMastered = useCallback(
+    (problemSlug: string, requestedContentVersion?: number) => {
+      const contentVersion = normalizeProblemContentVersion(
+        requestedContentVersion ?? problemContentVersion(problemSlug)
+      );
+      setReviewProgress((current) =>
+        markReviewItemMastered(current, problemSlug, new Date(), contentVersion)
+      );
+      setState((current) => {
+        const event = trackProductEvent('review_completed', {
+          problemSlug,
+          properties: {
+            rating: 'mastered',
+            problemContentVersion: contentVersion,
+          },
+        });
+        return { ...current, events: [...current.events, event].slice(-300) };
       });
-      return { ...current, events: [...current.events, event].slice(-300) };
-    });
-  }, []);
+    },
+    [problemContentVersion]
+  );
 
   const trackEvent = useCallback(
     (
