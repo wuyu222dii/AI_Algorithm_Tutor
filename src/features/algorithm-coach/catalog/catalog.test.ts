@@ -279,6 +279,27 @@ describe('curated Exercism catalog', () => {
       /Invalid catalog candidate transition/
     );
   });
+
+  it('validates test argument and expected values against the shared signature', () => {
+    const original = structuredClone(curatedExercismProblems[1]);
+    const { origin, ...content } = original;
+    const { contentHash, ...originInput } = origin;
+    const invalid = withContentHash({
+      ...content,
+      tests: content.tests.map((test, index) =>
+        index === 0 ? { ...test, args: [null], expected: null } : test
+      ),
+      origin: originInput,
+    });
+    expect(invalid.origin.contentHash).not.toBe(contentHash);
+
+    expect(validateCatalogProblem(invalid).issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'tests.0.args.0' }),
+        expect.objectContaining({ path: 'tests.0.expected' }),
+      ])
+    );
+  });
 });
 
 describe('catalog candidate pipeline', () => {

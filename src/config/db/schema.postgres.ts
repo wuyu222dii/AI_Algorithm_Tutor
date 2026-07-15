@@ -9,6 +9,7 @@ import {
   integer,
   jsonb,
   pgSchema,
+  pgSequence,
   pgTable,
   smallint,
   text,
@@ -26,6 +27,14 @@ const customSchema =
 const table: typeof pgTable = customSchema
   ? (customSchema.table.bind(customSchema) as unknown as typeof pgTable)
   : pgTable;
+const sequence = customSchema
+  ? customSchema.sequence.bind(customSchema)
+  : pgSequence;
+
+export const coachCatalogProblemDraftIdSequence = sequence(
+  'coach_catalog_problem_draft_id_seq',
+  { startWith: 21 }
+);
 
 export const user = table(
   'user',
@@ -710,10 +719,10 @@ export const coachProblemCandidate = table(
       .notNull(),
   },
   (table) => [
-    uniqueIndex('uq_coach_problem_candidate_content').on(
+    uniqueIndex('uq_coach_problem_candidate_raw_content').on(
       table.sourceId,
       table.externalId,
-      table.contentHash
+      table.rawContentHash
     ),
     index('idx_coach_problem_candidate_review').on(
       table.status,

@@ -9,7 +9,7 @@ import {
 function createApprovalDatabase(status: string) {
   const updates: Array<Record<string, unknown>> = [];
   const audits: Array<Record<string, unknown>> = [];
-  const candidate = { id: 'candidate-1', status };
+  const candidate = { id: 'candidate-1', status, draftRevision: 2 };
   const transaction = {
     execute: async () => [],
     select: () => ({
@@ -86,6 +86,38 @@ describe('PostgreSQL catalog approval gate', () => {
     ).rejects.toThrow(/positive integer/);
   });
 
+  it('does not reopen a rejected candidate through target association', async () => {
+    const { store } = createApprovalDatabase('rejected');
+    await expect(
+      store.associateCandidateTarget(
+        'candidate-1',
+        null,
+        'reviewer@example.test',
+        2
+      )
+    ).rejects.toThrow(/rejected/i);
+  });
+
+  it('rejects invalid structured review mutations before touching the database', async () => {
+    const store = new CatalogDatabaseStore({} as never);
+    await expect(
+      store.normalizeCandidateReviewDraft(
+        'candidate-1',
+        {},
+        'reviewer@example.test',
+        0
+      )
+    ).rejects.toThrow(/positive integer/);
+    await expect(
+      store.saveCandidateReviewDraft(
+        'candidate-1',
+        { schemaVersion: 2 },
+        'reviewer@example.test',
+        1
+      )
+    ).rejects.toThrow(/structured review draft is invalid/);
+  });
+
   it('approves a validated candidate and writes one dedicated audit', async () => {
     const { store, updates, audits } = createApprovalDatabase('validated');
 
@@ -109,6 +141,20 @@ describe('PostgreSQL catalog approval gate', () => {
         metadata: { reviewerUserId: 'reviewer@example.test' },
       }),
     ]);
+  });
+
+  it('rejects approval from a stale review page', async () => {
+    const { store, updates } = createApprovalDatabase('validated');
+
+    await expect(
+      store.approveCandidates(
+        ['candidate-1'],
+        'reviewer@example.test',
+        'Reviewed revision 1',
+        1
+      )
+    ).rejects.toThrow(/stale/i);
+    expect(updates).toEqual([]);
   });
 
   it.each([

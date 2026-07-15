@@ -3,6 +3,7 @@ import {
   executeCatalogCandidateAction,
 } from '@/features/algorithm-coach/catalog/admin-actions.server';
 import { authorizeCatalogAdmin } from '@/features/algorithm-coach/catalog/admin-auth.server';
+import { catalogReviewDraftUpdateV2Schema } from '@/features/algorithm-coach/catalog/admin-contracts';
 import { getCatalogAdminCandidate } from '@/features/algorithm-coach/catalog/admin-service.server';
 import {
   CoachHttpError,
@@ -17,12 +18,6 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const CANDIDATE_ID = /^[A-Za-z0-9_-]{1,180}$/;
-const draftUpdateSchema = z
-  .object({
-    draftProblem: z.record(z.string(), z.unknown()),
-    expectedDraftRevision: z.number().int().min(1).max(1_000_000),
-  })
-  .strict();
 const targetAssociationSchema = z
   .object({
     targetProblemSlug: z
@@ -34,7 +29,13 @@ const targetAssociationSchema = z
     expectedDraftRevision: z.number().int().min(1).max(1_000_000),
   })
   .strict();
-const updateSchema = z.union([draftUpdateSchema, targetAssociationSchema]);
+function fieldIssueDetails(error: z.ZodError) {
+  return error.issues.map((issue) => ({
+    path: issue.path.map(String).join('.'),
+    code: issue.code,
+    message: issue.message,
+  }));
+}
 
 export async function GET(
   request: Request,
@@ -96,13 +97,20 @@ export async function PATCH(
         'Invalid candidate id.'
       );
     }
-    const parsed = updateSchema.safeParse(await readJsonBody(request, 200_000));
+    const requestBody = await readJsonBody(request, 200_000);
+    const parsed =
+      requestBody !== null &&
+      typeof requestBody === 'object' &&
+      !Array.isArray(requestBody) &&
+      Object.hasOwn(requestBody, 'targetProblemSlug')
+        ? targetAssociationSchema.safeParse(requestBody)
+        : catalogReviewDraftUpdateV2Schema.safeParse(requestBody);
     if (!parsed.success) {
       throw new CoachHttpError(
-        400,
+        422,
         'invalid_candidate_draft',
         'Catalog candidate draft validation failed.',
-        parsed.error.flatten()
+        fieldIssueDetails(parsed.error)
       );
     }
     const data = await executeCatalogCandidateAction({

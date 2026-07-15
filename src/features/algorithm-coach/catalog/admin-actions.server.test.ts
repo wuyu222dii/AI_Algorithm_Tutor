@@ -5,17 +5,23 @@ import {
   executeCatalogCandidateAction,
   executeCatalogRollback,
 } from './admin-actions.server';
+import { createEmptyCatalogReviewDraftV2 } from './review-draft';
 
 const mocks = vi.hoisted(() => ({
   claim: vi.fn(),
   complete: vi.fn(),
   updateDraft: vi.fn(),
+  saveDraft: vi.fn(),
+  normalizeDraft: vi.fn(),
+  getCandidate: vi.fn(),
+  recordAi: vi.fn(),
   associateTarget: vi.fn(),
   validate: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
   publish: vi.fn(),
   rollback: vi.fn(),
+  generate: vi.fn(),
 }));
 
 vi.mock('server-only', () => ({}));
@@ -27,6 +33,10 @@ vi.mock('./catalog-store.server', () => ({
     claimAdminMutation = mocks.claim;
     completeAdminMutation = mocks.complete;
     updateCandidateDraft = mocks.updateDraft;
+    saveCandidateReviewDraft = mocks.saveDraft;
+    normalizeCandidateReviewDraft = mocks.normalizeDraft;
+    getCandidate = mocks.getCandidate;
+    recordAiGeneration = mocks.recordAi;
     associateCandidateTarget = mocks.associateTarget;
     validateCandidates = mocks.validate;
     approveCandidates = mocks.approve;
@@ -35,6 +45,14 @@ vi.mock('./catalog-store.server', () => ({
     rollbackProblem = mocks.rollback;
   },
 }));
+vi.mock('./discovery-enrichment', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('./discovery-enrichment')>();
+  return {
+    ...actual,
+    discoveryDraftGeneratorFromEnv: () => ({ generate: mocks.generate }),
+  };
+});
 
 const mutation = {
   id: 'mutation-1',
@@ -46,6 +64,9 @@ const mutation = {
 describe('catalog admin action execution', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv('CATALOG_STRUCTURED_REVIEW_MODE', 'write');
+    vi.stubEnv('CATALOG_AI_DRAFT_ENABLED', 'false');
+    mocks.generate.mockReset();
     mocks.claim.mockResolvedValue({ claimed: true, mutation });
     mocks.complete.mockResolvedValue({ ...mutation, status: 'completed' });
   });
@@ -59,14 +80,18 @@ describe('catalog admin action execution', () => {
         candidateId: 'c-1',
         actorUserId: 'reviewer-1',
         idempotencyKey: 'catalog-test-key-0001',
-        payload: { notes: 'Tests and attribution checked.' },
+        payload: {
+          notes: 'Tests and attribution checked.',
+          expectedDraftRevision: 7,
+        },
       })
     ).resolves.toEqual({ approved: 1, candidateIds: ['c-1'] });
 
     expect(mocks.approve).toHaveBeenCalledWith(
       ['c-1'],
       'reviewer-1',
-      'Tests and attribution checked.'
+      'Tests and attribution checked.',
+      7
     );
     expect(mocks.complete).toHaveBeenCalledWith('mutation-1', 'reviewer-1', {
       status: 'completed',
@@ -110,6 +135,198 @@ describe('catalog admin action execution', () => {
     );
   });
 
+  it('saves only a structured review draft through the typed mutation lane', async () => {
+    mocks.saveDraft.mockResolvedValue({
+      candidate: { id: 'c-1', status: 'quarantined', draftRevision: 4 },
+      blockers: [],
+      materialized: true,
+    });
+
+    await expect(
+      executeCatalogCandidateAction({
+        action: 'update_draft',
+        candidateId: 'c-1',
+        actorUserId: 'reviewer-1',
+        idempotencyKey: 'catalog-save-key-0001',
+        payload: { draft: { schemaVersion: 2 }, expectedDraftRevision: 3 },
+      })
+    ).resolves.toMatchObject({
+      candidateId: 'c-1',
+      draftRevision: 4,
+      materialized: true,
+    });
+
+    expect(mocks.saveDraft).toHaveBeenCalledWith(
+      'c-1',
+      { schemaVersion: 2 },
+      'reviewer-1',
+      3
+    );
+    expect(mocks.updateDraft).not.toHaveBeenCalled();
+  });
+
+  it('keeps structured review mutations read-only in shadow mode', async () => {
+    vi.stubEnv('CATALOG_STRUCTURED_REVIEW_MODE', 'shadow');
+    await expect(
+      executeCatalogCandidateAction({
+        action: 'update_draft',
+        candidateId: 'c-1',
+        actorUserId: 'reviewer-1',
+        idempotencyKey: 'catalog-shadow-key-0001',
+        payload: { draft: { schemaVersion: 2 }, expectedDraftRevision: 3 },
+      })
+    ).rejects.toMatchObject({
+      code: 'structured_review_read_only',
+      status: 409,
+      message: 'Structured catalog review is currently read-only.',
+    });
+    expect(mocks.saveDraft).not.toHaveBeenCalled();
+    expect(mocks.claim).not.toHaveBeenCalled();
+  });
+
+  it('normalizes an immutable discovery proposal without requiring AI', async () => {
+    const proposed = {
+      title: { zh: '缩写', en: 'Acronym' },
+      description: { zh: '生成缩写', en: 'Create an acronym' },
+      difficulty: 'easy',
+      topics: ['array-hash'],
+      functionSignature: { parameters: [], returns: { kind: 'string' } },
+    };
+    mocks.getCandidate.mockResolvedValue({
+      candidate: {
+        draft: {},
+        draftRevision: 1,
+        status: 'quarantined',
+        rawPayload: {
+          schemaVersion: 1,
+          source: {},
+          upstream: {},
+          proposed,
+        },
+      },
+    });
+    mocks.normalizeDraft.mockResolvedValue({
+      candidate: { id: 'c-1', status: 'quarantined', draftRevision: 2 },
+      draft: { schemaVersion: 2, canonicalSelections: [] },
+      blockers: [{ code: 'missing_required_field', path: 'hints' }],
+      materialized: false,
+      aiFallback: false,
+    });
+
+    await expect(
+      executeCatalogCandidateAction({
+        action: 'normalize',
+        candidateId: 'c-1',
+        actorUserId: 'reviewer-1',
+        idempotencyKey: 'catalog-normalize-key-0001',
+        payload: { expectedDraftRevision: 1 },
+      })
+    ).resolves.toMatchObject({
+      candidateId: 'c-1',
+      draftRevision: 2,
+      mappedCount: 0,
+      materialized: false,
+    });
+    expect(mocks.claim).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'update_draft' })
+    );
+    expect(mocks.normalizeDraft).toHaveBeenCalledWith(
+      'c-1',
+      proposed,
+      'reviewer-1',
+      1
+    );
+  });
+
+  it('keeps repeated V2 normalization idempotent without reading raw data or calling AI', async () => {
+    const currentDraft = createEmptyCatalogReviewDraftV2();
+    mocks.getCandidate.mockResolvedValue({
+      candidate: {
+        draft: currentDraft,
+        draftRevision: 5,
+        status: 'approved',
+        rawPayload: null,
+      },
+    });
+    mocks.normalizeDraft.mockResolvedValue({
+      candidate: { id: 'c-1', status: 'approved', draftRevision: 5 },
+      draft: currentDraft,
+      blockers: [],
+      materialized: true,
+      alreadyNormalized: true,
+    });
+    vi.stubEnv('CATALOG_AI_DRAFT_ENABLED', 'true');
+
+    await expect(
+      executeCatalogCandidateAction({
+        action: 'normalize',
+        candidateId: 'c-1',
+        actorUserId: 'reviewer-1',
+        idempotencyKey: 'catalog-normalize-key-0002',
+        payload: { expectedDraftRevision: 5 },
+      })
+    ).resolves.toMatchObject({
+      draftRevision: 5,
+      alreadyNormalized: true,
+      aiFallback: false,
+    });
+    expect(mocks.generate).not.toHaveBeenCalled();
+    expect(mocks.normalizeDraft).toHaveBeenCalledWith(
+      'c-1',
+      currentDraft,
+      'reviewer-1',
+      5
+    );
+  });
+
+  it('falls back to a partial V2 draft when AI enrichment fails', async () => {
+    const proposed = {
+      title: { zh: '', en: 'Acronym' },
+      description: { zh: '', en: 'Create an acronym' },
+      difficulty: null,
+      topics: [],
+      functionSignature: null,
+    };
+    mocks.getCandidate.mockResolvedValue({
+      candidate: {
+        draft: {},
+        draftRevision: 2,
+        status: 'quarantined',
+        rawPayload: {
+          schemaVersion: 1,
+          source: {},
+          upstream: {},
+          proposed,
+        },
+      },
+    });
+    mocks.generate.mockRejectedValue(new Error('provider unavailable'));
+    mocks.normalizeDraft.mockResolvedValue({
+      candidate: { id: 'c-1', status: 'quarantined', draftRevision: 3 },
+      draft: { schemaVersion: 2, canonicalSelections: [] },
+      blockers: [{ code: 'missing_required_field', path: 'title.zh' }],
+      materialized: false,
+    });
+    vi.stubEnv('CATALOG_AI_DRAFT_ENABLED', 'true');
+
+    await expect(
+      executeCatalogCandidateAction({
+        action: 'normalize',
+        candidateId: 'c-1',
+        actorUserId: 'reviewer-1',
+        idempotencyKey: 'catalog-normalize-key-0003',
+        payload: { expectedDraftRevision: 2 },
+      })
+    ).resolves.toMatchObject({ aiFallback: true, materialized: false });
+    expect(mocks.generate).toHaveBeenCalledOnce();
+    expect(mocks.normalizeDraft).toHaveBeenCalledWith(
+      'c-1',
+      proposed,
+      'reviewer-1',
+      2
+    );
+  });
+
   it('returns a completed mutation without executing the action again', async () => {
     mocks.claim.mockResolvedValue({
       claimed: false,
@@ -126,7 +343,7 @@ describe('catalog admin action execution', () => {
         candidateId: 'c-1',
         actorUserId: 'publisher-1',
         idempotencyKey: 'catalog-test-key-0002',
-        payload: { notes: 'Release approved.' },
+        payload: { notes: 'Release approved.', expectedDraftRevision: 8 },
       })
     ).resolves.toEqual({ published: 1 });
 
@@ -143,7 +360,7 @@ describe('catalog admin action execution', () => {
         candidateId: 'c-1',
         actorUserId: 'reviewer-1',
         idempotencyKey: 'catalog-test-key-0003',
-        payload: {},
+        payload: { expectedDraftRevision: 3 },
       })
     ).rejects.toMatchObject({
       code: 'mutation_in_progress',
@@ -162,7 +379,7 @@ describe('catalog admin action execution', () => {
       candidateId: 'missing',
       actorUserId: 'reviewer-1',
       idempotencyKey: 'catalog-test-key-0004',
-      payload: {},
+      payload: { expectedDraftRevision: 3 },
     }).catch((cause) => cause as CatalogAdminActionError);
 
     expect(error).toMatchObject({
@@ -186,7 +403,7 @@ describe('catalog admin action execution', () => {
       candidateId: 'c-1',
       actorUserId: 'reviewer-1',
       idempotencyKey: 'catalog-test-key-0005',
-      payload: {},
+      payload: { expectedDraftRevision: 3 },
     }).catch((cause) => cause as CatalogAdminActionError);
 
     expect(error).toMatchObject({

@@ -1,6 +1,7 @@
 import { authorizeCatalogAdmin } from '@/features/algorithm-coach/catalog/admin-auth.server';
 import {
   catalogAdminCapabilities,
+  CatalogAdminQueryError,
   listCatalogAdminCandidates,
 } from '@/features/algorithm-coach/catalog/admin-service.server';
 import { CoachHttpError, errorResponse } from '@/features/algorithm-coach/http';
@@ -27,6 +28,8 @@ const querySchema = z.object({
     ])
     .default('pending'),
   limit: z.coerce.number().int().min(1).max(100).default(50),
+  query: z.string().trim().max(120).optional(),
+  cursor: z.string().trim().max(1000).optional(),
 });
 
 export async function GET(request: Request) {
@@ -40,6 +43,8 @@ export async function GET(request: Request) {
     const parsed = querySchema.safeParse({
       status: url.searchParams.get('status') ?? undefined,
       limit: url.searchParams.get('limit') ?? undefined,
+      query: url.searchParams.get('query') ?? undefined,
+      cursor: url.searchParams.get('cursor') ?? undefined,
     });
     if (!parsed.success) {
       throw new CoachHttpError(
@@ -49,16 +54,28 @@ export async function GET(request: Request) {
         parsed.error.flatten()
       );
     }
-    const [items, capabilities] = await Promise.all([
+    const [page, capabilities] = await Promise.all([
       listCatalogAdminCandidates(parsed.data),
       catalogAdminCapabilities(identity.userId),
     ]);
     return Response.json(
-      { data: { items, capabilities } },
+      {
+        data: {
+          items: page.items,
+          nextCursor: page.nextCursor,
+          capabilities,
+        },
+      },
       { headers: { 'cache-control': 'no-store' } }
     );
   } catch (error) {
     if (error instanceof CoachHttpError) return errorResponse(error, traceId);
+    if (error instanceof CatalogAdminQueryError) {
+      return errorResponse(
+        new CoachHttpError(400, 'invalid_query', error.message),
+        traceId
+      );
+    }
     console.error(`[catalog-admin:${traceId}] candidate list failed`, error);
     return errorResponse(
       new CoachHttpError(

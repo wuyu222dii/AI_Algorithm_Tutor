@@ -16,9 +16,23 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const CANDIDATE_ID = /^[A-Za-z0-9_-]{1,180}$/;
-const actionSchema = z.enum(['validate', 'approve', 'reject', 'publish']);
-const bodySchema = z
-  .object({ notes: z.string().trim().max(2000).default('') })
+const actionSchema = z.enum([
+  'normalize',
+  'validate',
+  'approve',
+  'reject',
+  'publish',
+]);
+const revisionBodySchema = z
+  .object({
+    expectedDraftRevision: z.number().int().min(1).max(1_000_000),
+  })
+  .strict();
+const notesBodySchema = z
+  .object({
+    expectedDraftRevision: z.number().int().min(1).max(1_000_000),
+    notes: z.string().trim().max(2000).default(''),
+  })
   .strict();
 
 export async function POST(
@@ -43,8 +57,14 @@ export async function POST(
         'Invalid catalog action.'
       );
     }
-    const parsed = bodySchema.safeParse(await readJsonBody(request, 10_000));
-    if (!parsed.success || (action.data === 'reject' && !parsed.data.notes)) {
+    const requestBody = await readJsonBody(request, 10_000);
+    const parsed =
+      action.data === 'normalize' || action.data === 'validate'
+        ? revisionBodySchema.safeParse(requestBody)
+        : notesBodySchema.safeParse(requestBody);
+    const notes =
+      parsed.success && 'notes' in parsed.data ? parsed.data.notes : '';
+    if (!parsed.success || (action.data === 'reject' && !notes)) {
       throw new CoachHttpError(
         400,
         'invalid_catalog_action_body',

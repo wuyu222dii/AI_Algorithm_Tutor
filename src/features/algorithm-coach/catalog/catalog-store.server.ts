@@ -1,5 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, desc, eq, inArray, isNull, max, sql } from 'drizzle-orm';
+import {
+  and,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  isNull,
+  lt,
+  max,
+  or,
+  sql,
+} from 'drizzle-orm';
 
 import { dbPostgres } from '@/core/db';
 import {
@@ -16,6 +27,14 @@ import {
 } from '@/config/db/schema.postgres';
 
 import { COACH_MODEL_WHITELIST, type CoachModel } from '../model';
+import {
+  safeParseCatalogReviewDraftV2,
+  type CatalogReviewDraftV2,
+} from './admin-contracts';
+import {
+  createDefaultCanonicalSelections,
+  listCanonicalCaseOptions,
+} from './canonical-mapping';
 import {
   calculateCandidateContentHash,
   calculateCanonicalDataHash,
@@ -39,11 +58,18 @@ import type {
   CatalogCandidateState,
   CatalogJsonValue,
   CatalogValidationResult,
+  ExercismDiscoveryDraft,
   ExercismDiscoveryReport,
   ExercismSnapshot,
   ExercismUpstreamProblem,
   RawCatalogProblem,
 } from './raw-types';
+import {
+  materializeCatalogReviewDraftV2,
+  normalizeCatalogReviewDraftV2,
+  type CatalogReviewBlocker,
+  type CatalogReviewRawCandidateFactsV1,
+} from './review-draft';
 import { validateCatalogRunnerCompatibility } from './runner-compatibility.server';
 import {
   candidateStateForValidation,
@@ -82,6 +108,8 @@ type CandidateRow = typeof coachProblemCandidate.$inferSelect;
 export interface CatalogCandidateListOptions {
   status?: CatalogCandidateState | CatalogCandidateState[];
   changeKind?: CandidateRow['changeKind'];
+  query?: string;
+  cursor?: { updatedAt: Date; id: string };
   limit?: number;
   offset?: number;
 }
@@ -91,6 +119,14 @@ export interface CatalogCandidateDetails {
   targetProblemSlug?: string;
   audits: Array<typeof coachCatalogReviewAudit.$inferSelect>;
   aiGenerations: Array<typeof coachCatalogAiGeneration.$inferSelect>;
+}
+
+export interface CatalogReviewDraftMutationResult {
+  candidate: CandidateRow;
+  draft: CatalogReviewDraftV2;
+  blockers: CatalogReviewBlocker[];
+  materialized: boolean;
+  alreadyNormalized?: boolean;
 }
 
 export interface CatalogDiscoveryIngestionSummary {
@@ -289,6 +325,175 @@ function jsonHash(value: unknown): string {
   return sha256(stableStringify(value as CatalogJsonValue));
 }
 
+function discoveryDraftFromCandidate(
+  row: CandidateRow
+): ExercismDiscoveryDraft {
+  const raw = row.rawPayload as Partial<ExercismDiscoveryDraft> | null;
+  if (
+    !raw ||
+    raw.schemaVersion !== 1 ||
+    !raw.source ||
+    !raw.upstream ||
+    !raw.proposed
+  ) {
+    throw new Error('Catalog candidate has no immutable discovery payload.');
+  }
+  return raw as ExercismDiscoveryDraft;
+}
+
+function reviewFactsFromCandidate(
+  row: CandidateRow
+): CatalogReviewRawCandidateFactsV1 {
+  return {
+    candidateId: row.id,
+    externalId: row.externalId,
+    upstreamUrl: row.upstreamUrl,
+    sourceRevision: row.sourceRevision,
+    licenseSpdx: row.licenseSpdx,
+    attribution: row.attribution,
+    rawPayload: discoveryDraftFromCandidate(row),
+  };
+}
+
+async function nextCatalogReviewProblemId(
+  tx: CatalogTransaction
+): Promise<string> {
+  const schema = (process.env.DB_SCHEMA || 'algocoach').trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
+    throw new Error('DB_SCHEMA is invalid for catalog id allocation.');
+  }
+  const sequenceName = `${schema}.coach_catalog_problem_draft_id_seq`;
+  const rows = (await tx.execute(
+    sql`select nextval(${sequenceName}::regclass)::bigint as value`
+  )) as unknown as Array<{ value: string | number | bigint }>;
+  const value = rows[0]?.value;
+  const numeric = typeof value === 'bigint' ? Number(value) : Number(value);
+  if (!Number.isSafeInteger(numeric) || numeric < 1 || numeric > 999_999) {
+    throw new Error('Catalog problem id sequence is exhausted.');
+  }
+  return `ex-${String(numeric).padStart(3, '0')}`;
+}
+
+function blockerValidation(blockers: CatalogReviewBlocker[]) {
+  return {
+    valid: false,
+    issues: blockers.map((blocker) => ({
+      code: 'manual_review_required' as const,
+      message: blocker.message,
+      path: blocker.path,
+    })),
+  };
+}
+
+async function persistCatalogReviewDraft(
+  tx: CatalogTransaction,
+  candidate: CandidateRow,
+  draft: CatalogReviewDraftV2,
+  reviewerUserId: string,
+  editKind: 'normalized' | 'structured_edit'
+): Promise<CatalogReviewDraftMutationResult> {
+  const materialization = materializeCatalogReviewDraftV2(
+    draft,
+    reviewFactsFromCandidate(candidate)
+  );
+  if (
+    materialization.blockers.some(
+      (blocker) =>
+        blocker.code === 'immutable_source_invalid' ||
+        blocker.code === 'immutable_source_mismatch'
+    )
+  ) {
+    throw new Error('Catalog candidate immutable source evidence is invalid.');
+  }
+  const payload =
+    materialization.problem && materialization.upstream
+      ? {
+          problem: materialization.problem,
+          upstream: materialization.upstream,
+        }
+      : undefined;
+  if (payload) assertCandidatePayloadMatchesRawEvidence(candidate, payload);
+  const nextContentHash = payload
+    ? calculateCandidateContentHash(payload.problem, payload.upstream)
+    : sha256(
+        stableStringify({
+          rawContentHash: candidate.rawContentHash,
+          draft,
+        } as unknown as CatalogJsonValue)
+      );
+  const nextDraftRevision = candidate.draftRevision + 1;
+  const nextDraftHash = jsonHash(draft);
+  const blockers = materialization.blockers;
+  const validation = blockerValidation(
+    blockers.length > 0
+      ? blockers
+      : [
+          {
+            code: 'missing_required_field',
+            path: 'validation',
+            message:
+              'The structured draft is complete and must pass deterministic validation before approval.',
+          },
+        ]
+  );
+  const [updated] = await tx
+    .update(coachProblemCandidate)
+    .set({
+      draft,
+      draftHash: nextDraftHash,
+      draftRevision: nextDraftRevision,
+      normalizedProblem:
+        payload ??
+        ({
+          schemaVersion: 2,
+          reviewDraft: draft,
+          publishable: false,
+          blockers,
+        } as Record<string, unknown>),
+      contentHash: nextContentHash,
+      validation,
+      status: 'quarantined',
+      rejectionReason: null,
+      approvedByUserId: null,
+      approvedAt: null,
+      approvedContentHash: null,
+      approvedSourceRevision: null,
+      approvedDraftHash: null,
+      approvedDraftRevision: null,
+      approvedPolicyVersion: null,
+      publishedByUserId: null,
+      publishedAt: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(coachProblemCandidate.id, candidate.id))
+    .returning();
+  if (!updated) throw new Error('Catalog review draft update failed.');
+  await tx.insert(coachCatalogReviewAudit).values({
+    id: `catalog_audit_${randomUUID()}`,
+    candidateId: candidate.id,
+    reviewerUserId,
+    action: 'draft_updated',
+    contentHash: updated.contentHash,
+    sourceRevision: updated.sourceRevision,
+    draftHash: updated.draftHash,
+    draftRevision: updated.draftRevision,
+    policyVersion: updated.policyVersion,
+    metadata: {
+      editKind,
+      fromDraftRevision: candidate.draftRevision,
+      toDraftRevision: updated.draftRevision,
+      materialized: Boolean(payload),
+      blockerCodes: [...new Set(blockers.map((blocker) => blocker.code))],
+    },
+  });
+  return {
+    candidate: updated,
+    draft,
+    blockers,
+    materialized: Boolean(payload),
+  };
+}
+
 function assertCandidatePayloadMatchesRawEvidence(
   candidate: CandidateRow,
   payload: CandidatePayload
@@ -306,11 +511,16 @@ function assertCandidatePayloadMatchesRawEvidence(
     [payload.problem.origin.sourceRevision, candidate.sourceRevision],
     [payload.problem.origin.upstreamUrl, candidate.upstreamUrl],
     [payload.problem.origin.licenseSpdx, candidate.licenseSpdx],
+    [payload.problem.origin.attribution, candidate.attribution],
     [payload.upstream.externalId, candidate.externalId],
     [payload.upstream.upstreamUrl, candidate.upstreamUrl],
     [payload.upstream.statementPath, source.statementPath],
+    [payload.problem.origin.statementPath, source.statementPath],
     [payload.upstream.statementHash, source.statementHash],
     [payload.upstream.canonicalDataHash, source.canonicalDataHash],
+    [payload.upstream.statementBlobSha, source.statementBlobSha],
+    [payload.upstream.canonicalPath, source.canonicalPath],
+    [payload.upstream.canonicalBlobSha, source.canonicalBlobSha],
   ];
   if (
     checks.some(
@@ -320,6 +530,17 @@ function assertCandidatePayloadMatchesRawEvidence(
   ) {
     throw new Error(
       'Catalog draft does not match immutable upstream evidence.'
+    );
+  }
+  const rawUpstream = raw.upstream;
+  if (
+    rawUpstream &&
+    typeof rawUpstream === 'object' &&
+    stableStringify(payload.upstream as unknown as CatalogJsonValue) !==
+      stableStringify(rawUpstream as CatalogJsonValue)
+  ) {
+    throw new Error(
+      'Catalog draft upstream payload differs from immutable evidence.'
     );
   }
   if (
@@ -707,7 +928,7 @@ function boundedLimit(value: number | undefined, fallback = 50): number {
   if (value === undefined) return fallback;
   if (!Number.isInteger(value))
     throw new Error('Catalog limit must be an integer.');
-  return Math.max(1, Math.min(100, value));
+  return Math.max(1, Math.min(101, value));
 }
 
 async function reconcileAdminMutationResult(
@@ -856,11 +1077,36 @@ export class CatalogDatabaseStore {
       if (options.changeKind) {
         filters.push(eq(coachProblemCandidate.changeKind, options.changeKind));
       }
+      const query = options.query?.trim();
+      if (query) {
+        const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
+        filters.push(
+          or(
+            ilike(coachProblemCandidate.externalId, pattern),
+            sql`coalesce(${coachProblemCandidate.draft}->'title'->>'zh', '') ilike ${pattern} escape '\\'`,
+            sql`coalesce(${coachProblemCandidate.draft}->'title'->>'en', '') ilike ${pattern} escape '\\'`
+          )!
+        );
+      }
+      if (options.cursor) {
+        filters.push(
+          or(
+            lt(coachProblemCandidate.updatedAt, options.cursor.updatedAt),
+            and(
+              eq(coachProblemCandidate.updatedAt, options.cursor.updatedAt),
+              lt(coachProblemCandidate.id, options.cursor.id)
+            )
+          )!
+        );
+      }
       return tx
         .select()
         .from(coachProblemCandidate)
         .where(filters.length > 0 ? and(...filters) : undefined)
-        .orderBy(desc(coachProblemCandidate.updatedAt))
+        .orderBy(
+          desc(coachProblemCandidate.updatedAt),
+          desc(coachProblemCandidate.id)
+        )
         .limit(boundedLimit(options.limit))
         .offset(Math.max(0, Math.trunc(options.offset ?? 0)));
     });
@@ -907,6 +1153,165 @@ export class CatalogDatabaseStore {
     });
   }
 
+  async normalizeCandidateReviewDraft(
+    candidateId: string,
+    proposedDraft: unknown,
+    actor: string,
+    expectedDraftRevision: number
+  ): Promise<CatalogReviewDraftMutationResult> {
+    const reviewerUserId = actorUserId(actor);
+    if (!Number.isInteger(expectedDraftRevision) || expectedDraftRevision < 1) {
+      throw new Error('Expected draft revision must be a positive integer.');
+    }
+    return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, REVIEWER_ROLE);
+      const [candidate] = await tx
+        .select()
+        .from(coachProblemCandidate)
+        .where(eq(coachProblemCandidate.id, candidateId))
+        .for('update');
+      if (!candidate) throw new Error('Catalog candidate was not found.');
+      if (candidate.draftRevision !== expectedDraftRevision) {
+        throw new Error('Catalog candidate draft revision is stale.');
+      }
+      if (safeParseCatalogReviewDraftV2(candidate.draft).success) {
+        const current = safeParseCatalogReviewDraftV2(candidate.draft);
+        return {
+          candidate,
+          draft: current.success ? current.data : (candidate.draft as never),
+          blockers: normalizeCatalogReviewDraftV2(
+            candidate.draft,
+            reviewFactsFromCandidate(candidate)
+          ).blockers,
+          materialized: Boolean(
+            candidatePayloadOrUndefined(candidate.normalizedProblem)
+          ),
+          alreadyNormalized: true,
+        };
+      }
+      if (
+        !['discovered', 'drafting', 'quarantined'].includes(candidate.status)
+      ) {
+        throw new Error(
+          'Only discovered or quarantined candidates can be normalized.'
+        );
+      }
+      const normalized = normalizeCatalogReviewDraftV2(
+        proposedDraft,
+        reviewFactsFromCandidate(candidate)
+      );
+      let targetSlug: string | undefined;
+      let targetDraftId: string | undefined;
+      if (candidate.targetProblemId) {
+        const [target] = await tx
+          .select({
+            slug: coachProblem.slug,
+            currentRevisionId: coachProblem.currentRevisionId,
+          })
+          .from(coachProblem)
+          .where(eq(coachProblem.id, candidate.targetProblemId))
+          .limit(1);
+        targetSlug = target?.slug;
+        if (target?.currentRevisionId) {
+          const [revision] = await tx
+            .select({ candidateId: coachProblemRevision.candidateId })
+            .from(coachProblemRevision)
+            .where(eq(coachProblemRevision.id, target.currentRevisionId))
+            .limit(1);
+          if (revision?.candidateId) {
+            const [previousCandidate] = await tx
+              .select({
+                normalizedProblem: coachProblemCandidate.normalizedProblem,
+              })
+              .from(coachProblemCandidate)
+              .where(eq(coachProblemCandidate.id, revision.candidateId))
+              .limit(1);
+            targetDraftId = candidatePayloadOrUndefined(
+              previousCandidate?.normalizedProblem
+            )?.problem.id;
+          }
+        }
+      }
+      const draft: CatalogReviewDraftV2 = {
+        ...normalized.draft,
+        id:
+          normalized.draft.id ||
+          targetDraftId ||
+          (await nextCatalogReviewProblemId(tx)),
+        slug: targetSlug || normalized.draft.slug,
+      };
+      if (draft.canonicalSelections.length === 0) {
+        const source = discoveryDraftFromCandidate(candidate);
+        draft.canonicalSelections = createDefaultCanonicalSelections(
+          listCanonicalCaseOptions(
+            source.upstream.canonicalData,
+            draft.functionProtocol.signature
+          )
+        );
+      }
+      return persistCatalogReviewDraft(
+        tx,
+        candidate,
+        draft,
+        reviewerUserId,
+        'normalized'
+      );
+    });
+  }
+
+  async saveCandidateReviewDraft(
+    candidateId: string,
+    draftValue: unknown,
+    actor: string,
+    expectedDraftRevision: number
+  ): Promise<CatalogReviewDraftMutationResult> {
+    const reviewerUserId = actorUserId(actor);
+    if (!Number.isInteger(expectedDraftRevision) || expectedDraftRevision < 1) {
+      throw new Error('Expected draft revision must be a positive integer.');
+    }
+    const parsed = safeParseCatalogReviewDraftV2(draftValue);
+    if (!parsed.success) {
+      throw new Error('Catalog structured review draft is invalid.');
+    }
+    return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, REVIEWER_ROLE);
+      const [candidate] = await tx
+        .select()
+        .from(coachProblemCandidate)
+        .where(eq(coachProblemCandidate.id, candidateId))
+        .for('update');
+      if (!candidate) throw new Error('Catalog candidate was not found.');
+      if (candidate.draftRevision !== expectedDraftRevision) {
+        throw new Error('Catalog candidate draft revision is stale.');
+      }
+      if (
+        ![
+          'discovered',
+          'drafting',
+          'quarantined',
+          'validated',
+          'approved',
+        ].includes(candidate.status)
+      ) {
+        throw new Error('Catalog candidate cannot be edited in this state.');
+      }
+      const currentDraft = safeParseCatalogReviewDraftV2(candidate.draft);
+      if (!currentDraft.success) {
+        throw new Error('Catalog candidate must be normalized before editing.');
+      }
+      if (parsed.data.id !== currentDraft.data.id) {
+        throw new Error('Catalog problem id is server assigned and immutable.');
+      }
+      return persistCatalogReviewDraft(
+        tx,
+        candidate,
+        parsed.data,
+        reviewerUserId,
+        'structured_edit'
+      );
+    });
+  }
+
   async updateCandidateDraft(
     candidateId: string,
     draft: unknown,
@@ -928,38 +1333,46 @@ export class CatalogDatabaseStore {
       if (candidate.draftRevision !== expectedDraftRevision) {
         throw new Error('Catalog candidate draft revision is stale.');
       }
-      if (['approved', 'published', 'archived'].includes(candidate.status)) {
-        throw new Error('Approved or published catalog drafts are immutable.');
+      if (
+        ['approved', 'published', 'rejected', 'archived'].includes(
+          candidate.status
+        )
+      ) {
+        throw new Error(
+          'Approved, published, rejected, or archived legacy catalog drafts are immutable.'
+        );
       }
 
-      const previousPayload = candidatePayloadOrUndefined(
-        candidate.normalizedProblem
-      );
       const proposedPayload = candidatePayloadOrUndefined(draft);
       if (proposedPayload) {
         assertCandidatePayloadMatchesRawEvidence(candidate, proposedPayload);
       }
-      const proposedProblem =
-        proposedPayload?.problem ??
-        (previousPayload && draft && typeof draft === 'object'
-          ? (draft as RawCatalogProblem)
-          : undefined);
       const normalizedProblem =
         proposedPayload ??
-        (proposedProblem && previousPayload
-          ? { problem: proposedProblem, upstream: previousPayload.upstream }
-          : candidate.normalizedProblem);
+        ({
+          schemaVersion: 2,
+          reviewDraft: draft,
+          publishable: false,
+          blockers: [
+            {
+              code: 'invalid_contract',
+              path: 'draft',
+              message:
+                'Legacy JSON did not contain a complete candidate payload.',
+            },
+          ],
+        } as Record<string, unknown>);
       const nextContentHash = proposedPayload
         ? calculateCandidateContentHash(
             proposedPayload.problem,
             proposedPayload.upstream
           )
-        : proposedProblem && previousPayload
-          ? calculateCandidateContentHash(
-              proposedProblem,
-              previousPayload.upstream
-            )
-          : candidate.contentHash;
+        : sha256(
+            stableStringify({
+              rawContentHash: candidate.rawContentHash,
+              draft,
+            } as unknown as CatalogJsonValue)
+          );
       const nextDraftRevision = candidate.draftRevision + 1;
       const nextDraftHash = jsonHash(draft);
       const [updated] = await tx
@@ -1027,9 +1440,9 @@ export class CatalogDatabaseStore {
       if (candidate.draftRevision !== expectedDraftRevision) {
         throw new Error('Catalog candidate draft revision is stale.');
       }
-      if (['approved', 'published', 'archived'].includes(candidate.status)) {
+      if (['published', 'rejected', 'archived'].includes(candidate.status)) {
         throw new Error(
-          'Approved or published catalog target associations are immutable.'
+          'Published, rejected, or archived catalog target associations are immutable.'
         );
       }
 
@@ -1120,7 +1533,8 @@ export class CatalogDatabaseStore {
   async rejectCandidate(
     candidateId: string,
     actor: string,
-    reason: string
+    reason: string,
+    expectedDraftRevision?: number
   ): Promise<CandidateRow> {
     const reviewerUserId = actorUserId(actor);
     const normalizedReason = reason.trim();
@@ -1133,6 +1547,12 @@ export class CatalogDatabaseStore {
         .where(eq(coachProblemCandidate.id, candidateId))
         .for('update');
       if (!candidate) throw new Error('Catalog candidate was not found.');
+      if (
+        expectedDraftRevision !== undefined &&
+        candidate.draftRevision !== expectedDraftRevision
+      ) {
+        throw new Error('Catalog candidate draft revision is stale.');
+      }
       if (candidate.status === 'published' || candidate.status === 'archived') {
         throw new Error('Published catalog candidates cannot be rejected.');
       }
@@ -1998,7 +2418,7 @@ export class CatalogDatabaseStore {
             target: [
               coachProblemCandidate.sourceId,
               coachProblemCandidate.externalId,
-              coachProblemCandidate.contentHash,
+              coachProblemCandidate.rawContentHash,
             ],
           })
           .returning({ id: coachProblemCandidate.id });
@@ -2350,7 +2770,7 @@ export class CatalogDatabaseStore {
           target: [
             coachProblemCandidate.sourceId,
             coachProblemCandidate.externalId,
-            coachProblemCandidate.contentHash,
+            coachProblemCandidate.rawContentHash,
           ],
         })
         .returning({ id: coachProblemCandidate.id });
@@ -2374,7 +2794,8 @@ export class CatalogDatabaseStore {
 
   async validateCandidates(
     candidateIds?: string[],
-    capability: 'sync' | 'reviewer' = 'sync'
+    capability: 'sync' | 'reviewer' = 'sync',
+    expectedDraftRevision?: number
   ): Promise<DatabaseValidationSummary> {
     const outcome = await this.database.transaction(async (tx) => {
       if (capability === 'reviewer') {
@@ -2395,6 +2816,16 @@ export class CatalogDatabaseStore {
         .from(coachProblemCandidate)
         .where(and(...filters))
         .for('update');
+      if (expectedDraftRevision !== undefined) {
+        if (!candidateIds || candidateIds.length !== 1 || rows.length !== 1) {
+          throw new Error(
+            'Expected draft revision can only validate one eligible candidate.'
+          );
+        }
+        if (rows[0]!.draftRevision !== expectedDraftRevision) {
+          throw new Error('Catalog candidate draft revision is stale.');
+        }
+      }
       const payloads = rows.map((row) => ({
         row,
         payload: candidatePayloadOrUndefined(row.normalizedProblem),
@@ -2584,7 +3015,8 @@ export class CatalogDatabaseStore {
   async approveCandidates(
     candidateIds: string[],
     reviewer: string,
-    notes?: string
+    notes?: string,
+    expectedDraftRevision?: number
   ): Promise<DatabaseApprovalSummary> {
     const reviewerUserId = actorUserId(reviewer);
     const ids = [...new Set(candidateIds)];
@@ -2599,6 +3031,13 @@ export class CatalogDatabaseStore {
         .for('update');
       if (candidates.length !== ids.length) {
         throw new Error('One or more catalog candidates do not exist.');
+      }
+      if (
+        expectedDraftRevision !== undefined &&
+        (ids.length !== 1 ||
+          candidates[0]!.draftRevision !== expectedDraftRevision)
+      ) {
+        throw new Error('Catalog candidate draft revision is stale.');
       }
       if (
         candidates.some(
@@ -2666,7 +3105,8 @@ export class CatalogDatabaseStore {
   async publishCandidates(
     candidateIds: string[],
     reviewer: string,
-    notes?: string
+    notes?: string,
+    expectedDraftRevision?: number
   ): Promise<DatabasePublishSummary> {
     const publisherUserId = actorUserId(reviewer);
     const ids = [...new Set(candidateIds)];
@@ -2681,6 +3121,13 @@ export class CatalogDatabaseStore {
         .for('update');
       if (candidates.length !== ids.length) {
         throw new Error('One or more catalog candidates do not exist.');
+      }
+      if (
+        expectedDraftRevision !== undefined &&
+        (ids.length !== 1 ||
+          candidates[0]!.draftRevision !== expectedDraftRevision)
+      ) {
+        throw new Error('Catalog candidate draft revision is stale.');
       }
       if (
         candidates.some(
@@ -2868,7 +3315,8 @@ export class CatalogDatabaseStore {
                   isNull(coachProblem.ownerUserId)
                 )
           )
-          .limit(1);
+          .limit(1)
+          .for('update');
         if (
           candidate.targetProblemId &&
           (!existingProblem || existingProblem.source !== 'external')
@@ -3227,7 +3675,8 @@ export class CatalogDatabaseStore {
             isNull(coachProblem.ownerUserId)
           )
         )
-        .limit(1);
+        .limit(1)
+        .for('update');
       if (!problem?.currentRevisionId) {
         throw new Error(`Versioned catalog problem not found: ${problemSlug}`);
       }

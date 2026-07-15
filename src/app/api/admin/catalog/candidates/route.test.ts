@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET } from './route';
 
 const mocks = vi.hoisted(() => ({
+  QueryError: class QueryError extends Error {},
   authorize: vi.fn(),
   list: vi.fn(),
   capabilities: vi.fn(),
@@ -16,6 +17,7 @@ vi.mock('@/features/algorithm-coach/catalog/admin-auth.server', () => ({
   authorizeCatalogAdmin: mocks.authorize,
 }));
 vi.mock('@/features/algorithm-coach/catalog/admin-service.server', () => ({
+  CatalogAdminQueryError: mocks.QueryError,
   listCatalogAdminCandidates: mocks.list,
   catalogAdminCapabilities: mocks.capabilities,
 }));
@@ -24,7 +26,10 @@ describe('catalog candidate list API', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.authorize.mockResolvedValue({ userId: 'admin-1' });
-    mocks.list.mockResolvedValue([{ id: 'candidate-1' }]);
+    mocks.list.mockResolvedValue({
+      items: [{ id: 'candidate-1' }],
+      nextCursor: undefined,
+    });
     mocks.capabilities.mockResolvedValue({
       review: true,
       publish: false,

@@ -17,6 +17,7 @@ rmSync(`${databasePath}-wal`, { force: true });
 const env = {
   ...process.env,
   NODE_ENV: 'development' as const,
+  NEXT_DIST_DIR: '.next-e2e',
   DATABASE_PROVIDER: 'sqlite',
   DATABASE_URL: `file:${databasePath}`,
   DB_SCHEMA_FILE: './src/config/db/schema.sqlite.ts',

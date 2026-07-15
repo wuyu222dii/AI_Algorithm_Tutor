@@ -835,6 +835,62 @@ async function verifyCatalogPublicationLifecycle(
     applicationSchema
   );
 
+  const [structuredReviewMigration] = await admin.unsafe<
+    { raw_index: boolean; reviewer_sequence_usage: boolean }[]
+  >(
+    `SELECT
+      to_regclass($1) IS NOT NULL AS raw_index,
+      has_sequence_privilege('algocoach_catalog_reviewer', $2, 'USAGE') AS reviewer_sequence_usage`,
+    [
+      `${applicationSchema}.uq_coach_problem_candidate_raw_content`,
+      `${applicationSchema}.coach_catalog_problem_draft_id_seq`,
+    ]
+  );
+  if (
+    !structuredReviewMigration?.raw_index ||
+    !structuredReviewMigration.reviewer_sequence_usage
+  ) {
+    throw new Error(
+      'Structured review migration did not install its immutable key or reviewer sequence privilege'
+    );
+  }
+  const normalizedReview = await store.normalizeCandidateReviewDraft(
+    discovery.aiCandidateId,
+    discovery.aiDraft.proposed,
+    'ci-content-reviewer',
+    1
+  );
+  if (
+    normalizedReview.candidate.draftRevision !== 2 ||
+    !/^ex-\d{3,6}$/.test(normalizedReview.draft.id)
+  ) {
+    throw new Error('Structured candidate normalization was not versioned');
+  }
+  const competingDrafts = ['并发审核稿 A', '并发审核稿 B'].map((title) => ({
+    ...structuredClone(normalizedReview.draft),
+    title: { ...normalizedReview.draft.title, zh: title },
+  }));
+  const concurrentSaves = await Promise.allSettled(
+    competingDrafts.map((draft) =>
+      store.saveCandidateReviewDraft(
+        discovery.aiCandidateId,
+        draft,
+        'ci-content-reviewer',
+        normalizedReview.candidate.draftRevision
+      )
+    )
+  );
+  if (
+    concurrentSaves.filter((result) => result.status === 'fulfilled').length !==
+      1 ||
+    concurrentSaves.filter((result) => result.status === 'rejected').length !==
+      1
+  ) {
+    throw new Error(
+      'Concurrent structured review saves lost optimistic locking'
+    );
+  }
+
   const firstSync = await store.syncExercism(
     curatedExercismProblems,
     adapter,
@@ -873,11 +929,14 @@ async function verifyCatalogPublicationLifecycle(
       sourceRevision: discovery.aiDraft.source.revision,
     },
   });
+  const aiCandidateBeforeLegacyEdit = await store.getCandidate(
+    discovery.aiCandidateId
+  );
   await store.updateCandidateDraft(
     discovery.aiCandidateId,
     { problem: duplicateProblem, upstream: discovery.aiDraft.upstream },
     'ci-content-reviewer',
-    1
+    aiCandidateBeforeLegacyEdit!.candidate.draftRevision
   );
   const duplicateValidation = await store.validateCandidates(
     [discovery.aiCandidateId],
@@ -1091,6 +1150,37 @@ async function verifyCatalogPublicationLifecycle(
   ) {
     throw new Error('Publish-time canonical UUID revalidation was bypassed');
   }
+  const rejectedCandidate = await store.getCandidate(discovery.gateCandidateId);
+  let rejectedReopenBlocked = false;
+  try {
+    await store.associateCandidateTarget(
+      discovery.gateCandidateId,
+      null,
+      'ci-content-reviewer',
+      rejectedCandidate!.candidate.draftRevision
+    );
+  } catch {
+    rejectedReopenBlocked = true;
+  }
+  if (!rejectedReopenBlocked) {
+    throw new Error(
+      'Rejected catalog candidate was reopened through the store'
+    );
+  }
+  await expectCatalogDatabaseRejection(
+    admin,
+    async (tx) => {
+      await tx.unsafe('SET LOCAL ROLE algocoach_catalog_reviewer');
+      await tx.unsafe(
+        `UPDATE "${applicationSchema}"."coach_problem_candidate"
+         SET status = 'quarantined', draft_revision = draft_revision + 1,
+             draft_hash = $2, rejection_reason = NULL
+         WHERE id = $1`,
+        [discovery.gateCandidateId, sha256('rejected-reopen-attempt')]
+      );
+    },
+    'Rejected candidate reopen'
+  );
 
   const candidateId = firstSync.candidateIds[0]!;
   const targetProblem = curatedExercismProblems[0]!;
@@ -1296,6 +1386,47 @@ async function verifyCatalogPublicationLifecycle(
         );
       },
       'Sync publication audit'
+    );
+    const concurrentRollbacks = await Promise.allSettled([
+      store.rollbackProblem(
+        targetProblem.slug,
+        1,
+        'ci-release-manager',
+        'Concurrent rollback A'
+      ),
+      store.rollbackProblem(
+        targetProblem.slug,
+        1,
+        'ci-release-manager',
+        'Concurrent rollback B'
+      ),
+    ]);
+    if (
+      concurrentRollbacks.filter((result) => result.status === 'fulfilled')
+        .length !== 1 ||
+      concurrentRollbacks.filter((result) => result.status === 'rejected')
+        .length !== 1
+    ) {
+      throw new Error('Concurrent catalog rollbacks were not serialized');
+    }
+    const [publishedRevisionInvariant] = await admin.unsafe<
+      { published_count: number }[]
+    >(
+      `SELECT count(*)::int AS published_count
+       FROM "${applicationSchema}"."coach_problem_revision" AS revision
+       JOIN "${applicationSchema}"."coach_problem" AS problem
+         ON problem.id = revision.problem_id
+       WHERE problem.slug = $1 AND revision.status = 'published'`,
+      [targetProblem.slug]
+    );
+    if (publishedRevisionInvariant?.published_count !== 1) {
+      throw new Error('Concurrent rollback left multiple published revisions');
+    }
+    await store.rollbackProblem(
+      targetProblem.slug,
+      2,
+      'ci-release-manager',
+      'Restore v2 after concurrency test'
     );
     const [rollbackEvidence] = await admin.unsafe<
       {

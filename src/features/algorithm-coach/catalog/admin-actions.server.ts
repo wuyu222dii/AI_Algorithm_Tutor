@@ -1,11 +1,20 @@
 import 'server-only';
 
+import { structuredCatalogWritesEnabled } from './admin-config';
+import { safeParseCatalogReviewDraftV2 } from './admin-contracts';
 import { catalogAdminDatabase } from './admin-db.server';
 import { CatalogDatabaseStore } from './catalog-store.server';
 import { sha256, stableStringify } from './content-hash';
+import {
+  assertDiscoveryDraftBoundary,
+  discoveryDraftGeneratorFromEnv,
+  type ExercismDraftGenerationRequest,
+} from './discovery-enrichment';
+import type { ExercismDiscoveryDraft } from './raw-types';
 
 type CandidateAction =
   | 'update_draft'
+  | 'normalize'
   | 'associate_target'
   | 'validate'
   | 'approve'
@@ -18,6 +27,85 @@ interface ExecuteCandidateActionOptions {
   actorUserId: string;
   idempotencyKey: string;
   payload: Record<string, unknown>;
+}
+
+function discoveryPayload(value: unknown): ExercismDiscoveryDraft {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Catalog candidate discovery payload is missing.');
+  }
+  const draft = value as Partial<ExercismDiscoveryDraft>;
+  if (
+    draft.schemaVersion !== 1 ||
+    !draft.source ||
+    !draft.upstream ||
+    !draft.proposed
+  ) {
+    throw new Error('Catalog candidate discovery payload is malformed.');
+  }
+  return draft as ExercismDiscoveryDraft;
+}
+
+function proposalNeedsAi(draft: ExercismDiscoveryDraft): boolean {
+  return (
+    !draft.proposed.title.zh.trim() ||
+    !draft.proposed.description.zh.trim() ||
+    draft.proposed.difficulty === null ||
+    draft.proposed.topics.length === 0 ||
+    draft.proposed.functionSignature === null
+  );
+}
+
+async function normalizationProposal(
+  store: CatalogDatabaseStore,
+  candidateId: string,
+  expectedDraftRevision: number
+): Promise<{
+  proposed: unknown;
+  generated?: ExercismDiscoveryDraft['aiMetadata'];
+  aiFallback?: boolean;
+}> {
+  const details = await store.getCandidate(candidateId);
+  if (!details) throw new Error('Catalog candidate was not found.');
+  if (details.candidate.draftRevision !== expectedDraftRevision) {
+    throw new Error('Catalog candidate draft revision is stale.');
+  }
+  const currentDraft = safeParseCatalogReviewDraftV2(details.candidate.draft);
+  if (currentDraft.success) return { proposed: currentDraft.data };
+  if (
+    !['discovered', 'drafting', 'quarantined'].includes(
+      details.candidate.status
+    )
+  ) {
+    throw new Error(
+      'Only discovered or quarantined candidates can be normalized.'
+    );
+  }
+  const raw = discoveryPayload(details.candidate.rawPayload);
+  if (
+    process.env.CATALOG_AI_DRAFT_ENABLED !== 'true' ||
+    !proposalNeedsAi(raw)
+  ) {
+    return { proposed: raw.proposed };
+  }
+  const request: ExercismDraftGenerationRequest = {
+    repository: raw.source.repository,
+    revision: raw.source.revision,
+    licenseSpdx: raw.source.licenseSpdx,
+    licenseText: raw.source.licenseText,
+    licenseGitBlobSha: raw.source.licenseGitBlobSha,
+    licenseContentHash: raw.source.licenseContentHash,
+    exercise: raw.upstream,
+  };
+  try {
+    const generated = await discoveryDraftGeneratorFromEnv().generate(request);
+    assertDiscoveryDraftBoundary(generated, request);
+    return {
+      proposed: generated.proposed,
+      ...(generated.aiMetadata ? { generated: generated.aiMetadata } : {}),
+    };
+  } catch {
+    return { proposed: raw.proposed, aiFallback: true };
+  }
 }
 
 function requestHash(value: unknown): string {
@@ -40,6 +128,9 @@ function errorCode(error: unknown): string {
     return 'candidate_not_found';
   }
   if (message.includes('stale')) return 'revision_conflict';
+  if (message.includes('not in write mode')) {
+    return 'structured_review_read_only';
+  }
   if (message.includes('different request')) return 'idempotency_conflict';
   if (message.includes('different users')) return 'publisher_conflict';
   if (
@@ -73,6 +164,8 @@ function publicErrorMessage(code: string): string {
     publisher_conflict: 'The approver and publisher must be different users.',
     invalid_candidate_state:
       'The candidate is not in a valid state for this action.',
+    structured_review_read_only:
+      'Structured catalog review is currently read-only.',
     mutation_in_progress: 'The catalog mutation is already in progress.',
     previous_mutation_failed: 'The previous catalog mutation failed.',
     catalog_mutation_failed:
@@ -95,6 +188,13 @@ export class CatalogAdminActionError extends Error {
 export async function executeCatalogCandidateAction(
   options: ExecuteCandidateActionOptions
 ): Promise<Record<string, unknown>> {
+  if (!structuredCatalogWritesEnabled()) {
+    throw new CatalogAdminActionError(
+      'structured_review_read_only',
+      publicErrorMessage('structured_review_read_only'),
+      409
+    );
+  }
   const store = new CatalogDatabaseStore(
     catalogAdminDatabase() as ConstructorParameters<
       typeof CatalogDatabaseStore
@@ -111,7 +211,9 @@ export async function executeCatalogCandidateAction(
       actorUserId: options.actorUserId,
       idempotencyKey: options.idempotencyKey,
       action:
-        options.action === 'associate_target' ? 'update_draft' : options.action,
+        options.action === 'associate_target' || options.action === 'normalize'
+          ? 'update_draft'
+          : options.action,
       targetType: 'candidate',
       targetId: options.candidateId,
       requestHash: hash,
@@ -143,16 +245,69 @@ export async function executeCatalogCandidateAction(
   try {
     let result: Record<string, unknown>;
     if (options.action === 'update_draft') {
-      const updated = await store.updateCandidateDraft(
+      const updated = await store.saveCandidateReviewDraft(
         options.candidateId,
-        options.payload.draftProblem,
+        options.payload.draft,
         options.actorUserId,
         Number(options.payload.expectedDraftRevision)
       );
       result = {
-        candidateId: updated.id,
-        status: updated.status,
-        draftRevision: updated.draftRevision,
+        candidateId: updated.candidate.id,
+        status: updated.candidate.status,
+        draftRevision: updated.candidate.draftRevision,
+        blockers: updated.blockers,
+        materialized: updated.materialized,
+      };
+    } else if (options.action === 'normalize') {
+      const expectedDraftRevision = Number(
+        options.payload.expectedDraftRevision
+      );
+      const proposal = await normalizationProposal(
+        store,
+        options.candidateId,
+        expectedDraftRevision
+      );
+      const updated = await store.normalizeCandidateReviewDraft(
+        options.candidateId,
+        proposal.proposed,
+        options.actorUserId,
+        expectedDraftRevision
+      );
+      if (proposal.generated && !updated.alreadyNormalized) {
+        await store.recordAiGeneration({
+          candidateId: options.candidateId,
+          actorUserId: options.actorUserId,
+          kind: 'review_summary',
+          provider: proposal.generated.provider,
+          model: proposal.generated.model,
+          promptVersion: proposal.generated.promptVersion,
+          inputHash: proposal.generated.inputHash,
+          outputHash: proposal.generated.outputHash,
+          status: 'generated',
+          metadata: {
+            finishReason: proposal.generated.finishReason,
+            latencyMs: proposal.generated.latencyMs,
+            ...(proposal.generated.inputTokens === undefined
+              ? {}
+              : { inputTokens: proposal.generated.inputTokens }),
+            ...(proposal.generated.outputTokens === undefined
+              ? {}
+              : { outputTokens: proposal.generated.outputTokens }),
+            ...(proposal.generated.estimatedCostUsd === undefined
+              ? {}
+              : { estimatedCostUsd: proposal.generated.estimatedCostUsd }),
+          },
+        });
+      }
+      result = {
+        candidateId: updated.candidate.id,
+        status: updated.candidate.status,
+        draftRevision: updated.candidate.draftRevision,
+        blockers: updated.blockers,
+        mappedCount: updated.draft.canonicalSelections.length,
+        materialized: updated.materialized,
+        alreadyNormalized: Boolean(updated.alreadyNormalized),
+        aiFallback: Boolean(proposal.aiFallback),
       };
     } else if (options.action === 'associate_target') {
       const updated = await store.associateCandidateTarget(
@@ -171,21 +326,27 @@ export async function executeCatalogCandidateAction(
       };
     } else if (options.action === 'validate') {
       result = {
-        ...(await store.validateCandidates([options.candidateId], 'reviewer')),
+        ...(await store.validateCandidates(
+          [options.candidateId],
+          'reviewer',
+          Number(options.payload.expectedDraftRevision)
+        )),
       };
     } else if (options.action === 'approve') {
       result = {
         ...(await store.approveCandidates(
           [options.candidateId],
           options.actorUserId,
-          String(options.payload.notes ?? '')
+          String(options.payload.notes ?? ''),
+          Number(options.payload.expectedDraftRevision)
         )),
       };
     } else if (options.action === 'reject') {
       const rejected = await store.rejectCandidate(
         options.candidateId,
         options.actorUserId,
-        String(options.payload.notes ?? '')
+        String(options.payload.notes ?? ''),
+        Number(options.payload.expectedDraftRevision)
       );
       result = { candidateId: rejected.id, status: rejected.status };
     } else {
@@ -193,7 +354,8 @@ export async function executeCatalogCandidateAction(
         ...(await store.publishCandidates(
           [options.candidateId],
           options.actorUserId,
-          String(options.payload.notes ?? '')
+          String(options.payload.notes ?? ''),
+          Number(options.payload.expectedDraftRevision)
         )),
       };
     }
@@ -225,6 +387,13 @@ export async function executeCatalogRollback(options: {
   actorUserId: string;
   idempotencyKey: string;
 }): Promise<Record<string, unknown>> {
+  if (!structuredCatalogWritesEnabled()) {
+    throw new CatalogAdminActionError(
+      'structured_review_read_only',
+      publicErrorMessage('structured_review_read_only'),
+      409
+    );
+  }
   const store = new CatalogDatabaseStore(
     catalogAdminDatabase() as ConstructorParameters<
       typeof CatalogDatabaseStore

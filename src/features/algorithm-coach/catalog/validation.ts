@@ -1,5 +1,6 @@
 import MarkdownIt from 'markdown-it';
 
+import { valueMatchesCatalogTypeSpec } from './canonical-mapping';
 import {
   calculateCandidateContentHash,
   calculateCanonicalDataHash,
@@ -696,9 +697,13 @@ export function validateCatalogProblem(
 ): CatalogValidationResult {
   const issues: CatalogValidationIssue[] = [];
 
-  if (!isNonEmpty(problem.id) || !/^ex-\d{3}$/.test(problem.id)) {
+  if (!isNonEmpty(problem.id) || !/^ex-\d{3,6}$/.test(problem.id)) {
     issues.push(
-      issue('invalid_problem', 'id must use the ex-NNN format', 'id')
+      issue(
+        'invalid_problem',
+        'id must use the ex-NNN through ex-NNNNNN format',
+        'id'
+      )
     );
   }
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(problem.slug)) {
@@ -882,6 +887,39 @@ export function validateCatalogProblem(
       );
     }
     testIds.add(test.id);
+    if (
+      javascriptSignature &&
+      test.args.length === javascriptSignature.parameters.length
+    ) {
+      test.args.forEach((argument, argumentIndex) => {
+        if (
+          !valueMatchesCatalogTypeSpec(
+            argument,
+            javascriptSignature.parameters[argumentIndex]!.type
+          )
+        ) {
+          issues.push(
+            issue(
+              'invalid_function_protocol',
+              'test argument does not match the structured parameter type',
+              `tests.${index}.args.${argumentIndex}`
+            )
+          );
+        }
+      });
+    }
+    if (
+      javascriptSignature &&
+      !valueMatchesCatalogTypeSpec(test.expected, javascriptSignature.returns)
+    ) {
+      issues.push(
+        issue(
+          'invalid_function_protocol',
+          'test expected value does not match the structured return type',
+          `tests.${index}.expected`
+        )
+      );
+    }
     if (
       test.sourceKind === 'legacy' ||
       (test.sourceKind === 'canonical' && !test.sourceTestUuid?.trim()) ||

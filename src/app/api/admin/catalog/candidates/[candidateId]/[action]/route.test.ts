@@ -60,7 +60,7 @@ describe('catalog candidate actions', () => {
   });
 
   it('uses review permission for deterministic validation', async () => {
-    const response = await POST(request({}), {
+    const response = await POST(request({ expectedDraftRevision: 4 }), {
       params: Promise.resolve({
         candidateId: 'candidate-1',
         action: 'validate',
@@ -78,17 +78,46 @@ describe('catalog candidate actions', () => {
       candidateId: 'candidate-1',
       actorUserId: 'reviewer-1',
       idempotencyKey: 'catalog-test-key-0001',
-      payload: { notes: '' },
+      payload: { expectedDraftRevision: 4 },
+    });
+  });
+
+  it('normalizes a candidate with optimistic revision and review permission', async () => {
+    const response = await POST(request({ expectedDraftRevision: 3 }), {
+      params: Promise.resolve({
+        candidateId: 'candidate-1',
+        action: 'normalize',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(mocks.authorize).toHaveBeenCalledWith(
+      expect.any(Request),
+      'admin.catalog.review',
+      { mutation: true, idempotent: true }
+    );
+    expect(mocks.execute).toHaveBeenCalledWith({
+      action: 'normalize',
+      candidateId: 'candidate-1',
+      actorUserId: 'reviewer-1',
+      idempotencyKey: 'catalog-test-key-0001',
+      payload: { expectedDraftRevision: 3 },
     });
   });
 
   it('requires publish permission for publication', async () => {
-    const response = await POST(request({ notes: 'Independent release.' }), {
-      params: Promise.resolve({
-        candidateId: 'candidate-1',
-        action: 'publish',
+    const response = await POST(
+      request({
+        notes: 'Independent release.',
+        expectedDraftRevision: 4,
       }),
-    });
+      {
+        params: Promise.resolve({
+          candidateId: 'candidate-1',
+          action: 'publish',
+        }),
+      }
+    );
 
     expect(response.status).toBe(200);
     expect(mocks.authorize).toHaveBeenCalledWith(
@@ -99,7 +128,7 @@ describe('catalog candidate actions', () => {
   });
 
   it('rejects a candidate only with an explicit reason', async () => {
-    const response = await POST(request({}), {
+    const response = await POST(request({ expectedDraftRevision: 4 }), {
       params: Promise.resolve({ candidateId: 'candidate-1', action: 'reject' }),
     });
 
@@ -125,7 +154,7 @@ describe('catalog candidate actions', () => {
     mocks.authorize.mockRejectedValueOnce(
       new CoachHttpError(403, 'invalid_origin', 'Same-origin required.')
     );
-    const forbidden = await POST(request({}), {
+    const forbidden = await POST(request({ expectedDraftRevision: 4 }), {
       params: Promise.resolve({
         candidateId: 'candidate-1',
         action: 'validate',
@@ -145,7 +174,7 @@ describe('catalog candidate actions', () => {
         404
       )
     );
-    const missing = await POST(request({}), {
+    const missing = await POST(request({ expectedDraftRevision: 4 }), {
       params: Promise.resolve({
         candidateId: 'candidate-1',
         action: 'validate',

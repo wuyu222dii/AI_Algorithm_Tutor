@@ -1,3 +1,4 @@
+import { createEmptyCatalogReviewDraftV2 } from '@/features/algorithm-coach/catalog/review-draft';
 import { CoachHttpError } from '@/features/algorithm-coach/http';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -57,6 +58,14 @@ function patchRequest(body: unknown) {
   );
 }
 
+function structuredDraftBody(expectedDraftRevision = 2) {
+  return {
+    schemaVersion: 2 as const,
+    expectedDraftRevision,
+    draft: createEmptyCatalogReviewDraftV2(),
+  };
+}
+
 describe('catalog candidate detail API', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -114,10 +123,7 @@ describe('catalog candidate detail API', () => {
 
   it('updates a draft with review permission and optimistic revision', async () => {
     const response = await PATCH(
-      patchRequest({
-        draftProblem: { slug: 'two-fer' },
-        expectedDraftRevision: 2,
-      }),
+      patchRequest(structuredDraftBody()),
       context()
     );
 
@@ -133,7 +139,8 @@ describe('catalog candidate detail API', () => {
       actorUserId: 'reviewer-1',
       idempotencyKey: 'catalog-test-key-0001',
       payload: {
-        draftProblem: { slug: 'two-fer' },
+        schemaVersion: 2,
+        draft: createEmptyCatalogReviewDraftV2(),
         expectedDraftRevision: 2,
       },
     });
@@ -163,17 +170,29 @@ describe('catalog candidate detail API', () => {
 
   it('does not execute malformed or unauthorized draft updates', async () => {
     const invalid = await PATCH(
-      patchRequest({ draftProblem: {}, expectedDraftRevision: 0 }),
+      patchRequest({
+        schemaVersion: 2,
+        draft: {},
+        expectedDraftRevision: 0,
+      }),
       context()
     );
-    expect(invalid.status).toBe(400);
+    expect(invalid.status).toBe(422);
+    await expect(invalid.json()).resolves.toMatchObject({
+      error: {
+        details: expect.arrayContaining([
+          expect.objectContaining({ path: 'expectedDraftRevision' }),
+          expect.objectContaining({ path: 'draft.schemaVersion' }),
+        ]),
+      },
+    });
     expect(mocks.execute).not.toHaveBeenCalled();
 
     mocks.authorize.mockRejectedValueOnce(
       new CoachHttpError(403, 'invalid_origin', 'Same-origin required.')
     );
     const forbidden = await PATCH(
-      patchRequest({ draftProblem: {}, expectedDraftRevision: 2 }),
+      patchRequest(structuredDraftBody()),
       context()
     );
     expect(forbidden.status).toBe(403);
@@ -185,7 +204,7 @@ describe('catalog candidate detail API', () => {
       new mocks.ActionError('revision_conflict', 'Refresh and try again.', 409)
     );
     const response = await PATCH(
-      patchRequest({ draftProblem: {}, expectedDraftRevision: 2 }),
+      patchRequest(structuredDraftBody()),
       context()
     );
 
