@@ -48,6 +48,11 @@ export default async function CatalogAdminLayout({
             url: '/admin/catalog/candidates',
             icon: 'ListChecks',
           },
+          {
+            title: zh ? '公测指标' : 'Beta metrics',
+            url: '/admin/metrics',
+            icon: 'ChartNoAxesColumn',
+          },
         ],
       },
     ],

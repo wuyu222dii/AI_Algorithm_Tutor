@@ -1,3 +1,7 @@
+import {
+  recordCoachAiRequestMetric,
+  relayOriginFromBaseUrl,
+} from '@/features/algorithm-coach/ai-metrics.server';
 import { hydrateCoachCatalogRequest } from '@/features/algorithm-coach/coach-request.server';
 import { canUseCoachDemoFallback } from '@/features/algorithm-coach/demo-fallback';
 import { createDemoChatResponse } from '@/features/algorithm-coach/fixtures';
@@ -9,6 +13,7 @@ import {
 import {
   acquireCoachCapacity,
   CoachCapacityLease,
+  commitCoachConservativeUsage,
   commitCoachFailedUsage,
   commitCoachUsage,
   enforceCoachRateLimits,
@@ -21,6 +26,7 @@ import {
 import {
   COACH_CHAT_MAX_OUTPUT_TOKENS,
   COACH_PROMPT_VERSION,
+  CoachChatCancelledError,
   CoachModelError,
   getCoachRuntimeConfig,
   streamLiveCoachChat,
@@ -43,6 +49,17 @@ function coachModelErrorResponse(error: CoachModelError, traceId: string) {
     );
   }
   const failure = {
+    credential_invalid: {
+      status: 503,
+      code: 'ai_configuration_error',
+      message: 'The AI relay credentials are invalid.',
+    },
+    group_access_denied: {
+      status: 503,
+      code: 'provider_access_denied',
+      message:
+        'The configured AI relay model is not available to this account.',
+    },
     rate_limited: {
       status: 429,
       code: 'provider_rate_limited',
@@ -53,7 +70,7 @@ function coachModelErrorResponse(error: CoachModelError, traceId: string) {
       code: 'provider_timeout',
       message: 'The AI provider did not respond in time.',
     },
-    unavailable: {
+    channel_unavailable: {
       status: 503,
       code: 'provider_unavailable',
       message: 'The AI provider is temporarily unavailable.',
@@ -63,12 +80,7 @@ function coachModelErrorResponse(error: CoachModelError, traceId: string) {
       code: 'provider_invalid_output',
       message: 'The AI provider returned an invalid coach response.',
     },
-    unknown: {
-      status: 502,
-      code: 'provider_failed',
-      message: 'The AI provider could not start a coach response.',
-    },
-  }[error.reason ?? 'unknown'];
+  }[error.reason];
   const response = errorResponse(
     new CoachHttpError(failure.status, failure.code, failure.message),
     traceId
@@ -106,6 +118,7 @@ function localCoachChatResponse(
 
 export async function POST(request: Request) {
   const traceId = crypto.randomUUID();
+  const startedAt = performance.now();
   let capacityLease: CoachCapacityLease | undefined;
   const limited = await enforceCoachRateLimits(request, 'chat');
   if (limited) {
@@ -169,11 +182,31 @@ export async function POST(request: Request) {
     try {
       generation = await streamLiveCoachChat(chatRequest, config);
     } catch (error) {
-      await commitCoachFailedUsage(
-        capacityLease,
-        error instanceof CoachModelError ? error.attempts : 1
-      );
+      const attempts = error instanceof CoachModelError ? error.attempts : 1;
+      const settlement = await commitCoachFailedUsage(capacityLease, attempts);
       capacityLease = undefined;
+      await recordCoachAiRequestMetric({
+        traceId,
+        surface: 'chat',
+        action: 'chat',
+        status: 'failed',
+        relayOrigin: relayOriginFromBaseUrl(config.baseURL),
+        selectedModel:
+          error instanceof CoachModelError
+            ? (error.selectedModel ?? config.model)
+            : config.model,
+        fallbackFrom:
+          error instanceof CoachModelError ? error.fallbackFrom : undefined,
+        attempts,
+        errorCode:
+          error instanceof CoachModelError
+            ? error.reason
+            : 'channel_unavailable',
+        latencyMs: Math.round(performance.now() - startedAt),
+        usageReported: false,
+        usage: { totalTokens: settlement.totalTokens },
+        estimatedCostUsd: settlement.estimatedCostUsd,
+      });
       const fallbackRequest = {
         action: 'hint' as const,
         ...chatRequest,
@@ -204,12 +237,35 @@ export async function POST(request: Request) {
     capacityLease = undefined;
     void generation.completion
       .then(async (completion) => {
-        await commitCoachUsage(
-          settledLease,
-          completion.usage,
-          completion.estimatedCostUsd,
-          generation.attempts
-        );
+        const settlement = completion.usageReported
+          ? await commitCoachUsage(
+              settledLease,
+              completion.usage,
+              completion.estimatedCostUsd,
+              generation.attempts
+            )
+          : await commitCoachConservativeUsage(
+              settledLease,
+              generation.attempts
+            );
+        await recordCoachAiRequestMetric({
+          traceId,
+          surface: 'chat',
+          action: 'chat',
+          status: 'succeeded',
+          relayOrigin: relayOriginFromBaseUrl(config.baseURL),
+          selectedModel: generation.selectedModel,
+          fallbackFrom: generation.fallbackFrom,
+          attempts: generation.attempts,
+          latencyMs: Math.round(performance.now() - startedAt),
+          usageReported: completion.usageReported,
+          usage: {
+            inputTokens: completion.usage.inputTokens,
+            outputTokens: completion.usage.outputTokens,
+            totalTokens: settlement.totalTokens,
+          },
+          estimatedCostUsd: settlement.estimatedCostUsd,
+        });
         await recordOperationalEvent({
           event: 'coach_chat_completed',
           traceId,
@@ -220,12 +276,65 @@ export async function POST(request: Request) {
             inputTokens: completion.usage.inputTokens,
             outputTokens: completion.usage.outputTokens,
             totalTokens: completion.usage.totalTokens,
+            usageReported: completion.usageReported,
             estimatedCostUsd: completion.estimatedCostUsd,
           },
         });
       })
       .catch(async (error) => {
-        await commitCoachFailedUsage(settledLease, generation.attempts);
+        if (error instanceof CoachChatCancelledError) {
+          const settlement = await commitCoachConservativeUsage(
+            settledLease,
+            generation.attempts
+          );
+          await recordCoachAiRequestMetric({
+            traceId,
+            surface: 'chat',
+            action: 'chat',
+            status: 'cancelled',
+            relayOrigin: relayOriginFromBaseUrl(config.baseURL),
+            selectedModel: generation.selectedModel,
+            fallbackFrom: generation.fallbackFrom,
+            attempts: generation.attempts,
+            latencyMs: Math.round(performance.now() - startedAt),
+            usageReported: false,
+            usage: { totalTokens: settlement.totalTokens },
+            estimatedCostUsd: settlement.estimatedCostUsd,
+          });
+          await recordOperationalEvent({
+            event: 'coach_chat_cancelled',
+            traceId,
+            properties: {
+              model: generation.selectedModel,
+              attempts: generation.attempts,
+              reservedTokens: settlement.totalTokens,
+              reservedCostUsd: settlement.estimatedCostUsd,
+            },
+          });
+          return;
+        }
+        const settlement = await commitCoachFailedUsage(
+          settledLease,
+          generation.attempts
+        );
+        await recordCoachAiRequestMetric({
+          traceId,
+          surface: 'chat',
+          action: 'chat',
+          status: 'failed',
+          relayOrigin: relayOriginFromBaseUrl(config.baseURL),
+          selectedModel: generation.selectedModel,
+          fallbackFrom: generation.fallbackFrom,
+          attempts: generation.attempts,
+          errorCode:
+            error instanceof CoachModelError
+              ? error.reason
+              : 'channel_unavailable',
+          latencyMs: Math.round(performance.now() - startedAt),
+          usageReported: false,
+          usage: { totalTokens: settlement.totalTokens },
+          estimatedCostUsd: settlement.estimatedCostUsd,
+        });
         await recordOperationalEvent({
           event: 'coach_chat_stream_failed',
           level: 'error',

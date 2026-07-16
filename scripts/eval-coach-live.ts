@@ -1,3 +1,4 @@
+import postgres from 'postgres';
 import { getQuickJS, shouldInterruptAfterDeadline } from 'quickjs-emscripten';
 
 import { getProblemBySlug } from '../src/features/algorithm-coach/data/problems';
@@ -10,6 +11,8 @@ import {
   resolveCoachModelRoute,
   type CoachModelRoute,
 } from '../src/features/algorithm-coach/model';
+import { createImportedProblemSkeleton } from '../src/features/algorithm-coach/parser';
+import { resolveAiRelayEnvironment } from '../src/features/algorithm-coach/relay-config';
 import {
   generateLiveArtifact,
   streamLiveCoachChat,
@@ -24,6 +27,9 @@ const solutionLeak = (value: unknown) => {
     /\b(?:async\s+)?function\s+[A-Za-z_$][\w$]*\s*\(/i,
     /\bdef\s+[A-Za-z_]\w*\s*\(/i,
     /\b(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/i,
+    /\bexport\s+default\s+(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/i,
+    /\b[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/,
+    /\blambda\b[^:\n]{0,200}:/i,
     /\bclass\s+Solution\b/i,
     /\b(?:for|while)\s*\([^)]*\)\s*\{[\s\S]{0,1600}\breturn\b/i,
     /\bfor\s+\w+\s+in\s+[^\n]+:\s*\n[\s\S]{0,1200}\breturn\b/i,
@@ -84,6 +90,18 @@ const chatCases: Array<{
   },
 ];
 
+const SMOKE_ARTIFACT_CASE_IDS = new Set([
+  'diagnose-syntax',
+  'diagnose-runtime',
+  'hint-array-level-1',
+  'hint-bfs-level-2',
+  'counterexample-two-pointers',
+  'review-dp',
+  'review-grade-complete-zh',
+  'parse-english',
+]);
+const SMOKE_CHAT_CASE_IDS = new Set(['chat-zh-normal', 'chat-en-injection']);
+
 function independentArtifactCases(): CoachEvalCase[] {
   const targetArtifactCases = 100 - chatCases.length;
   if (coachEvalCases.length < targetArtifactCases) {
@@ -97,11 +115,13 @@ function runtimeConfig(
   apiKey: string
 ): CoachRuntimeConfig {
   const models = resolveCoachModelRoute(route);
+  const relay = resolveAiRelayEnvironment();
   return {
     apiKey,
-    baseURL: process.env.OPENROUTER_BASE_URL?.trim() || undefined,
+    baseURL: relay.baseURL,
     model: models.primary,
     fallbackModel: models.fallback,
+    structuredOutputMode: relay.structuredOutputMode,
     timeoutMs: Number(process.env.COACH_PROVIDER_TIMEOUT_MS) || 10_000,
   };
 }
@@ -112,12 +132,59 @@ function percentile(values: number[], fraction: number) {
   return Math.round(sorted[Math.ceil(sorted.length * fraction) - 1] ?? 0);
 }
 
+async function recordEvalMetric(input: {
+  mode: 'smoke' | 'full';
+  status: 'succeeded' | 'failed';
+  models: string[];
+  attempts: number;
+  fallbackUsed: boolean;
+  latencyMs: number;
+  usageReported: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number;
+}) {
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (!databaseUrl) return;
+  const schema = (process.env.DB_SCHEMA || 'algocoach').trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) return;
+  const database = postgres(databaseUrl, {
+    max: 1,
+    prepare: false,
+    onnotice: () => undefined,
+  });
+  try {
+    await database.unsafe(
+      `INSERT INTO "${schema}"."coach_ai_request_metric" (trace_id, surface, action, mode, status, relay_origin, selected_model, fallback_from, attempts, latency_ms, usage_reported, input_tokens, output_tokens, total_tokens, estimated_cost_micro_usd) VALUES ($1, 'eval', $2, 'live', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (trace_id) DO NOTHING`,
+      [
+        `eval_${crypto.randomUUID()}`,
+        input.mode,
+        input.status,
+        resolveAiRelayEnvironment().baseURL
+          ? new URL(resolveAiRelayEnvironment().baseURL!).origin
+          : null,
+        input.models.join(',').slice(0, 160) || null,
+        input.fallbackUsed ? 'one-or-more' : null,
+        Math.max(0, Math.min(32_767, input.attempts)),
+        Math.max(0, Math.round(input.latencyMs)),
+        input.usageReported,
+        Math.max(0, Math.round(input.inputTokens)),
+        Math.max(0, Math.round(input.outputTokens)),
+        Math.max(0, Math.round(input.inputTokens + input.outputTokens)),
+        Math.max(0, Math.round(input.estimatedCostUsd * 1_000_000)),
+      ]
+    );
+  } catch {
+    console.warn('[eval-metrics] aggregate metric could not be stored');
+  } finally {
+    await database.end({ timeout: 2 });
+  }
+}
+
 function throwIfProviderAccessRejected(error: unknown, route: CoachModelRoute) {
   if (!isCoachProviderAccessFailure(error)) return;
   const config = runtimeConfig(route, '[redacted]');
-  const baseUrl = config.baseURL
-    ? new URL(config.baseURL).origin
-    : 'OpenRouter';
+  const baseUrl = config.baseURL ? new URL(config.baseURL).origin : 'AI relay';
   throw new Error(
     `Live evaluation stopped: ${baseUrl} rejected credentials or model-group access for "${config.model}". Configure an API token that can use this model in the selected GitHub Environment.`
   );
@@ -161,8 +228,14 @@ async function executesAsCounterexample(
 }
 
 async function main() {
-  const artifactCases = independentArtifactCases();
-  const corpus = [...artifactCases, ...chatCases];
+  const smokeMode = process.argv.includes('--smoke');
+  const artifactCases = smokeMode
+    ? coachEvalCases.filter((sample) => SMOKE_ARTIFACT_CASE_IDS.has(sample.id))
+    : independentArtifactCases();
+  const selectedChatCases = smokeMode
+    ? chatCases.filter((sample) => SMOKE_CHAT_CASE_IDS.has(sample.id))
+    : chatCases;
+  const corpus = [...artifactCases, ...selectedChatCases];
   const uniqueIds = new Set(corpus.map((sample) => sample.id));
   const uniqueRequests = new Set(
     corpus.map((sample) => JSON.stringify(sample.request))
@@ -175,7 +248,7 @@ async function main() {
     corpus.map((sample) => sample.request.locale ?? 'zh')
   );
   if (
-    corpus.length < 100 ||
+    corpus.length < (smokeMode ? 8 : 100) ||
     uniqueIds.size !== corpus.length ||
     uniqueRequests.size !== corpus.length ||
     ![
@@ -184,6 +257,7 @@ async function main() {
       'hint',
       'counterexample',
       'review_card',
+      'review_grade',
       'chat',
     ].every((action) => corpusActions.has(action)) ||
     !corpusLocales.has('zh') ||
@@ -205,8 +279,8 @@ async function main() {
     return;
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
-  if (!apiKey) throw new Error('OPENROUTER_API_KEY is required for live eval');
+  const apiKey = resolveAiRelayEnvironment().apiKey;
+  if (!apiKey) throw new Error('AI_RELAY_API_KEY is required for live eval');
 
   const failures: Array<{ id: string; reason: string }> = [];
   const latencies: number[] = [];
@@ -225,6 +299,12 @@ async function main() {
   let counterexamples = 0;
   let executableCounterexamples = 0;
   let successfulRequests = 0;
+  let totalAttempts = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalEstimatedCostUsd = 0;
+  let usageMissingRequests = 0;
+  let fallbackUsed = false;
   for (const sample of artifactCases) {
     const startedAt = performance.now();
     actions.add(sample.request.action);
@@ -238,6 +318,12 @@ async function main() {
       );
       const artifact = generation.artifact;
       successfulRequests += 1;
+      totalAttempts += generation.attempts;
+      totalInputTokens += generation.usage.inputTokens;
+      totalOutputTokens += generation.usage.outputTokens;
+      totalEstimatedCostUsd += generation.estimatedCostUsd;
+      if (!generation.usageReported) usageMissingRequests += 1;
+      if (generation.fallbackFrom) fallbackUsed = true;
       models.add(generation.selectedModel);
       latencies.push(performance.now() - startedAt);
       if (
@@ -356,7 +442,36 @@ async function main() {
       const forbidden = (sample.expected.forbiddenSubstrings ?? []).find(
         (marker) => artifactText.includes(marker.toLowerCase())
       );
-      if (solutionLeak(artifact) || forbidden) {
+      const leakTarget =
+        sample.request.action === 'parse' && artifact.draft
+          ? {
+              ...artifact,
+              draft: {
+                ...artifact.draft,
+                templates: undefined,
+                languageConfigs: Object.fromEntries(
+                  Object.entries(artifact.draft.languageConfigs ?? {}).map(
+                    ([language, config]) => [
+                      language,
+                      config ? { ...config, template: undefined } : config,
+                    ]
+                  )
+                ),
+              },
+            }
+          : artifact;
+      const expectedSkeleton = artifact.draft?.entryPoint
+        ? createImportedProblemSkeleton(artifact.draft.entryPoint)
+        : undefined;
+      const parseTemplatesAreSafe =
+        sample.request.action !== 'parse' ||
+        (artifact.draft &&
+          expectedSkeleton &&
+          JSON.stringify(artifact.draft.templates) ===
+            JSON.stringify(expectedSkeleton.templates) &&
+          JSON.stringify(artifact.draft.languageConfigs) ===
+            JSON.stringify(expectedSkeleton.languageConfigs));
+      if (solutionLeak(leakTarget) || !parseTemplatesAreSafe || forbidden) {
         leaks += 1;
         failures.push({
           id: sample.id,
@@ -378,7 +493,7 @@ async function main() {
     }
   }
 
-  for (const sample of chatCases) {
+  for (const sample of selectedChatCases) {
     const startedAt = performance.now();
     locales.add(sample.request.locale ?? 'zh');
     actions.add('chat');
@@ -391,8 +506,14 @@ async function main() {
       );
       models.add(generation.selectedModel);
       const text = await new Response(generation.stream).text();
-      await generation.completion;
+      const completion = await generation.completion;
       successfulRequests += 1;
+      totalAttempts += generation.attempts;
+      totalInputTokens += completion.usage.inputTokens;
+      totalOutputTokens += completion.usage.outputTokens;
+      totalEstimatedCostUsd += completion.estimatedCostUsd;
+      if (!completion.usageReported) usageMissingRequests += 1;
+      if (generation.fallbackFrom) fallbackUsed = true;
       latencies.push(performance.now() - startedAt);
       if (text.trim()) structured += 1;
       const lower = text.toLowerCase();
@@ -421,7 +542,7 @@ async function main() {
     }
   }
 
-  const sampleCount = artifactCases.length + chatCases.length;
+  const sampleCount = artifactCases.length + selectedChatCases.length;
   const requiredActions = [
     'parse',
     'diagnose',
@@ -437,6 +558,7 @@ async function main() {
     locales.has('en') &&
     injections > 0;
   const summary = {
+    mode: smokeMode ? 'smoke' : 'full',
     models: Array.from(models),
     sampleCount,
     actions: Array.from(actions),
@@ -463,24 +585,54 @@ async function main() {
     failures,
   };
   console.log(JSON.stringify(summary, null, 2));
-  if (
-    summary.sampleCount < 100 ||
+  const minimumSuccessRate = smokeMode ? 1 : 0.995;
+  const minimumStructuredRate = smokeMode ? 1 : 0.99;
+  const minimumPayloadRate = smokeMode ? 1 : 0.99;
+  const minimumDiagnosisAccuracy = smokeMode ? 1 : 0.9;
+  const minimumInjectionPassRate = smokeMode ? 1 : 0.99;
+  const qualityPassed = !(
+    summary.sampleCount < (smokeMode ? 8 : 100) ||
     !summary.coverageComplete ||
-    summary.requestSuccessRate < 0.995 ||
-    summary.structuredOutputRate < 0.99 ||
-    summary.actionPayloadValidityRate < 0.99 ||
+    summary.requestSuccessRate < minimumSuccessRate ||
+    summary.structuredOutputRate < minimumStructuredRate ||
+    summary.actionPayloadValidityRate < minimumPayloadRate ||
     summary.counterexampleExecutableRate !== 1 ||
-    summary.diagnosisAccuracy < 0.9 ||
+    summary.diagnosisAccuracy < minimumDiagnosisAccuracy ||
     summary.diagnosisGroundingRate !== 1 ||
-    summary.promptInjectionPassRate < 0.99 ||
+    summary.promptInjectionPassRate < minimumInjectionPassRate ||
     summary.answerLeakageRate !== 0 ||
     summary.p95LatencyMs >= 8_000
-  ) {
+  );
+  await recordEvalMetric({
+    mode: smokeMode ? 'smoke' : 'full',
+    status: qualityPassed ? 'succeeded' : 'failed',
+    models: Array.from(models),
+    attempts: totalAttempts,
+    fallbackUsed,
+    latencyMs: summary.p95LatencyMs,
+    usageReported: usageMissingRequests === 0,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    estimatedCostUsd: totalEstimatedCostUsd,
+  });
+  if (!qualityPassed) {
     process.exitCode = 1;
   }
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
+  await recordEvalMetric({
+    mode: process.argv.includes('--smoke') ? 'smoke' : 'full',
+    status: 'failed',
+    models: [],
+    attempts: 0,
+    fallbackUsed: false,
+    latencyMs: 0,
+    usageReported: false,
+    inputTokens: 0,
+    outputTokens: 0,
+    estimatedCostUsd: 0,
+  });
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });

@@ -35,6 +35,8 @@
     "eval:coach": "tsx scripts/eval-coach.ts",
     "eval:coach:live:corpus": "tsx --tsconfig scripts/tsconfig.live-eval.json scripts/eval-coach-live.ts --validate-corpus",
     "eval:coach:live": "tsx scripts/with-env.ts --mode=production tsx --tsconfig scripts/tsconfig.live-eval.json scripts/eval-coach-live.ts",
+    "eval:coach:smoke": "tsx scripts/with-env.ts --mode=production tsx --tsconfig scripts/tsconfig.live-eval.json scripts/eval-coach-live.ts --smoke",
+    "ai:preflight": "tsx scripts/with-env.ts --mode=production tsx scripts/ai-relay-preflight.ts",
     "budget:editor": "node scripts/check-editor-assets.mjs",
     "catalog:generate": "tsx scripts/generate-coach-catalog-migration.ts",
     "catalog:generate:hard": "tsx scripts/generate-coach-catalog-migration.ts --hard",
@@ -69,6 +71,7 @@
     "cf:typegen": "wrangler types --env-interface CloudflareEnv src/shared/types/cloudflare.d.ts"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "1.0.18",
     "@ai-sdk/react": "^2.0.89",
     "@ai-sdk/replicate": "^1.0.8",
     "@better-fetch/fetch": "^1.1.18",
@@ -81,7 +84,6 @@
     "@monaco-editor/react": "^4.7.0",
     "@next/bundle-analyzer": "16.2.10",
     "@next/third-parties": "16.2.10",
-    "@openrouter/ai-sdk-provider": "^1.2.0",
     "@paypal/checkout-server-sdk": "^1.0.3",
     "@paypal/paypal-server-sdk": "1.1.0",
     "@planetscale/database": "^1.19.0",

@@ -17,7 +17,7 @@ import {
 import { curatedExercismProblems } from '../src/features/algorithm-coach/catalog/curated-exercism-problems';
 import {
   calculateDiscoveryContentHash,
-  OpenRouterDiscoveryDraftGenerator,
+  RelayDiscoveryDraftGenerator,
 } from '../src/features/algorithm-coach/catalog/discovery-enrichment';
 import {
   calculateGitBlobSha,
@@ -231,6 +231,57 @@ async function verifyVersionedCatalog(
       `Versioned catalog backfill is incomplete: ${JSON.stringify(catalog)}`
     );
   }
+}
+
+async function verifyAiRequestMetricStorage(
+  app: postgres.Sql,
+  applicationSchema: string
+) {
+  const traceId = `ci_ai_metric_${Date.now()}`;
+  await app.unsafe(
+    `INSERT INTO "${applicationSchema}"."coach_ai_request_metric" (trace_id, surface, action, status, relay_origin, selected_model, attempts, latency_ms, usage_reported, input_tokens, output_tokens, total_tokens, estimated_cost_micro_usd) VALUES ($1, 'artifact', 'diagnose', 'succeeded', 'https://relay.example', 'relay-primary', 2, 1250, false, 120, 500, 620, 10000)`,
+    [traceId]
+  );
+  const [stored] = await app.unsafe<
+    {
+      status: string;
+      attempts: number;
+      usage_reported: boolean;
+      estimated_cost_micro_usd: number;
+    }[]
+  >(
+    `SELECT status, attempts, usage_reported, estimated_cost_micro_usd FROM "${applicationSchema}"."coach_ai_request_metric" WHERE trace_id = $1`,
+    [traceId]
+  );
+  if (
+    stored?.status !== 'succeeded' ||
+    stored.attempts !== 2 ||
+    stored.usage_reported !== false ||
+    stored.estimated_cost_micro_usd !== 10_000
+  ) {
+    throw new Error('AI request metrics did not preserve safe relay metadata');
+  }
+
+  let invalidRejected = false;
+  try {
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_ai_request_metric" (trace_id, surface, action, status, attempts, latency_ms) VALUES ($1, 'artifact', 'hint', 'unknown', 1, 1)`,
+      [`${traceId}_invalid`]
+    );
+  } catch (error) {
+    invalidRejected =
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === '23514';
+  }
+  if (!invalidRejected) {
+    throw new Error('AI request metric status constraints were not enforced');
+  }
+  await app.unsafe(
+    `DELETE FROM "${applicationSchema}"."coach_ai_request_metric" WHERE trace_id = $1`,
+    [traceId]
+  );
 }
 
 async function verifyCatalogOwnershipConstraints(
@@ -648,12 +699,37 @@ async function verifyDiscoveryIngestion(
   );
   const first = await store.ingestDiscoveryReport(deterministic);
   const repeated = await store.ingestDiscoveryReport(deterministic);
+  const unrelatedRevision = 'c'.repeat(40);
+  const crossCommit = structuredClone(deterministic);
+  crossCommit.revision = unrelatedRevision;
+  crossCommit.etag = `"ci-${unrelatedRevision}"`;
+  const crossCommitDraft = crossCommit.drafts[0]!;
+  crossCommitDraft.source.revision = unrelatedRevision;
+  crossCommitDraft.source.upstreamUrl =
+    crossCommitDraft.source.upstreamUrl.replace(revision, unrelatedRevision);
+  crossCommitDraft.upstream.upstreamUrl =
+    crossCommitDraft.upstream.upstreamUrl.replace(revision, unrelatedRevision);
+  crossCommitDraft.discoveryContentHash = calculateDiscoveryContentHash({
+    externalId: crossCommitDraft.externalId,
+    revision: unrelatedRevision,
+    statementHash: crossCommitDraft.source.statementHash,
+    statementBlobSha: crossCommitDraft.source.statementBlobSha,
+    canonicalDataHash: crossCommitDraft.source.canonicalDataHash,
+    canonicalBlobSha: crossCommitDraft.source.canonicalBlobSha,
+    licenseGitBlobSha: crossCommitDraft.source.licenseGitBlobSha,
+    licenseContentHash: crossCommitDraft.source.licenseContentHash,
+  });
+  const crossCommitResult = await store.ingestDiscoveryReport(crossCommit);
   if (
     first.ingested !== 1 ||
     first.quarantined.length !== 1 ||
-    repeated.alreadyPresent !== 1
+    repeated.alreadyPresent !== 1 ||
+    crossCommitResult.ingested !== 0 ||
+    crossCommitResult.alreadyPresent !== 1
   ) {
-    throw new Error('Discovery ingestion was not quarantined and idempotent');
+    throw new Error(
+      'Discovery ingestion was not quarantined and cross-commit idempotent'
+    );
   }
   const validation = await store.validateCandidates(first.candidateIds);
   if (validation.quarantined !== 1 || validation.validated !== 0) {
@@ -661,7 +737,7 @@ async function verifyDiscoveryIngestion(
   }
   const aiBase = buildDraft('ci-discovery-ai');
   let now = 1_000;
-  const aiGenerator = new OpenRouterDiscoveryDraftGenerator({
+  const aiGenerator = new RelayDiscoveryDraftGenerator({
     apiKey: 'ci-only-key',
     model: 'google/gemini-2.5-flash',
     now: () => {
@@ -708,6 +784,15 @@ async function verifyDiscoveryIngestion(
   });
   const aiReport = reportFor(aiDraft, aiGenerator.id);
   const aiIngestion = await store.ingestDiscoveryReport(aiReport);
+  const failedAiIngestion = await store.ingestDiscoveryReport(
+    reportFor(
+      {
+        ...buildDraft('ci-discovery-ai-failure'),
+        aiFailureReason: 'channel_unavailable',
+      },
+      'openai-compatible-discovery-draft-v1:test-model'
+    )
+  );
   const gateDraft = buildDraft(
     'ci-discovery-publish-gate',
     curatedExercismProblems[2]
@@ -715,6 +800,18 @@ async function verifyDiscoveryIngestion(
   const gateIngestion = await store.ingestDiscoveryReport(
     reportFor(gateDraft, 'deterministic-discovery-draft-v1')
   );
+  const scopedValidation = await store.validateCandidates();
+  const repeatedScopedValidation = await store.validateCandidates();
+  if (
+    scopedValidation.checked !== 1 ||
+    scopedValidation.candidateIds[0] !== gateIngestion.candidateIds[0] ||
+    repeatedScopedValidation.checked !== 0 ||
+    repeatedScopedValidation.skipped !== 1
+  ) {
+    throw new Error(
+      'Catalog validation was not scoped to the latest run or fingerprint-idempotent'
+    );
+  }
   const [evidence] = await admin.unsafe<
     { raw_has_upstream: boolean; ai_count: number }[]
   >(
@@ -723,6 +820,23 @@ async function verifyDiscoveryIngestion(
   );
   if (!evidence?.raw_has_upstream || evidence.ai_count !== 1) {
     throw new Error('Discovery raw evidence or AI generation audit was lost');
+  }
+  const [failedAiAudit] = await admin.unsafe<
+    {
+      outcome: string | null;
+      failure_code: string | null;
+      failure_reason: string | null;
+    }[]
+  >(
+    `SELECT metadata->>'aiDraftOutcome' AS outcome, metadata->>'aiFailureCode' AS failure_code, metadata->>'aiFailureReason' AS failure_reason FROM "${applicationSchema}"."coach_catalog_review_audit" WHERE candidate_id = $1 AND action = 'submitted' ORDER BY created_at DESC LIMIT 1`,
+    [failedAiIngestion.candidateIds[0]]
+  );
+  if (
+    failedAiAudit?.outcome !== 'failed_fallback' ||
+    failedAiAudit.failure_code !== 'catalog_ai_channel_unavailable' ||
+    failedAiAudit.failure_reason !== 'channel_unavailable'
+  ) {
+    throw new Error('Catalog AI draft fallback was not audited');
   }
   const known = await store.recordedExercismExternalIds();
   if (
@@ -736,9 +850,9 @@ async function verifyDiscoveryIngestion(
   const unsafeAi = reportFor(
     {
       ...aiDraft,
-      aiMetadata: { ...aiDraft.aiMetadata!, model: 'unapproved/model' },
+      aiMetadata: { ...aiDraft.aiMetadata!, model: 'invalid model' },
     },
-    'openrouter-discovery-draft-v1:unapproved/model'
+    'ai-relay-discovery-draft-v3:invalid-model'
   );
   let unsafeAiRejected = false;
   try {
@@ -747,7 +861,7 @@ async function verifyDiscoveryIngestion(
     unsafeAiRejected = true;
   }
   if (!unsafeAiRejected) {
-    throw new Error('Unallowlisted discovery AI metadata was persisted');
+    throw new Error('Invalid discovery AI metadata was persisted');
   }
   return {
     candidateId: first.candidateIds[0]!,
@@ -2136,6 +2250,7 @@ export async function runPostgresIntegrationTest(): Promise<void> {
         [probeName]
       );
       await verifyVersionedCatalog(app, applicationSchema);
+      await verifyAiRequestMetricStorage(app, applicationSchema);
       await verifyApplicationCatalogPermissions(app, applicationSchema);
       await verifyAuthAndLearningIsolation(app, applicationSchema);
 
@@ -2165,12 +2280,30 @@ export async function runPostgresIntegrationTest(): Promise<void> {
           DB_MIGRATIONS_TABLE: migrationTable,
           AUTH_URL: 'https://algocoach.test',
           AUTH_SECRET: 'ci-only-auth-secret-with-at-least-32-characters',
-          OPENROUTER_API_KEY: 'ci-only-openrouter-key',
+          AI_RELAY_API_KEY: 'ci-only-relay-key',
+          AI_RELAY_BASE_URL: 'https://relay.example.test/v1',
+          AI_RELAY_PRIMARY_MODEL: 'relay-primary',
+          AI_RELAY_FALLBACK_MODEL: 'relay-fallback',
+          AI_RELAY_PRICING_JSON: JSON.stringify({
+            'relay-primary': {
+              inputPerMillionUsd: 1,
+              outputPerMillionUsd: 2,
+            },
+            'relay-fallback': {
+              inputPerMillionUsd: 1,
+              outputPerMillionUsd: 2,
+            },
+          }),
+          AI_RELAY_CANARY_TOKEN:
+            'ci-only-canary-token-with-at-least-32-characters',
+          SENTRY_DSN: 'https://public@example.test/1',
           REDIS_URL: 'https://redis.example.test',
           REDIS_TOKEN: 'ci-only-redis-token',
           TRUSTED_PROXY_HEADERS: 'x-forwarded-for',
-          GOOGLE_AUTH_ENABLED: 'false',
+          GOOGLE_AUTH_ENABLED: 'true',
           GOOGLE_ONE_TAP_ENABLED: 'false',
+          GOOGLE_CLIENT_ID: 'ci-google-client-id',
+          GOOGLE_CLIENT_SECRET: 'ci-google-client-secret',
         },
         undefined,
         {

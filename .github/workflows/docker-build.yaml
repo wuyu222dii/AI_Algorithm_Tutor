@@ -100,7 +100,11 @@ jobs:
       TYPESCRIPT_ENABLED: 'true'
       GOOGLE_AUTH_ENABLED: 'false'
       GOOGLE_ONE_TAP_ENABLED: 'false'
-      OPENROUTER_API_KEY: ci-only-openrouter-key
+      AI_RELAY_API_KEY: ci-only-relay-key
+      AI_RELAY_BASE_URL: https://relay.invalid/v1
+      AI_RELAY_PRIMARY_MODEL: relay-primary
+      AI_RELAY_FALLBACK_MODEL: relay-fallback
+      AI_RELAY_STRUCTURED_OUTPUT_MODE: json
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -206,12 +210,22 @@ jobs:
           --env TYPESCRIPT_ENABLED=true
           --env AUTH_URL=http://localhost:3200
           --env AUTH_SECRET=ci-only-auth-secret-with-at-least-32-characters
-          --env OPENROUTER_API_KEY=ci-only-openrouter-key
+          --env AI_RELAY_API_KEY=ci-only-relay-key
+          --env AI_RELAY_BASE_URL=https://relay.invalid/v1
+          --env AI_RELAY_PRIMARY_MODEL=relay-primary
+          --env AI_RELAY_FALLBACK_MODEL=relay-fallback
+          --env AI_RELAY_STRUCTURED_OUTPUT_MODE=json
+          --env 'AI_RELAY_PRICING_JSON={"relay-primary":{"inputPerMillionUsd":1,"outputPerMillionUsd":2},"relay-fallback":{"inputPerMillionUsd":1,"outputPerMillionUsd":2}}'
+          --env AI_RELAY_CANARY_TOKEN=ci-only-canary-token-with-at-least-32-characters
+          --env SENTRY_DSN=https://public@example.test/1
           --env REDIS_URL=http://host.docker.internal:8079
           --env REDIS_TOKEN=ci-redis-token
+          --env REDIS_ALLOW_INSECURE_LOCAL=true
           --env TRUSTED_PROXY_HEADERS=x-forwarded-for
-          --env GOOGLE_AUTH_ENABLED=false
+          --env GOOGLE_AUTH_ENABLED=true
           --env GOOGLE_ONE_TAP_ENABLED=false
+          --env GOOGLE_CLIENT_ID=ci-google-client-id
+          --env GOOGLE_CLIENT_SECRET=ci-google-client-secret
           algocoach:ci
       - name: Verify image endpoints and container health
         run: |
@@ -256,9 +270,6 @@ jobs:
       DATABASE_PROVIDER: postgresql
       DATABASE_APPLICATION_ROLE: ${{ vars.DATABASE_APPLICATION_ROLE }}
       MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
-      ALGO_COACH_MODEL: ${{ vars.ALGO_COACH_MODEL }}
     steps:
       - name: Restrict production releases to main
         if: inputs.environment == 'production' && github.ref_name != 'main'
@@ -267,8 +278,8 @@ jobs:
           exit 1
       - name: Validate release database configuration
         run: |
-          if [ -z "$MIGRATION_DATABASE_URL" ] || [ -z "$DATABASE_APPLICATION_ROLE" ] || [ -z "$OPENROUTER_API_KEY" ]; then
-            echo "Configure MIGRATION_DATABASE_URL and OPENROUTER_API_KEY secrets plus DATABASE_APPLICATION_ROLE in the selected GitHub Environment."
+          if [ -z "$MIGRATION_DATABASE_URL" ] || [ -z "$DATABASE_APPLICATION_ROLE" ]; then
+            echo "Configure MIGRATION_DATABASE_URL and DATABASE_APPLICATION_ROLE in the selected GitHub Environment."
             exit 1
           fi
       - uses: actions/checkout@v4
@@ -280,14 +291,58 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Enforce live AI quality gate
-        run: pnpm eval:coach:live
       - run: pnpm db:migrate:release
+
+  release-ai-smoke:
+    name: ${{ inputs.environment }} AI relay gate
+    if: github.event_name == 'workflow_dispatch'
+    needs: [quality, postgres-integration, build, e2e, docker-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    env:
+      AI_RELAY_API_KEY: ${{ secrets.AI_RELAY_API_KEY }}
+      AI_RELAY_BASE_URL: ${{ vars.AI_RELAY_BASE_URL }}
+      AI_RELAY_PRIMARY_MODEL: ${{ vars.AI_RELAY_PRIMARY_MODEL || vars.ALGO_COACH_MODEL }}
+      AI_RELAY_FALLBACK_MODEL: ${{ vars.AI_RELAY_FALLBACK_MODEL || vars.ALGO_COACH_FALLBACK_MODEL }}
+      AI_RELAY_STRUCTURED_OUTPUT_MODE: ${{ vars.AI_RELAY_STRUCTURED_OUTPUT_MODE || 'json' }}
+      AI_RELAY_PRICING_JSON: ${{ vars.AI_RELAY_PRICING_JSON }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
+    steps:
+      - name: Restrict production releases to main
+        if: inputs.environment == 'production' && github.ref_name != 'main'
+        run: |
+          echo "Production releases must run from main."
+          exit 1
+      - name: Validate AI relay release configuration
+        run: |
+          if [ -z "$AI_RELAY_PRIMARY_MODEL" ] || [ -z "$AI_RELAY_FALLBACK_MODEL" ] || [ -z "$AI_RELAY_PRICING_JSON" ]; then
+            echo "Configure both model variables and AI_RELAY_PRICING_JSON in the selected GitHub Environment."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify relay protocol and both configured models
+        run: pnpm ai:preflight
+        env:
+          NODE_ENV: production
+      - name: Run the 10-case release smoke suite
+        run: pnpm eval:coach:smoke
+        env:
+          NODE_ENV: production
 
   publish:
     name: Publish immutable image
     if: github.event_name == 'workflow_dispatch'
-    needs: [release-migration]
+    needs: [release-migration, release-ai-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

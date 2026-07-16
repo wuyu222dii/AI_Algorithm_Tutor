@@ -1,5 +1,6 @@
 export type CatalogOperationalEventName =
   | 'catalog_sync_completed'
+  | 'catalog_ai_draft_failed'
   | 'catalog_candidate_rejected'
   | 'catalog_revision_published'
   | 'catalog_revision_rolled_back';

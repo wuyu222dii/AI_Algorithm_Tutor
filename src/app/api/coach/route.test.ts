@@ -9,7 +9,9 @@ const mocks = vi.hoisted(() => {
     constructor(
       message: string,
       public readonly code: 'model_not_allowed' | 'provider_failed',
-      public readonly reason = 'unknown'
+      public readonly reason = 'unknown',
+      public readonly selectedModel?: string,
+      public readonly fallbackFrom?: string
     ) {
       super(message);
       this.name = 'CoachModelError';
@@ -19,11 +21,13 @@ const mocks = vi.hoisted(() => {
   return {
     CoachModelError: MockCoachModelError,
     acquireCoachCapacity: vi.fn(),
+    commitCoachConservativeUsage: vi.fn(),
     commitCoachFailedUsage: vi.fn(),
     commitCoachUsage: vi.fn(),
     enforceCoachRateLimits: vi.fn(),
     generateLiveArtifact: vi.fn(),
     getCoachRuntimeConfig: vi.fn(),
+    recordCoachAiRequestMetric: vi.fn(),
     recordOperationalEvent: vi.fn(),
     releaseCoachCapacity: vi.fn(),
   };
@@ -31,10 +35,17 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@/features/algorithm-coach/rate-limit.server', () => ({
   acquireCoachCapacity: mocks.acquireCoachCapacity,
+  commitCoachConservativeUsage: mocks.commitCoachConservativeUsage,
   commitCoachFailedUsage: mocks.commitCoachFailedUsage,
   commitCoachUsage: mocks.commitCoachUsage,
   enforceCoachRateLimits: mocks.enforceCoachRateLimits,
   releaseCoachCapacity: mocks.releaseCoachCapacity,
+}));
+
+vi.mock('@/features/algorithm-coach/ai-metrics.server', () => ({
+  recordCoachAiRequestMetric: mocks.recordCoachAiRequestMetric,
+  relayOriginFromBaseUrl: (value?: string) =>
+    value ? new URL(value).origin : undefined,
 }));
 
 vi.mock('@/features/algorithm-coach/server', () => ({
@@ -79,8 +90,18 @@ describe('POST /api/coach provider fallback', () => {
       expiresAt: Date.now() + 1000,
       settled: false,
     });
-    mocks.commitCoachFailedUsage.mockResolvedValue(undefined);
-    mocks.commitCoachUsage.mockResolvedValue(undefined);
+    mocks.commitCoachFailedUsage.mockResolvedValue({
+      totalTokens: 1000,
+      estimatedCostUsd: 0.01,
+    });
+    mocks.commitCoachConservativeUsage.mockResolvedValue({
+      totalTokens: 1000,
+      estimatedCostUsd: 0.01,
+    });
+    mocks.commitCoachUsage.mockResolvedValue({
+      totalTokens: 15,
+      estimatedCostUsd: 0.00003,
+    });
     mocks.releaseCoachCapacity.mockResolvedValue(undefined);
     mocks.getCoachRuntimeConfig.mockResolvedValue({
       apiKey: 'configured-test-key',
@@ -91,10 +112,11 @@ describe('POST /api/coach provider fallback', () => {
       new mocks.CoachModelError(
         'No available channel for the configured model',
         'provider_failed',
-        'unavailable'
+        'channel_unavailable'
       )
     );
     mocks.recordOperationalEvent.mockResolvedValue(undefined);
+    mocks.recordCoachAiRequestMetric.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -126,6 +148,15 @@ describe('POST /api/coach provider fallback', () => {
     expect(mocks.commitCoachFailedUsage).toHaveBeenCalledWith(
       expect.anything(),
       1
+    );
+    expect(mocks.recordCoachAiRequestMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        surface: 'artifact',
+        action: 'hint',
+        status: 'failed',
+        errorCode: 'channel_unavailable',
+        estimatedCostUsd: 0.01,
+      })
     );
   });
 
@@ -209,6 +240,7 @@ describe('POST /api/coach provider fallback', () => {
       attempts: 1,
       finishReason: 'stop',
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      usageReported: true,
       estimatedCostUsd: 0.00003,
     });
 
@@ -218,8 +250,58 @@ describe('POST /api/coach provider fallback', () => {
     expect(response.status).toBe(200);
     expect(body.model).toBe('gpt-5.5');
     expect(mocks.getCoachRuntimeConfig).toHaveBeenCalledWith('hint');
+    expect(mocks.acquireCoachCapacity).toHaveBeenCalledWith(
+      expect.any(Request),
+      'artifact',
+      undefined,
+      expect.objectContaining({ maxAttempts: 4 })
+    );
     expect(mocks.generateLiveArtifact.mock.calls[0]?.[0]).not.toHaveProperty(
       'model'
+    );
+    expect(mocks.recordCoachAiRequestMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        surface: 'artifact',
+        action: 'hint',
+        status: 'succeeded',
+        usageReported: true,
+      })
+    );
+  });
+
+  it('keeps the admission reservation when successful usage is missing', async () => {
+    mocks.generateLiveArtifact.mockResolvedValue({
+      artifact: {
+        id: 'hint-usage-missing',
+        type: 'hint',
+        locale: 'zh',
+        title: '提示',
+        summary: '从不变量开始。',
+        details: [],
+        evidence: [],
+        createdAt: new Date().toISOString(),
+      },
+      selectedModel: 'gpt-5.5',
+      attempts: 1,
+      finishReason: 'stop',
+      usage: { inputTokens: 800, outputTokens: 500, totalTokens: 1300 },
+      usageReported: false,
+      estimatedCostUsd: 0.005,
+    });
+
+    const response = await POST(coachRequest());
+
+    expect(response.status).toBe(200);
+    expect(mocks.commitCoachConservativeUsage).toHaveBeenCalledWith(
+      expect.anything(),
+      1
+    );
+    expect(mocks.commitCoachUsage).not.toHaveBeenCalled();
+    expect(mocks.recordCoachAiRequestMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        usageReported: false,
+        estimatedCostUsd: 0.01,
+      })
     );
   });
 

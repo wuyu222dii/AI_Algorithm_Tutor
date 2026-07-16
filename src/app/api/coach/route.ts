@@ -1,3 +1,7 @@
+import {
+  recordCoachAiRequestMetric,
+  relayOriginFromBaseUrl,
+} from '@/features/algorithm-coach/ai-metrics.server';
 import { hydrateCoachCatalogRequest } from '@/features/algorithm-coach/coach-request.server';
 import { canUseCoachDemoFallback } from '@/features/algorithm-coach/demo-fallback';
 import { createDemoArtifact } from '@/features/algorithm-coach/fixtures';
@@ -9,6 +13,7 @@ import {
 import {
   acquireCoachCapacity,
   CoachCapacityLease,
+  commitCoachConservativeUsage,
   commitCoachFailedUsage,
   commitCoachUsage,
   enforceCoachRateLimits,
@@ -47,6 +52,17 @@ function coachModelErrorResponse(error: CoachModelError, traceId: string) {
     );
   }
   const failure = {
+    credential_invalid: {
+      status: 503,
+      code: 'ai_configuration_error',
+      message: 'The AI relay credentials are invalid.',
+    },
+    group_access_denied: {
+      status: 503,
+      code: 'provider_access_denied',
+      message:
+        'The configured AI relay model is not available to this account.',
+    },
     rate_limited: {
       status: 429,
       code: 'provider_rate_limited',
@@ -57,7 +73,7 @@ function coachModelErrorResponse(error: CoachModelError, traceId: string) {
       code: 'provider_timeout',
       message: 'The AI provider did not respond in time.',
     },
-    unavailable: {
+    channel_unavailable: {
       status: 503,
       code: 'provider_unavailable',
       message: 'The AI provider is temporarily unavailable.',
@@ -67,12 +83,7 @@ function coachModelErrorResponse(error: CoachModelError, traceId: string) {
       code: 'provider_invalid_output',
       message: 'The AI provider returned an invalid coach response.',
     },
-    unknown: {
-      status: 502,
-      code: 'provider_failed',
-      message: 'The AI provider could not generate a valid coach response.',
-    },
-  }[error.reason ?? 'unknown'];
+  }[error.reason];
   const response = errorResponse(
     new CoachHttpError(failure.status, failure.code, failure.message),
     traceId
@@ -179,7 +190,7 @@ export async function POST(request: Request) {
         ],
         input: coachRequest,
         maxOutputTokens: COACH_ARTIFACT_MAX_OUTPUT_TOKENS,
-        maxAttempts: 3,
+        maxAttempts: 4,
       }
     );
     if (capacity instanceof Response) {
@@ -192,11 +203,31 @@ export async function POST(request: Request) {
     try {
       generation = await generateLiveArtifact(coachRequest, config);
     } catch (error) {
-      await commitCoachFailedUsage(
-        capacityLease,
-        error instanceof CoachModelError ? error.attempts : 1
-      );
+      const attempts = error instanceof CoachModelError ? error.attempts : 1;
+      const settlement = await commitCoachFailedUsage(capacityLease, attempts);
       capacityLease = undefined;
+      await recordCoachAiRequestMetric({
+        traceId,
+        surface: 'artifact',
+        action: coachRequest.action,
+        status: 'failed',
+        relayOrigin: relayOriginFromBaseUrl(config.baseURL),
+        selectedModel:
+          error instanceof CoachModelError
+            ? (error.selectedModel ?? config.model)
+            : config.model,
+        fallbackFrom:
+          error instanceof CoachModelError ? error.fallbackFrom : undefined,
+        attempts,
+        errorCode:
+          error instanceof CoachModelError
+            ? error.reason
+            : 'channel_unavailable',
+        latencyMs: Math.round(performance.now() - startedAt),
+        usageReported: false,
+        usage: { totalTokens: settlement.totalTokens },
+        estimatedCostUsd: settlement.estimatedCostUsd,
+      });
       if (
         error instanceof CoachModelError &&
         error.code === 'provider_failed' &&
@@ -219,12 +250,14 @@ export async function POST(request: Request) {
       }
       throw error;
     }
-    await commitCoachUsage(
-      capacityLease,
-      generation.usage,
-      generation.estimatedCostUsd,
-      generation.attempts
-    );
+    const settlement = generation.usageReported
+      ? await commitCoachUsage(
+          capacityLease,
+          generation.usage,
+          generation.estimatedCostUsd,
+          generation.attempts
+        )
+      : await commitCoachConservativeUsage(capacityLease, generation.attempts);
     capacityLease = undefined;
     const mode: CoachResponse['mode'] = 'live';
     const artifact = {
@@ -247,8 +280,27 @@ export async function POST(request: Request) {
       fallbackFrom: generation.fallbackFrom,
       finishReason: generation.finishReason,
       usage: generation.usage,
+      usageReported: generation.usageReported,
       estimatedCostUsd: generation.estimatedCostUsd,
     };
+    await recordCoachAiRequestMetric({
+      traceId,
+      surface: 'artifact',
+      action: coachRequest.action,
+      status: 'succeeded',
+      relayOrigin: relayOriginFromBaseUrl(config.baseURL),
+      selectedModel: generation.selectedModel,
+      fallbackFrom: generation.fallbackFrom,
+      attempts: generation.attempts,
+      latencyMs: response.latencyMs,
+      usageReported: generation.usageReported,
+      usage: {
+        inputTokens: generation.usage.inputTokens,
+        outputTokens: generation.usage.outputTokens,
+        totalTokens: settlement.totalTokens,
+      },
+      estimatedCostUsd: settlement.estimatedCostUsd,
+    });
     void recordOperationalEvent({
       event: 'coach_artifact_generated',
       traceId,
@@ -262,6 +314,7 @@ export async function POST(request: Request) {
         inputTokens: generation.usage.inputTokens,
         outputTokens: generation.usage.outputTokens,
         totalTokens: generation.usage.totalTokens,
+        usageReported: generation.usageReported,
         estimatedCostUsd: generation.estimatedCostUsd,
         latencyMs: response.latencyMs,
       },

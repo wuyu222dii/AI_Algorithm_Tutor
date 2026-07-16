@@ -26,7 +26,7 @@ import {
   coachTestCase,
 } from '@/config/db/schema.postgres';
 
-import { COACH_MODEL_WHITELIST, type CoachModel } from '../model';
+import { isValidCoachModelId } from '../model';
 import {
   safeParseCatalogReviewDraftV2,
   type CatalogReviewDraftV2,
@@ -39,6 +39,7 @@ import {
   calculateCandidateContentHash,
   calculateCanonicalDataHash,
   calculateCatalogContentFingerprint,
+  calculateCatalogRawEvidenceHash,
   sha256,
   stableStringify,
 } from './content-hash';
@@ -70,7 +71,10 @@ import {
   type CatalogReviewBlocker,
   type CatalogReviewRawCandidateFactsV1,
 } from './review-draft';
-import { validateCatalogRunnerCompatibility } from './runner-compatibility.server';
+import {
+  CATALOG_RUNNER_VALIDATION_VERSION,
+  validateCatalogRunnerCompatibility,
+} from './runner-compatibility.server';
 import {
   candidateStateForValidation,
   mergeCatalogValidationResults,
@@ -166,6 +170,7 @@ export interface CatalogDiscoveryState {
   latestTreeExercises?: number;
   latestCandidateDelta?: number;
   candidateCount: number;
+  pendingCandidateCount: number;
 }
 
 export interface ClaimCatalogAdminMutationInput {
@@ -255,6 +260,7 @@ export function countConsecutiveDiscoveryFailures(
 
 export interface DatabaseValidationSummary {
   checked: number;
+  skipped: number;
   validated: number;
   quarantined: number;
   rejected: number;
@@ -340,6 +346,98 @@ async function setLocalCapabilityRole(
 
 function jsonHash(value: unknown): string {
   return sha256(stableStringify(value as CatalogJsonValue));
+}
+
+function rawEvidenceHashFromPayload(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, unknown>;
+  const source =
+    raw.source && typeof raw.source === 'object'
+      ? (raw.source as Record<string, unknown>)
+      : raw;
+  const upstream =
+    raw.upstream && typeof raw.upstream === 'object'
+      ? (raw.upstream as Record<string, unknown>)
+      : undefined;
+  const externalId =
+    typeof raw.externalId === 'string'
+      ? raw.externalId
+      : typeof upstream?.externalId === 'string'
+        ? upstream.externalId
+        : undefined;
+  if (
+    !externalId ||
+    typeof source.statementHash !== 'string' ||
+    typeof source.statementBlobSha !== 'string' ||
+    typeof source.canonicalDataHash !== 'string' ||
+    typeof source.licenseGitBlobSha !== 'string' ||
+    typeof source.licenseContentHash !== 'string'
+  ) {
+    return undefined;
+  }
+  return calculateCatalogRawEvidenceHash({
+    externalId,
+    statementHash: source.statementHash,
+    statementBlobSha: source.statementBlobSha,
+    canonicalDataHash: source.canonicalDataHash,
+    ...(typeof source.canonicalBlobSha === 'string'
+      ? { canonicalBlobSha: source.canonicalBlobSha }
+      : {}),
+    licenseGitBlobSha: source.licenseGitBlobSha,
+    licenseContentHash: source.licenseContentHash,
+  });
+}
+
+async function hasEquivalentRawEvidence(
+  tx: CatalogTransaction,
+  sourceId: string,
+  externalId: string,
+  rawContentHash: string
+): Promise<boolean> {
+  const rows = await tx
+    .select({
+      rawPayload: coachProblemCandidate.rawPayload,
+      rawContentHash: coachProblemCandidate.rawContentHash,
+    })
+    .from(coachProblemCandidate)
+    .where(
+      and(
+        eq(coachProblemCandidate.sourceId, sourceId),
+        eq(coachProblemCandidate.externalId, externalId)
+      )
+    );
+  return rows.some(
+    (row) =>
+      row.rawContentHash === rawContentHash ||
+      rawEvidenceHashFromPayload(row.rawPayload) === rawContentHash
+  );
+}
+
+export function calculateCatalogValidationFingerprint(input: {
+  draftHash: string;
+  policyVersion: string;
+  runnerVersion?: string;
+}): string {
+  return sha256(
+    stableStringify({
+      draftHash: input.draftHash,
+      policyVersion: input.policyVersion,
+      runnerVersion: input.runnerVersion ?? CATALOG_RUNNER_VALIDATION_VERSION,
+    })
+  );
+}
+
+function validationFingerprint(candidate: CandidateRow): string {
+  return calculateCatalogValidationFingerprint({
+    draftHash: candidate.draftHash,
+    policyVersion: candidate.policyVersion,
+  });
+}
+
+function persistedValidationFingerprint(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const fingerprint = (value as { fingerprint?: unknown }).fingerprint;
+  return typeof fingerprint === 'string' ? fingerprint : undefined;
 }
 
 function discoveryDraftFromCandidate(
@@ -1824,8 +1922,10 @@ export class CatalogDatabaseStore {
   }
 
   async recordedExercismExternalIds(): Promise<string[]> {
-    return (await this.recordedExercismEvidence()).map(
-      (entry) => entry.externalId
+    return Array.from(
+      new Set(
+        (await this.recordedExercismEvidence()).map((entry) => entry.externalId)
+      )
     );
   }
 
@@ -1892,9 +1992,20 @@ export class CatalogDatabaseStore {
         });
       }
     }
-    const evidence = new Map<string, RecordedExercismEvidence>();
+    const evidence: RecordedExercismEvidence[] = [];
+    const evidenceKeys = new Set<string>();
+    const addEvidence = (entry: RecordedExercismEvidence) => {
+      const key = [
+        entry.externalId,
+        entry.statementBlobSha ?? '',
+        entry.canonicalBlobSha ?? '',
+        entry.originOnly ? 'origin' : 'blob',
+      ].join(':');
+      if (evidenceKeys.has(key)) return;
+      evidenceKeys.add(key);
+      evidence.push(entry);
+    };
     for (const candidate of candidates) {
-      if (evidence.has(candidate.externalId)) continue;
       const sourceEvidence = candidateSourceEvidence(candidate);
       const statementBlobSha =
         typeof sourceEvidence.statementBlobSha === 'string'
@@ -1904,7 +2015,7 @@ export class CatalogDatabaseStore {
         typeof sourceEvidence.canonicalBlobSha === 'string'
           ? sourceEvidence.canonicalBlobSha
           : undefined;
-      evidence.set(candidate.externalId, {
+      addEvidence({
         externalId: candidate.externalId,
         sourceRevision: candidate.sourceRevision,
         ...(statementBlobSha ? { statementBlobSha } : {}),
@@ -1916,9 +2027,8 @@ export class CatalogDatabaseStore {
       });
     }
     for (const origin of origins) {
-      if (evidence.has(origin.externalId)) continue;
       const baseline = bootstrapEvidence.get(origin.externalId);
-      evidence.set(origin.externalId, {
+      addEvidence({
         externalId: origin.externalId,
         sourceRevision: origin.sourceRevision,
         ...(baseline?.statementBlobSha
@@ -1930,8 +2040,12 @@ export class CatalogDatabaseStore {
         originOnly: !baseline?.statementBlobSha,
       });
     }
-    return [...evidence.values()].sort((left, right) =>
-      left.externalId.localeCompare(right.externalId)
+    return evidence.sort(
+      (left, right) =>
+        left.externalId.localeCompare(right.externalId) ||
+        (left.statementBlobSha ?? '').localeCompare(
+          right.statementBlobSha ?? ''
+        )
     );
   }
 
@@ -1946,6 +2060,7 @@ export class CatalogDatabaseStore {
         backlogComplete: false,
         consecutiveFailures: 0,
         candidateCount: 0,
+        pendingCandidateCount: 0,
       };
     }
     const [runs, candidates] = await Promise.all([
@@ -1956,7 +2071,10 @@ export class CatalogDatabaseStore {
         .orderBy(desc(coachCatalogSyncRun.createdAt))
         .limit(100),
       this.database
-        .select({ id: coachProblemCandidate.id })
+        .select({
+          id: coachProblemCandidate.id,
+          status: coachProblemCandidate.status,
+        })
         .from(coachProblemCandidate)
         .where(eq(coachProblemCandidate.sourceId, source.id)),
     ]);
@@ -2010,6 +2128,15 @@ export class CatalogDatabaseStore {
       ...(latestTreeExercises === undefined ? {} : { latestTreeExercises }),
       ...(latestCandidateDelta === undefined ? {} : { latestCandidateDelta }),
       candidateCount: candidates.length,
+      pendingCandidateCount: candidates.filter((candidate) =>
+        [
+          'discovered',
+          'drafting',
+          'quarantined',
+          'validated',
+          'approved',
+        ].includes(candidate.status)
+      ).length,
     };
   }
 
@@ -2240,7 +2367,7 @@ export class CatalogDatabaseStore {
     }
     const reportHash = jsonHash(report);
     const runId = stableId('catalog_discovery', report.revision, reportHash);
-    return this.database.transaction(async (tx) => {
+    const outcome = await this.database.transaction(async (tx) => {
       const source = await ensureExercismSource(tx);
       await tx
         .insert(coachCatalogSyncRun)
@@ -2264,6 +2391,10 @@ export class CatalogDatabaseStore {
       const candidateIds: string[] = [];
       const quarantined: string[] = [];
       const rejected: string[] = [];
+      const aiDraftFailures: Array<{
+        candidateId: string;
+        reason: NonNullable<ExercismDiscoveryDraft['aiFailureReason']>;
+      }> = [];
       let duplicates = 0;
       for (const discoveryDraft of report.drafts) {
         assertDiscoveryDraftBoundary(discoveryDraft, {
@@ -2330,10 +2461,17 @@ export class CatalogDatabaseStore {
             (discoveryDraft.upstream.canonicalBlobSha !== undefined ||
               discoveryDraft.upstream.canonicalData !== null)) ||
           (discoveryDraft.aiMetadata !== undefined &&
-            (discoveryDraft.aiMetadata.provider !== 'openrouter' ||
-              !COACH_MODEL_WHITELIST.includes(
-                discoveryDraft.aiMetadata.model as CoachModel
-              ) ||
+            ((discoveryDraft.aiMetadata.provider !== 'ai-relay' &&
+              discoveryDraft.aiMetadata.provider !== 'openrouter') ||
+              !isValidCoachModelId(discoveryDraft.aiMetadata.model) ||
+              (discoveryDraft.aiMetadata.attempts !== undefined &&
+                (!Number.isInteger(discoveryDraft.aiMetadata.attempts) ||
+                  discoveryDraft.aiMetadata.attempts <= 0 ||
+                  discoveryDraft.aiMetadata.attempts > 4)) ||
+              (discoveryDraft.aiMetadata.fallbackFrom !== undefined &&
+                (!isValidCoachModelId(discoveryDraft.aiMetadata.fallbackFrom) ||
+                  discoveryDraft.aiMetadata.fallbackFrom ===
+                    discoveryDraft.aiMetadata.model)) ||
               discoveryDraft.aiMetadata.promptVersion !==
                 CATALOG_AI_DRAFT_PROMPT_VERSION ||
               !AI_FINISH_REASONS.has(discoveryDraft.aiMetadata.finishReason) ||
@@ -2353,13 +2491,40 @@ export class CatalogDatabaseStore {
                   discoveryDraft.aiMetadata.outputTokens < 0)) ||
               (discoveryDraft.aiMetadata.estimatedCostUsd !== undefined &&
                 (!Number.isFinite(discoveryDraft.aiMetadata.estimatedCostUsd) ||
-                  discoveryDraft.aiMetadata.estimatedCostUsd < 0))))
+                  discoveryDraft.aiMetadata.estimatedCostUsd < 0)))) ||
+          (discoveryDraft.aiFailureMetadata !== undefined &&
+            (discoveryDraft.aiFailureReason === undefined ||
+              !Number.isInteger(discoveryDraft.aiFailureMetadata.attempts) ||
+              discoveryDraft.aiFailureMetadata.attempts <= 0 ||
+              discoveryDraft.aiFailureMetadata.attempts > 4 ||
+              discoveryDraft.aiFailureMetadata.models.length !==
+                discoveryDraft.aiFailureMetadata.attempts ||
+              !discoveryDraft.aiFailureMetadata.models.every(
+                isValidCoachModelId
+              ) ||
+              !Number.isInteger(discoveryDraft.aiFailureMetadata.latencyMs) ||
+              discoveryDraft.aiFailureMetadata.latencyMs < 0 ||
+              !Number.isFinite(
+                discoveryDraft.aiFailureMetadata.reservedCostUsd
+              ) ||
+              discoveryDraft.aiFailureMetadata.reservedCostUsd < 0))
         ) {
           throw new Error(
             `Discovery draft provenance is invalid: ${discoveryDraft.externalId}`
           );
         }
         const rawContentHash = discoveryDraft.discoveryContentHash;
+        if (
+          await hasEquivalentRawEvidence(
+            tx,
+            source.id,
+            discoveryDraft.externalId,
+            rawContentHash
+          )
+        ) {
+          duplicates += 1;
+          continue;
+        }
         const candidateId = stableId(
           'catalog_candidate',
           source.id,
@@ -2441,6 +2606,13 @@ export class CatalogDatabaseStore {
         }
         candidateIds.push(candidateId);
         (status === 'rejected' ? rejected : quarantined).push(candidateId);
+        const aiDraftFailed = discoveryDraft.aiFailureReason !== undefined;
+        if (discoveryDraft.aiFailureReason) {
+          aiDraftFailures.push({
+            candidateId,
+            reason: discoveryDraft.aiFailureReason,
+          });
+        }
         await tx.insert(coachCatalogReviewAudit).values({
           id: `catalog_audit_${randomUUID()}`,
           candidateId,
@@ -2456,6 +2628,22 @@ export class CatalogDatabaseStore {
             generatorId: report.generatorId,
             status,
             reportHash,
+            aiDraftOutcome: discoveryDraft.aiMetadata
+              ? 'generated'
+              : aiDraftFailed
+                ? 'failed_fallback'
+                : 'not_requested',
+            ...(aiDraftFailed
+              ? {
+                  aiFailureCode: `catalog_ai_${discoveryDraft.aiFailureReason}`,
+                  aiFailureReason: discoveryDraft.aiFailureReason,
+                  ...(discoveryDraft.aiFailureMetadata
+                    ? {
+                        aiFailureMetadata: discoveryDraft.aiFailureMetadata,
+                      }
+                    : {}),
+                }
+              : {}),
           },
         });
         if (discoveryDraft.aiMetadata) {
@@ -2481,6 +2669,8 @@ export class CatalogDatabaseStore {
               reportHash,
               nonPublishable: true,
               finishReason: ai.finishReason,
+              attempts: ai.attempts ?? 1,
+              ...(ai.fallbackFrom ? { fallbackFrom: ai.fallbackFrom } : {}),
               latencyMs: ai.latencyMs,
               ...(ai.inputTokens === undefined
                 ? {}
@@ -2537,15 +2727,27 @@ export class CatalogDatabaseStore {
         })
         .where(eq(coachCatalogSource.id, source.id));
       return {
-        ingested: candidateIds.length,
-        alreadyPresent: duplicates,
-        candidateIds,
-        discovered: candidateIds.length,
-        duplicates,
-        quarantined,
-        rejected,
+        summary: {
+          ingested: candidateIds.length,
+          alreadyPresent: duplicates,
+          candidateIds,
+          discovered: candidateIds.length,
+          duplicates,
+          quarantined,
+          rejected,
+        },
+        aiDraftFailures,
       };
     });
+    for (const failure of outcome.aiDraftFailures) {
+      emitCatalogOperationalEvent('catalog_ai_draft_failed', {
+        mode: 'database',
+        outcome: 'failed',
+        candidateId: failure.candidateId,
+        errorCode: failure.reason,
+      });
+    }
+    return outcome.summary;
   }
 
   async syncExercism(
@@ -2745,6 +2947,25 @@ export class CatalogDatabaseStore {
         },
         upstream,
       };
+      const rawContentHash = calculateCatalogRawEvidenceHash({
+        externalId: upstream.externalId,
+        statementHash: upstream.statementHash,
+        statementBlobSha: upstream.statementBlobSha,
+        canonicalDataHash: upstream.canonicalDataHash,
+        canonicalBlobSha: upstream.canonicalBlobSha,
+        licenseGitBlobSha: snapshot.license.gitBlobSha,
+        licenseContentHash: snapshot.license.contentHash,
+      });
+      if (
+        await hasEquivalentRawEvidence(
+          tx,
+          sourceId,
+          upstream.externalId,
+          rawContentHash
+        )
+      ) {
+        continue;
+      }
       const [existingOrigin] = await tx
         .select({ problemId: coachProblemOrigin.problemId })
         .from(coachProblemOrigin)
@@ -2768,7 +2989,7 @@ export class CatalogDatabaseStore {
           licenseSpdx: snapshot.licenseSpdx,
           attribution: problem.origin.attribution,
           rawPayload,
-          rawContentHash: jsonHash(rawPayload),
+          rawContentHash,
           draft: versionedProblem,
           draftHash: jsonHash(versionedProblem),
           draftRevision: 1,
@@ -2814,6 +3035,33 @@ export class CatalogDatabaseStore {
       if (capability === 'reviewer') {
         await setLocalCapabilityRole(tx, REVIEWER_ROLE);
       }
+      const [latestRun] =
+        !candidateIds || candidateIds.length === 0
+          ? await tx
+              .select({ id: coachCatalogSyncRun.id })
+              .from(coachCatalogSyncRun)
+              .where(
+                inArray(coachCatalogSyncRun.status, ['succeeded', 'partial'])
+              )
+              .orderBy(
+                desc(coachCatalogSyncRun.completedAt),
+                desc(coachCatalogSyncRun.createdAt)
+              )
+              .limit(1)
+          : [];
+      if ((!candidateIds || candidateIds.length === 0) && !latestRun) {
+        return {
+          summary: {
+            checked: 0,
+            skipped: 0,
+            validated: 0,
+            quarantined: 0,
+            rejected: 0,
+            candidateIds: [],
+          },
+          rejectedCandidates: [],
+        };
+      }
       const filters = [
         inArray(coachProblemCandidate.status, [
           'discovered',
@@ -2823,6 +3071,8 @@ export class CatalogDatabaseStore {
       ];
       if (candidateIds && candidateIds.length > 0) {
         filters.push(inArray(coachProblemCandidate.id, candidateIds));
+      } else if (latestRun) {
+        filters.push(eq(coachProblemCandidate.syncRunId, latestRun.id));
       }
       const rows = await tx
         .select()
@@ -2849,12 +3099,23 @@ export class CatalogDatabaseStore {
       let validated = 0;
       let quarantined = 0;
       let rejected = 0;
+      let skipped = 0;
       const rejectedCandidates: Array<{
         candidateId: string;
         issueCodes: string[];
       }> = [];
 
       for (const { row, payload } of payloads) {
+        const fingerprint = validationFingerprint(row);
+        if (
+          capability === 'sync' &&
+          (!candidateIds || candidateIds.length === 0) &&
+          expectedDraftRevision === undefined &&
+          persistedValidationFingerprint(row.validation) === fingerprint
+        ) {
+          skipped += 1;
+          continue;
+        }
         if (!payload) {
           const validation: CatalogValidationResult = {
             valid: false,
@@ -2866,6 +3127,9 @@ export class CatalogDatabaseStore {
                 path: 'draft',
               },
             ],
+            fingerprint,
+            policyVersion: row.policyVersion,
+            runnerVersion: CATALOG_RUNNER_VALIDATION_VERSION,
           };
           quarantined += 1;
           await tx
@@ -2957,12 +3221,18 @@ export class CatalogDatabaseStore {
             issues: persistedIssues,
           }
         );
-        const validation = staticValidation.valid
+        const validationResult = staticValidation.valid
           ? mergeCatalogValidationResults(
               staticValidation,
               await validateRunnerCompatibility(payload.problem)
             )
           : staticValidation;
+        const validation: CatalogValidationResult = {
+          ...validationResult,
+          fingerprint,
+          policyVersion: row.policyVersion,
+          runnerVersion: CATALOG_RUNNER_VALIDATION_VERSION,
+        };
         const status =
           row.status === 'drafting'
             ? ('quarantined' as const)
@@ -3005,7 +3275,8 @@ export class CatalogDatabaseStore {
       }
       return {
         summary: {
-          checked: rows.length,
+          checked: rows.length - skipped,
+          skipped,
           validated,
           quarantined,
           rejected,

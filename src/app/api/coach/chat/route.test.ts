@@ -9,20 +9,32 @@ const mocks = vi.hoisted(() => {
     constructor(
       message: string,
       public readonly code: 'model_not_allowed' | 'provider_failed',
-      public readonly reason = 'unknown'
+      public readonly reason = 'unknown',
+      public readonly selectedModel?: string,
+      public readonly fallbackFrom?: string
     ) {
       super(message);
       this.name = 'CoachModelError';
     }
   }
 
+  class MockCoachChatCancelledError extends Error {
+    constructor() {
+      super('cancelled');
+      this.name = 'CoachChatCancelledError';
+    }
+  }
+
   return {
+    CoachChatCancelledError: MockCoachChatCancelledError,
     CoachModelError: MockCoachModelError,
     acquireCoachCapacity: vi.fn(),
+    commitCoachConservativeUsage: vi.fn(),
     commitCoachFailedUsage: vi.fn(),
     commitCoachUsage: vi.fn(),
     enforceCoachRateLimits: vi.fn(),
     getCoachRuntimeConfig: vi.fn(),
+    recordCoachAiRequestMetric: vi.fn(),
     recordOperationalEvent: vi.fn(),
     streamLiveCoachChat: vi.fn(),
     releaseCoachCapacity: vi.fn(),
@@ -31,15 +43,23 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@/features/algorithm-coach/rate-limit.server', () => ({
   acquireCoachCapacity: mocks.acquireCoachCapacity,
+  commitCoachConservativeUsage: mocks.commitCoachConservativeUsage,
   commitCoachFailedUsage: mocks.commitCoachFailedUsage,
   commitCoachUsage: mocks.commitCoachUsage,
   enforceCoachRateLimits: mocks.enforceCoachRateLimits,
   releaseCoachCapacity: mocks.releaseCoachCapacity,
 }));
 
+vi.mock('@/features/algorithm-coach/ai-metrics.server', () => ({
+  recordCoachAiRequestMetric: mocks.recordCoachAiRequestMetric,
+  relayOriginFromBaseUrl: (value?: string) =>
+    value ? new URL(value).origin : undefined,
+}));
+
 vi.mock('@/features/algorithm-coach/server', () => ({
   COACH_CHAT_MAX_OUTPUT_TOKENS: 500,
   COACH_PROMPT_VERSION: 'coach-test-v1',
+  CoachChatCancelledError: mocks.CoachChatCancelledError,
   CoachModelError: mocks.CoachModelError,
   getCoachRuntimeConfig: mocks.getCoachRuntimeConfig,
   streamLiveCoachChat: mocks.streamLiveCoachChat,
@@ -77,8 +97,18 @@ describe('POST /api/coach/chat provider fallback', () => {
       expiresAt: Date.now() + 1000,
       settled: false,
     });
-    mocks.commitCoachFailedUsage.mockResolvedValue(undefined);
-    mocks.commitCoachUsage.mockResolvedValue(undefined);
+    mocks.commitCoachFailedUsage.mockResolvedValue({
+      totalTokens: 1000,
+      estimatedCostUsd: 0.008,
+    });
+    mocks.commitCoachConservativeUsage.mockResolvedValue({
+      totalTokens: 1000,
+      estimatedCostUsd: 0.008,
+    });
+    mocks.commitCoachUsage.mockResolvedValue({
+      totalTokens: 15,
+      estimatedCostUsd: 0.00003,
+    });
     mocks.releaseCoachCapacity.mockResolvedValue(undefined);
     mocks.getCoachRuntimeConfig.mockResolvedValue({
       apiKey: 'configured-test-key',
@@ -89,10 +119,11 @@ describe('POST /api/coach/chat provider fallback', () => {
       new mocks.CoachModelError(
         'No available channel for the configured model',
         'provider_failed',
-        'unavailable'
+        'channel_unavailable'
       )
     );
     mocks.recordOperationalEvent.mockResolvedValue(undefined);
+    mocks.recordCoachAiRequestMetric.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -118,6 +149,14 @@ describe('POST /api/coach/chat provider fallback', () => {
       expect.anything(),
       1
     );
+    expect(mocks.recordCoachAiRequestMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        surface: 'chat',
+        status: 'failed',
+        errorCode: 'channel_unavailable',
+        estimatedCostUsd: 0.008,
+      })
+    );
   });
 
   it('returns a sanitized 502 instead of local chat in production', async () => {
@@ -133,5 +172,66 @@ describe('POST /api/coach/chat provider fallback', () => {
       message: 'The AI provider is temporarily unavailable.',
     });
     expect(JSON.stringify(body)).not.toContain('No available channel');
+  });
+
+  it('records successful stream usage after the response completes', async () => {
+    mocks.streamLiveCoachChat.mockResolvedValue({
+      stream: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('先找不变量。'));
+          controller.close();
+        },
+      }),
+      selectedModel: 'relay-primary',
+      attempts: 1,
+      completion: Promise.resolve({
+        finishReason: 'stop',
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        usageReported: true,
+        estimatedCostUsd: 0.00003,
+      }),
+    });
+
+    const response = await POST(chatRequest());
+    await expect(response.text()).resolves.toContain('不变量');
+    await vi.waitFor(() => {
+      expect(mocks.recordCoachAiRequestMetric).toHaveBeenCalledWith(
+        expect.objectContaining({
+          surface: 'chat',
+          status: 'succeeded',
+          selectedModel: 'relay-primary',
+          usageReported: true,
+        })
+      );
+    });
+  });
+
+  it('settles a cancelled stream without counting a relay failure', async () => {
+    mocks.streamLiveCoachChat.mockResolvedValue({
+      stream: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      selectedModel: 'relay-primary',
+      attempts: 1,
+      completion: Promise.reject(new mocks.CoachChatCancelledError()),
+    });
+
+    const response = await POST(chatRequest());
+    await response.text();
+    await vi.waitFor(() => {
+      expect(mocks.commitCoachConservativeUsage).toHaveBeenCalled();
+      expect(mocks.recordOperationalEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'coach_chat_cancelled' })
+      );
+    });
+    expect(mocks.recordCoachAiRequestMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        surface: 'chat',
+        status: 'cancelled',
+        estimatedCostUsd: 0.008,
+      })
+    );
   });
 });

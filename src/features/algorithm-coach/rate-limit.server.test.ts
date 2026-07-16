@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   acquireCoachCapacity,
+  commitCoachConservativeUsage,
   commitCoachFailedUsage,
   commitCoachUsage,
   releaseCoachCapacity,
@@ -117,7 +118,11 @@ describe('coach generation capacity', () => {
     const failed = expectLease(
       await acquireCoachCapacity(request(), 'artifact')
     );
-    await commitCoachFailedUsage(failed, 2);
+    const failedSettlement = await commitCoachFailedUsage(failed, 2);
+    expect(failedSettlement).toEqual({
+      totalTokens: 1600,
+      estimatedCostUsd: 0.02,
+    });
 
     const repaired = expectLease(
       await acquireCoachCapacity(request(), 'artifact')
@@ -133,6 +138,30 @@ describe('coach generation capacity', () => {
     expect(blocked).toBeInstanceOf(Response);
     expect(await (blocked as Response).json()).toMatchObject({
       error: 'coach_daily_budget_exceeded',
+    });
+  });
+
+  it('releases a reservation without cost when no relay attempt was made', async () => {
+    const lease = expectLease(
+      await acquireCoachCapacity(request(), 'artifact')
+    );
+
+    await expect(commitCoachFailedUsage(lease, 0)).resolves.toEqual({
+      totalTokens: 0,
+      estimatedCostUsd: 0,
+    });
+  });
+
+  it('keeps the full admission reservation when relay usage is unavailable', async () => {
+    vi.stubEnv('COACH_ARTIFACT_RESERVED_TOKENS', '800');
+    vi.stubEnv('COACH_ARTIFACT_RESERVED_COST_USD', '0.01');
+    const lease = expectLease(
+      await acquireCoachCapacity(request(), 'artifact')
+    );
+
+    await expect(commitCoachConservativeUsage(lease, 1)).resolves.toEqual({
+      totalTokens: 800,
+      estimatedCostUsd: 0.01,
     });
   });
 

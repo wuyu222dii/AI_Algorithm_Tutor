@@ -1819,6 +1819,60 @@ export const coachLearningArtifact = table(
   ]
 );
 
+export const coachAiRequestMetric = table(
+  'coach_ai_request_metric',
+  {
+    traceId: text('trace_id').primaryKey(),
+    surface: text('surface').notNull(),
+    action: text('action').notNull(),
+    mode: text('mode').notNull().default('live'),
+    status: text('status').notNull(),
+    relayOrigin: text('relay_origin'),
+    selectedModel: text('selected_model'),
+    fallbackFrom: text('fallback_from'),
+    attempts: smallint('attempts').notNull().default(1),
+    errorCode: text('error_code'),
+    latencyMs: integer('latency_ms').notNull(),
+    usageReported: boolean('usage_reported').notNull().default(false),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    totalTokens: integer('total_tokens'),
+    estimatedCostMicroUsd: integer('estimated_cost_micro_usd')
+      .notNull()
+      .default(0),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index('idx_coach_ai_metric_created').on(table.createdAt.desc()),
+    index('idx_coach_ai_metric_status_created').on(
+      table.status,
+      table.createdAt.desc()
+    ),
+    index('idx_coach_ai_metric_model_created').on(
+      table.selectedModel,
+      table.createdAt.desc()
+    ),
+    check(
+      'chk_coach_ai_metric_surface',
+      sql`${table.surface} in ('artifact', 'chat', 'catalog_draft', 'canary', 'eval')`
+    ),
+    check('chk_coach_ai_metric_mode', sql`${table.mode} in ('live', 'local')`),
+    check(
+      'chk_coach_ai_metric_status',
+      sql`${table.status} in ('succeeded', 'failed', 'cancelled')`
+    ),
+    check('chk_coach_ai_metric_attempts', sql`${table.attempts} >= 0`),
+    check('chk_coach_ai_metric_latency', sql`${table.latencyMs} >= 0`),
+    check(
+      'chk_coach_ai_metric_tokens',
+      sql`(${table.inputTokens} is null or ${table.inputTokens} >= 0) and (${table.outputTokens} is null or ${table.outputTokens} >= 0) and (${table.totalTokens} is null or ${table.totalTokens} >= 0)`
+    ),
+    check('chk_coach_ai_metric_cost', sql`${table.estimatedCostMicroUsd} >= 0`),
+  ]
+);
+
 export const coachAssessment = table(
   'coach_assessment',
   {

@@ -210,7 +210,8 @@ export async function getSettingGroups() {
     {
       name: 'openrouter',
       title: t('groups.openrouter'),
-      description: `Custom <a href="https://openrouter.ai" class="text-primary" target="_blank">OpenRouter</a> settings`,
+      description:
+        'Deprecated compatibility fields. Configure AI_RELAY_* as server-side deployment secrets.',
       tab: 'ai',
     },
     {
@@ -752,18 +753,18 @@ export async function getSettings() {
     },
     {
       name: 'openrouter_api_key',
-      title: 'OpenRouter API Key',
+      title: 'Legacy AI Relay API Key',
       type: 'password',
-      placeholder: 'sk-or-xxx',
+      placeholder: 'Deprecated: use AI_RELAY_API_KEY',
       group: 'openrouter',
       tab: 'ai',
     },
     {
       name: 'openrouter_base_url',
-      title: 'OpenRouter Base URL',
+      title: 'Legacy AI Relay Base URL',
       type: 'url',
-      placeholder: 'https://openrouter.ai/api/v1',
-      tip: 'Set any OpenAI compatible API URL, leave empty to use the default OpenRouter API URL',
+      placeholder: 'Deprecated: use AI_RELAY_BASE_URL',
+      tip: 'Kept for one release only. New relay secrets must be configured in the server environment.',
       group: 'openrouter',
       tab: 'ai',
     },

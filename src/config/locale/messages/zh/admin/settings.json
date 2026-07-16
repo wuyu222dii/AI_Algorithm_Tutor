@@ -10,7 +10,7 @@
     "resend": "Resend",
     "r2": "Cloudflare R2",
     "s3": "AWS S3",
-    "openrouter": "OpenRouter",
+    "openrouter": "AI 中转站（旧配置）",
     "replicate": "Replicate",
     "fal": "Fal",
     "google_analytics": "谷歌分析",

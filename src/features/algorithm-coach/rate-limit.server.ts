@@ -3,6 +3,7 @@ import 'server-only';
 import { getAuth } from '@/core/auth';
 import { md5 } from '@/shared/lib/hash';
 import { enforceDistributedWindowRateLimit } from '@/shared/lib/rate-limit';
+import { isSafeRedisRestUrl } from '@/shared/lib/redis-url';
 
 import { CoachModel, estimateCoachCostUsd } from './model';
 import type { CoachTokenUsage } from './types';
@@ -24,6 +25,11 @@ type CoachCapacityReservation = {
 export interface CoachCapacityLease {
   reservations: CoachCapacityReservation[];
   settled: boolean;
+}
+
+export interface CoachCapacitySettlement {
+  totalTokens: number;
+  estimatedCostUsd: number;
 }
 
 export interface CoachCapacityBudget {
@@ -168,8 +174,8 @@ async function redisEval(
 ): Promise<unknown> {
   const redis = redisConfiguration();
   if (!redis) throw new Error('Redis is not configured');
-  if (!/^https?:\/\//.test(redis.url)) {
-    throw new Error('REDIS_URL must be an HTTP Redis REST endpoint');
+  if (!isSafeRedisRestUrl(redis.url)) {
+    throw new Error('REDIS_URL must be a secure Redis REST endpoint');
   }
   const response = await fetch(redis.url, {
     method: 'POST',
@@ -562,35 +568,45 @@ export async function commitCoachUsage(
   usage: CoachTokenUsage,
   estimatedCostUsd: number,
   attempts = 1
-) {
+): Promise<CoachCapacitySettlement> {
   const extraAttempts = Math.max(0, Math.floor(attempts) - 1);
   const baseline = lease.reservations[0];
   const reservedAttempts = baseline?.reservedAttempts ?? 1;
-  await settleCoachCapacity(
-    lease,
+  const totalTokens =
     Math.max(0, Math.round(usage.totalTokens)) +
-      extraAttempts *
-        Math.ceil((baseline?.reservedTokens ?? 0) / reservedAttempts),
+    extraAttempts *
+      Math.ceil((baseline?.reservedTokens ?? 0) / reservedAttempts);
+  const costMicroUsd =
     Math.max(0, Math.round(estimatedCostUsd * 1_000_000)) +
-      extraAttempts *
-        Math.ceil((baseline?.reservedCostMicroUsd ?? 0) / reservedAttempts)
-  );
+    extraAttempts *
+      Math.ceil((baseline?.reservedCostMicroUsd ?? 0) / reservedAttempts);
+  await settleCoachCapacity(lease, totalTokens, costMicroUsd);
+  return { totalTokens, estimatedCostUsd: costMicroUsd / 1_000_000 };
 }
 
 export async function commitCoachFailedUsage(
   lease: CoachCapacityLease,
   attempts = 1
-) {
+): Promise<CoachCapacitySettlement> {
   const baseline = lease.reservations[0];
-  const safeAttempts = Math.max(1, Math.floor(attempts));
+  const safeAttempts = Math.max(0, Math.floor(attempts));
   const reservedAttempts = baseline?.reservedAttempts ?? 1;
-  await settleCoachCapacity(
-    lease,
+  const totalTokens =
     safeAttempts *
-      Math.ceil((baseline?.reservedTokens ?? 0) / reservedAttempts),
+    Math.ceil((baseline?.reservedTokens ?? 0) / reservedAttempts);
+  const costMicroUsd =
     safeAttempts *
-      Math.ceil((baseline?.reservedCostMicroUsd ?? 0) / reservedAttempts)
-  );
+    Math.ceil((baseline?.reservedCostMicroUsd ?? 0) / reservedAttempts);
+  await settleCoachCapacity(lease, totalTokens, costMicroUsd);
+  return { totalTokens, estimatedCostUsd: costMicroUsd / 1_000_000 };
+}
+
+/** Keep the admission reservation when a successful relay omits trustworthy usage. */
+export async function commitCoachConservativeUsage(
+  lease: CoachCapacityLease,
+  attempts = 1
+): Promise<CoachCapacitySettlement> {
+  return commitCoachFailedUsage(lease, attempts);
 }
 
 export async function releaseCoachCapacity(lease: CoachCapacityLease) {

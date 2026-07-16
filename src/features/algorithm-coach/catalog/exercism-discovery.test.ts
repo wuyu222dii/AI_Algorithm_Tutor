@@ -6,11 +6,12 @@ import {
   EXERCISM_FIXTURE_REVISION,
 } from './curated-exercism-problems';
 import {
+  calculateDiscoveryContentHash,
   DeterministicDiscoveryDraftGenerator,
   discoveryDraftGeneratorFromEnv,
   generateDiscoveryReport,
   generateDiscoveryStarterTemplates,
-  OpenRouterDiscoveryDraftGenerator,
+  RelayDiscoveryDraftGenerator,
   type ExercismDraftGenerator,
   type StructuredDraftProvider,
 } from './discovery-enrichment';
@@ -21,6 +22,7 @@ import {
   EXERCISM_MAX_LICENSE_BYTES,
   EXERCISM_MAX_STATEMENT_BYTES,
   ExercismCatalogAdapter,
+  selectExercismDiscoveryCandidates,
 } from './exercism-adapter';
 import { EXERCISM_MIT_LICENSE_TEXT } from './fixtures/exercism-license.fixture';
 import type {
@@ -109,6 +111,7 @@ function discoveryFetch(options?: {
   canonicalSize?: number;
   canonical?: string;
   truncated?: boolean;
+  revision?: string;
 }) {
   const tree = treePayload(options);
   if (options?.truncated) tree.truncated = true;
@@ -116,7 +119,7 @@ function discoveryFetch(options?: {
     const url = String(input);
     if (url.endsWith('/commits/main')) {
       return Response.json(
-        { sha: EXERCISM_FIXTURE_REVISION },
+        { sha: options?.revision ?? EXERCISM_FIXTURE_REVISION },
         { headers: { etag: '"discovery"' } }
       );
     }
@@ -139,6 +142,56 @@ function discoveryFetch(options?: {
 }
 
 describe('Exercism Git Tree discovery', () => {
+  it('prioritizes content updates and applies new-candidate backpressure', () => {
+    expect(
+      selectExercismDiscoveryCandidates(
+        ['changed-a', 'changed-b'],
+        ['new-a', 'new-b'],
+        3,
+        1
+      )
+    ).toEqual(['changed-a', 'changed-b', 'new-a']);
+    expect(
+      selectExercismDiscoveryCandidates(['changed-a'], ['new-a', 'new-b'], 3, 0)
+    ).toEqual(['changed-a']);
+  });
+
+  it('keeps raw evidence identity stable across unrelated commits', () => {
+    const evidence = {
+      externalId: 'new-exercise',
+      statementHash: sha256(STATEMENT),
+      statementBlobSha: calculateGitBlobSha(STATEMENT),
+      canonicalDataHash: sha256(CANONICAL),
+      canonicalBlobSha: calculateGitBlobSha(CANONICAL),
+      licenseGitBlobSha: calculateGitBlobSha(LICENSE),
+      licenseContentHash: sha256(LICENSE),
+    };
+
+    expect(
+      calculateDiscoveryContentHash({
+        ...evidence,
+        revision: '1'.repeat(40),
+      })
+    ).toBe(
+      calculateDiscoveryContentHash({
+        ...evidence,
+        revision: '2'.repeat(40),
+      })
+    );
+    expect(
+      calculateDiscoveryContentHash({
+        ...evidence,
+        revision: '2'.repeat(40),
+        statementHash: sha256(`${STATEMENT}\nchanged`),
+      })
+    ).not.toBe(
+      calculateDiscoveryContentHash({
+        ...evidence,
+        revision: '1'.repeat(40),
+      })
+    );
+  });
+
   it('discovers only uncurated exercises and pins every blob to one commit', async () => {
     const fetchMock = discoveryFetch();
     const adapter = new ExercismCatalogAdapter({
@@ -177,6 +230,29 @@ describe('Exercism Git Tree discovery', () => {
       rawRequests.every((url) => url.includes(EXERCISM_FIXTURE_REVISION))
     ).toBe(true);
     expect(rawRequests.some((url) => url.includes('/main/'))).toBe(false);
+  });
+
+  it('pauses ordinary new intake when the review backlog is full', async () => {
+    const fetchMock = discoveryFetch();
+    const snapshot = await new ExercismCatalogAdapter({
+      fetch: fetchMock,
+    }).discoverExercises([curatedExercismProblems[0]], {
+      maxExercises: 10,
+      maxNewExercises: 0,
+    });
+
+    expect(snapshot).toMatchObject({
+      newExerciseCount: 1,
+      changedExerciseCount: 0,
+      selectedExerciseCount: 0,
+      selectionTruncated: true,
+      exercises: [],
+    });
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).endsWith('/new-exercise/instructions.md')
+      )
+    ).toBe(false);
   });
 
   it('rejects an oversized LICENSE before downloading its blob', async () => {
@@ -305,6 +381,42 @@ describe('Exercism Git Tree discovery', () => {
       selectedExerciseCount: 0,
       exercises: [],
     });
+  });
+
+  it('treats A to B to A history as unchanged after an upstream revert', async () => {
+    const changedStatement = `${STATEMENT}\nChanged upstream revision.\n`;
+    const recordedEvidence = [
+      {
+        externalId: 'new-exercise',
+        sourceRevision: '1'.repeat(40),
+        statementBlobSha: calculateGitBlobSha(STATEMENT),
+        canonicalBlobSha: calculateGitBlobSha(CANONICAL),
+        originOnly: false,
+      },
+      {
+        externalId: 'new-exercise',
+        sourceRevision: '2'.repeat(40),
+        statementBlobSha: calculateGitBlobSha(changedStatement),
+        canonicalBlobSha: calculateGitBlobSha(CANONICAL),
+        originOnly: false,
+      },
+    ];
+
+    for (const revision of ['3'.repeat(40), '4'.repeat(40)]) {
+      const snapshot = await new ExercismCatalogAdapter({
+        fetch: discoveryFetch({ statement: STATEMENT, revision }),
+      }).discoverExercises([curatedExercismProblems[0]], {
+        recordedEvidence,
+      });
+
+      expect(snapshot).toMatchObject({
+        revision,
+        changedExerciseCount: 0,
+        unchangedExerciseCount: 1,
+        selectedExerciseCount: 0,
+        exercises: [],
+      });
+    }
   });
 
   it('rejects oversized statements before downloading the blob', async () => {
@@ -538,7 +650,7 @@ describe('non-publishable discovery enrichment', () => {
     ).rejects.toThrow(/non-publishable boundary/);
   });
 
-  it('uses an allowlisted live model only for bounded metadata fields', async () => {
+  it('uses a configured relay model only for bounded metadata fields', async () => {
     const snapshot = await new ExercismCatalogAdapter({
       fetch: discoveryFetch(),
     }).discoverExercises([curatedExercismProblems[0]]);
@@ -567,7 +679,7 @@ describe('non-publishable discovery enrichment', () => {
       })),
     };
     const times = [1_000, 1_234];
-    const generator = new OpenRouterDiscoveryDraftGenerator({
+    const generator = new RelayDiscoveryDraftGenerator({
       apiKey: 'test-key',
       model: 'google/gemini-2.5-flash',
       provider,
@@ -587,7 +699,7 @@ describe('non-publishable discovery enrichment', () => {
       status: 'needs_human_review',
       publishable: false,
       aiMetadata: {
-        provider: 'openrouter',
+        provider: 'ai-relay',
         model: 'google/gemini-2.5-flash',
         promptVersion: 'catalog-discovery-metadata-v2',
         finishReason: 'stop',
@@ -619,7 +731,7 @@ describe('non-publishable discovery enrichment', () => {
     expect(Object.values(templates).join('\n')).not.toMatch(/return\s+[^;]+/);
   });
 
-  it('does not invent token usage or cost when the provider omits it', async () => {
+  it('reserves conservative usage and cost when the provider omits it', async () => {
     const snapshot = await new ExercismCatalogAdapter({
       fetch: discoveryFetch(),
     }).discoverExercises([curatedExercismProblems[0]]);
@@ -644,46 +756,222 @@ describe('non-publishable discovery enrichment', () => {
 
     const report = await generateDiscoveryReport(
       snapshot,
-      new OpenRouterDiscoveryDraftGenerator({
+      new RelayDiscoveryDraftGenerator({
         apiKey: 'test-key',
+        model: 'relay/test-model',
         provider,
         now: () => 100,
       })
     );
 
-    expect(report.drafts[0].aiMetadata).not.toHaveProperty('inputTokens');
-    expect(report.drafts[0].aiMetadata).not.toHaveProperty('outputTokens');
-    expect(report.drafts[0].aiMetadata).not.toHaveProperty('estimatedCostUsd');
+    expect(report.drafts[0].aiMetadata).toMatchObject({
+      model: 'relay/test-model',
+      inputTokens: expect.any(Number),
+      outputTokens: 700,
+      estimatedCostUsd: expect.any(Number),
+    });
   });
 
-  it('fails closed for non-allowlisted models and missing live credentials', () => {
+  it('uses the preflighted fallback model once for a transient draft failure', async () => {
+    const snapshot = await new ExercismCatalogAdapter({
+      fetch: discoveryFetch(),
+    }).discoverExercises([curatedExercismProblems[0]]);
+    const generate = vi.fn(async ({ model }: { model: string }) => {
+      if (model === 'relay-primary') {
+        throw { statusCode: 503, message: '无可用渠道' };
+      }
+      return {
+        object: {
+          title: { zh: '新练习', en: 'New Exercise' },
+          description: { zh: '待审核。', en: 'Review required.' },
+          difficulty: 'easy' as const,
+          topics: ['array-hash' as const],
+          learningObjectives: [
+            { zh: '检查输入边界。', en: 'Check input boundaries.' },
+          ],
+          functionSignature: FUNCTION_SIGNATURE,
+          warnings: [],
+        },
+        finishReason: 'stop' as const,
+        usage: { inputTokens: 50, outputTokens: 20 },
+      };
+    });
+
+    const report = await generateDiscoveryReport(
+      snapshot,
+      new RelayDiscoveryDraftGenerator({
+        apiKey: 'test-key',
+        model: 'relay-primary',
+        fallbackModel: 'relay-fallback',
+        provider: { generate },
+        now: () => 100,
+      })
+    );
+
+    expect(generate.mock.calls.map(([input]) => input.model)).toEqual([
+      'relay-primary',
+      'relay-fallback',
+    ]);
+    expect(report.drafts[0].aiMetadata).toMatchObject({
+      model: 'relay-fallback',
+      fallbackFrom: 'relay-primary',
+      attempts: 2,
+    });
+  });
+
+  it('records conservative cost when both catalog relay models fail', async () => {
+    const snapshot = await new ExercismCatalogAdapter({
+      fetch: discoveryFetch(),
+    }).discoverExercises([curatedExercismProblems[0]]);
+    const provider: StructuredDraftProvider = {
+      async generate() {
+        throw { statusCode: 503, message: '无可用渠道' };
+      },
+    };
+
+    const report = await generateDiscoveryReport(
+      snapshot,
+      new RelayDiscoveryDraftGenerator({
+        apiKey: 'test-key',
+        model: 'relay-primary',
+        fallbackModel: 'relay-fallback',
+        provider,
+        now: () => 250,
+      })
+    );
+
+    expect(report.drafts[0].aiMetadata).toBeUndefined();
+    expect(report.drafts[0]).toMatchObject({
+      aiFailureReason: 'channel_unavailable',
+      aiFailureMetadata: {
+        attempts: 2,
+        models: ['relay-primary', 'relay-fallback'],
+        fallbackFrom: 'relay-primary',
+        latencyMs: 0,
+        reservedCostUsd: expect.any(Number),
+      },
+    });
+    expect(report.drafts[0].aiFailureMetadata?.reservedCostUsd).toBeGreaterThan(
+      0
+    );
+  });
+
+  it('reserves conservative usage when the relay reports zero token usage', async () => {
+    const snapshot = await new ExercismCatalogAdapter({
+      fetch: discoveryFetch(),
+    }).discoverExercises([curatedExercismProblems[0]]);
+    const provider: StructuredDraftProvider = {
+      async generate() {
+        return {
+          object: {
+            title: { zh: '新练习', en: 'New Exercise' },
+            description: { zh: '待审核。', en: 'Review required.' },
+            difficulty: 'easy',
+            topics: ['array-hash'],
+            learningObjectives: [
+              { zh: '检查输入边界。', en: 'Check input boundaries.' },
+            ],
+            functionSignature: FUNCTION_SIGNATURE,
+            warnings: [],
+          },
+          finishReason: 'stop',
+          usage: { inputTokens: 0, outputTokens: 0 },
+          estimatedCostUsd: 0,
+        };
+      },
+    };
+
+    const report = await generateDiscoveryReport(
+      snapshot,
+      new RelayDiscoveryDraftGenerator({
+        apiKey: 'test-key',
+        model: 'relay/test-model',
+        provider,
+        now: () => 100,
+      })
+    );
+
+    expect(report.drafts[0].aiMetadata).toMatchObject({
+      inputTokens: expect.any(Number),
+      outputTokens: 700,
+    });
+    expect(report.drafts[0].aiMetadata?.inputTokens).toBeGreaterThan(0);
+    expect(report.drafts[0].aiMetadata?.estimatedCostUsd).toBeGreaterThan(0);
+  });
+
+  it('preserves a safe relay failure reason on the deterministic fallback', async () => {
+    const snapshot = await new ExercismCatalogAdapter({
+      fetch: discoveryFetch(),
+    }).discoverExercises([curatedExercismProblems[0]]);
+    const provider: StructuredDraftProvider = {
+      async generate() {
+        throw { statusCode: 429, message: 'rate limit reached' };
+      },
+    };
+
+    const report = await generateDiscoveryReport(
+      snapshot,
+      new RelayDiscoveryDraftGenerator({
+        apiKey: 'test-key',
+        model: 'relay/test-model',
+        provider,
+      })
+    );
+
+    expect(report.drafts[0].aiMetadata).toBeUndefined();
+    expect(report.drafts[0].aiFailureReason).toBe('rate_limited');
+  });
+
+  it('does not send catalog credentials to a plaintext remote relay', async () => {
+    const snapshot = await new ExercismCatalogAdapter({
+      fetch: discoveryFetch(),
+    }).discoverExercises([curatedExercismProblems[0]]);
+
+    const report = await generateDiscoveryReport(
+      snapshot,
+      new RelayDiscoveryDraftGenerator({
+        apiKey: 'test-key',
+        baseURL: 'http://relay.example/v1',
+        model: 'relay/test-model',
+      })
+    );
+
+    expect(report.drafts[0].aiFailureReason).toBe('credential_invalid');
+  });
+
+  it('fails closed for invalid model identifiers and missing live credentials', () => {
     expect(
       () =>
-        new OpenRouterDiscoveryDraftGenerator({
+        new RelayDiscoveryDraftGenerator({
           apiKey: 'test-key',
-          model: 'untrusted/model',
+          model: 'untrusted model',
         })
-    ).toThrow(/not allowlisted/);
+    ).toThrow(/invalid/);
     expect(() =>
       discoveryDraftGeneratorFromEnv({
         NODE_ENV: 'test',
         CATALOG_AI_DRAFT_ENABLED: 'true',
       })
-    ).toThrow(/OPENROUTER_API_KEY/);
+    ).toThrow(/AI_RELAY_API_KEY/);
+    expect(() =>
+      discoveryDraftGeneratorFromEnv({
+        NODE_ENV: 'test',
+        CATALOG_AI_DRAFT_ENABLED: 'true',
+        AI_RELAY_API_KEY: 'test-key',
+      })
+    ).toThrow(/AI_RELAY_PRIMARY_MODEL/);
   });
 
   it('prefers the canonical CATALOG_AI_MODEL setting', () => {
     const generator = discoveryDraftGeneratorFromEnv({
       NODE_ENV: 'test',
       CATALOG_AI_DRAFT_ENABLED: 'true',
-      CATALOG_AI_MODEL: 'google/gemini-2.5-flash',
+      CATALOG_AI_MODEL: 'relay/catalog-v1',
       CATALOG_AI_DRAFT_MODEL: 'untrusted/legacy-model',
-      OPENROUTER_API_KEY: 'test-key',
+      AI_RELAY_API_KEY: 'test-key',
     });
 
-    expect(generator.id).toBe(
-      'openrouter-discovery-draft-v2:google/gemini-2.5-flash'
-    );
+    expect(generator.id).toBe('ai-relay-discovery-draft-v3:relay/catalog-v1');
   });
 
   it('accepts the legacy catalog model setting as a compatibility fallback', () => {
@@ -695,7 +983,7 @@ describe('non-publishable discovery enrichment', () => {
     });
 
     expect(generator.id).toBe(
-      'openrouter-discovery-draft-v2:google/gemini-2.5-flash'
+      'ai-relay-discovery-draft-v3:google/gemini-2.5-flash'
     );
   });
 
@@ -724,14 +1012,16 @@ describe('non-publishable discovery enrichment', () => {
         };
       },
     };
-    const generator = new OpenRouterDiscoveryDraftGenerator({
+    const generator = new RelayDiscoveryDraftGenerator({
       apiKey: 'test-key',
+      model: 'relay/test-model',
       provider,
     });
 
     const report = await generateDiscoveryReport(snapshot, generator);
 
     expect(report.drafts[0].proposed.difficulty).toBeNull();
+    expect(report.drafts[0].aiFailureReason).toBe('invalid_output');
     expect(report.drafts[0].warnings[0]).toContain(
       'Live AI draft generation failed'
     );

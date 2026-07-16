@@ -38,6 +38,36 @@ export function calculateCanonicalDataHash(value: CatalogJsonValue): string {
   return sha256(stableStringify(value));
 }
 
+export interface CatalogRawEvidence {
+  externalId: string;
+  statementHash: string;
+  statementBlobSha: string;
+  canonicalDataHash: string;
+  canonicalBlobSha?: string;
+  licenseGitBlobSha: string;
+  licenseContentHash: string;
+}
+
+/**
+ * Identifies immutable upstream content without tying it to a repository
+ * commit. Unrelated upstream commits must not create another candidate.
+ */
+export function calculateCatalogRawEvidenceHash(
+  evidence: CatalogRawEvidence
+): string {
+  return sha256(
+    stableStringify({
+      externalId: evidence.externalId,
+      statementHash: evidence.statementHash,
+      statementBlobSha: evidence.statementBlobSha,
+      canonicalDataHash: evidence.canonicalDataHash,
+      canonicalBlobSha: evidence.canonicalBlobSha ?? '',
+      licenseGitBlobSha: evidence.licenseGitBlobSha,
+      licenseContentHash: evidence.licenseContentHash,
+    })
+  );
+}
+
 export function calculateCandidateContentHash(
   problem: RawCatalogProblem,
   upstream: ExercismUpstreamProblem

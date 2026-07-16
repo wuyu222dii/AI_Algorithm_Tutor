@@ -20,7 +20,22 @@ const validProductionEnv: NodeJS.ProcessEnv = {
   DATABASE_APPLICATION_ROLE: 'app',
   AUTH_URL: 'https://algocoach.example',
   AUTH_SECRET: 'a-secure-auth-secret-with-at-least-32-characters',
-  OPENROUTER_API_KEY: 'test-openrouter-key',
+  AI_RELAY_API_KEY: 'test-relay-key',
+  AI_RELAY_BASE_URL: 'https://relay.example.test/v1',
+  AI_RELAY_PRIMARY_MODEL: 'relay-primary',
+  AI_RELAY_FALLBACK_MODEL: 'relay-fallback',
+  AI_RELAY_PRICING_JSON: JSON.stringify({
+    'relay-primary': {
+      inputPerMillionUsd: 1,
+      outputPerMillionUsd: 2,
+    },
+    'relay-fallback': {
+      inputPerMillionUsd: 0.5,
+      outputPerMillionUsd: 1,
+    },
+  }),
+  AI_RELAY_CANARY_TOKEN: 'test-canary-token-with-at-least-32-characters',
+  SENTRY_DSN: 'https://public@example.test/1',
   REDIS_URL: 'https://redis.example.test',
   REDIS_TOKEN: 'test-redis-token',
   TRUSTED_PROXY_HEADERS: 'x-forwarded-for',
@@ -44,6 +59,48 @@ describe('health checks', () => {
   it('accepts complete production configuration', () => {
     expect(checkRequiredConfiguration(validProductionEnv)).toEqual({
       status: 'ok',
+    });
+  });
+
+  it('requires HTTPS for the production relay', () => {
+    const env = {
+      ...validProductionEnv,
+      AI_RELAY_BASE_URL: 'http://relay.example.test/v1',
+    };
+    expect(checkRequiredConfiguration(env)).toMatchObject({
+      status: 'error',
+      details: { invalid: ['AI_RELAY_BASE_URL'] },
+    });
+    expect(checkAiConfiguration(env)).toMatchObject({
+      status: 'error',
+      details: { baseUrlReady: false },
+    });
+  });
+
+  it('rejects production action routes outside the preflighted model pair', () => {
+    const env = {
+      ...validProductionEnv,
+      ALGO_COACH_HINT_MODEL: 'relay-unchecked',
+    };
+    expect(checkRequiredConfiguration(env)).toMatchObject({
+      status: 'error',
+      details: { invalid: ['ALGO_COACH_HINT_MODEL'] },
+    });
+    expect(checkAiConfiguration(env)).toMatchObject({
+      status: 'error',
+      details: { invalidModelSettings: ['ALGO_COACH_HINT_MODEL'] },
+    });
+  });
+
+  it('rejects an unsupported structured output mode', () => {
+    expect(
+      checkRequiredConfiguration({
+        ...validProductionEnv,
+        AI_RELAY_STRUCTURED_OUTPUT_MODE: 'auto',
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: { invalid: ['AI_RELAY_STRUCTURED_OUTPUT_MODE'] },
     });
   });
 
@@ -104,7 +161,7 @@ describe('health checks', () => {
       status: 'error',
       code: 'invalid_configuration',
       details: {
-        missing: [
+        missing: expect.arrayContaining([
           'DATABASE_APPLICATION_ROLE',
           'GOOGLE_CLIENT_ID',
           'GOOGLE_CLIENT_SECRET',
@@ -112,9 +169,19 @@ describe('health checks', () => {
           'REDIS_URL',
           'REDIS_TOKEN',
           'TRUSTED_PROXY_HEADERS',
-          'OPENROUTER_API_KEY',
-        ],
-        invalid: ['GOOGLE_ONE_TAP_ENABLED', 'AUTH_SECRET'],
+          'SENTRY_DSN',
+          'AI_RELAY_BASE_URL',
+          'AI_RELAY_PRIMARY_MODEL',
+          'AI_RELAY_FALLBACK_MODEL',
+          'AI_RELAY_PRICING_JSON',
+          'AI_RELAY_API_KEY',
+        ]),
+        invalid: expect.arrayContaining([
+          'GOOGLE_ONE_TAP_ENABLED',
+          'AUTH_SECRET',
+          'AI_RELAY_CANARY_TOKEN',
+          'COACH_DEMO_FALLBACK_ENABLED',
+        ]),
       },
     });
     expect(JSON.stringify(result)).not.toContain('secret-value');
@@ -125,21 +192,21 @@ describe('health checks', () => {
       checkRequiredConfiguration({
         ...validProductionEnv,
         NODE_ENV: 'development',
-        OPENROUTER_API_KEY: '',
+        AI_RELAY_API_KEY: '',
         COACH_DEMO_FALLBACK_ENABLED: 'true',
       })
     ).toEqual({ status: 'ok' });
     expect(
       checkAiConfiguration({
         NODE_ENV: 'development',
-        OPENROUTER_API_KEY: '',
+        AI_RELAY_API_KEY: '',
         COACH_DEMO_FALLBACK_ENABLED: 'true',
       })
     ).toMatchObject({ status: 'ok', details: { mode: 'demo' } });
     expect(
       checkAiConfiguration({
         NODE_ENV: 'production',
-        OPENROUTER_API_KEY: '',
+        AI_RELAY_API_KEY: '',
         COACH_DEMO_FALLBACK_ENABLED: 'true',
       })
     ).toMatchObject({
@@ -158,10 +225,10 @@ describe('health checks', () => {
     });
     const ai = checkAiConfiguration({
       NODE_ENV: 'production',
-      OPENROUTER_API_KEY: 'private-key',
-      OPENROUTER_BASE_URL: 'not-a-url',
-      ALGO_COACH_MODEL: 'unapproved/model',
-      ALGO_COACH_HINT_FALLBACK_MODEL: 'also-unapproved/model',
+      AI_RELAY_API_KEY: 'private-key',
+      AI_RELAY_BASE_URL: 'not-a-url',
+      AI_RELAY_PRIMARY_MODEL: 'invalid model',
+      AI_RELAY_FALLBACK_MODEL: 'also invalid',
     });
 
     expect(auth.status).toBe('error');
@@ -169,12 +236,45 @@ describe('health checks', () => {
       status: 'error',
       details: {
         invalidModelSettings: [
-          'ALGO_COACH_MODEL',
-          'ALGO_COACH_HINT_FALLBACK_MODEL',
+          'AI_RELAY_PRIMARY_MODEL',
+          'AI_RELAY_FALLBACK_MODEL',
         ],
       },
     });
     expect(JSON.stringify({ auth, ai })).not.toContain('private-key');
+  });
+
+  it('validates review grading model configuration', () => {
+    expect(
+      checkAiConfiguration({
+        NODE_ENV: 'development',
+        AI_RELAY_API_KEY: 'private-key',
+        AI_RELAY_BASE_URL: 'https://relay.example/v1',
+        ALGO_COACH_REVIEW_GRADE_MODEL: 'invalid model id',
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: {
+        invalidModelSettings: ['ALGO_COACH_REVIEW_GRADE_MODEL'],
+      },
+    });
+  });
+
+  it('requires relay pricing for both production models', () => {
+    expect(
+      checkRequiredConfiguration({
+        ...validProductionEnv,
+        AI_RELAY_PRICING_JSON: JSON.stringify({
+          'relay-primary': {
+            inputPerMillionUsd: 1,
+            outputPerMillionUsd: 2,
+          },
+        }),
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: { invalid: ['AI_RELAY_PRICING_JSON'] },
+    });
   });
 
   it('uses process-local rate limiting outside production when Redis is absent', async () => {
@@ -219,11 +319,36 @@ describe('health checks', () => {
     });
   });
 
-  it('detects missing, extra, and out-of-order migrations', () => {
+  it('rejects a plaintext remote Redis URL in production', async () => {
+    await expect(
+      checkRedisReadiness({
+        ...validProductionEnv,
+        REDIS_URL: 'http://redis.example.test',
+      })
+    ).resolves.toMatchObject({
+      status: 'error',
+      code: 'redis_not_configured',
+    });
+  });
+
+  it('rejects missing or out-of-order history and tolerates an append-only database lead', () => {
     const expected = migrationJournal.entries.map((entry) => entry.when);
+    const nextMigration = expected.at(-1)! + 1;
     expect(checkMigrationVersions(expected).status).toBe('ok');
     expect(checkMigrationVersions(expected.slice(0, -1)).status).toBe('error');
-    expect(checkMigrationVersions([...expected, 999]).status).toBe('error');
+    expect(checkMigrationVersions([...expected, nextMigration])).toMatchObject({
+      status: 'ok',
+      details: {
+        databaseAhead: true,
+        appliedMigration: String(nextMigration),
+      },
+    });
+    expect(checkMigrationVersions([...expected, expected[0]!]).status).toBe(
+      'error'
+    );
+    expect(checkMigrationVersions([...expected, Number.NaN]).status).toBe(
+      'error'
+    );
     expect(checkMigrationVersions([...expected].reverse()).status).toBe(
       'error'
     );

@@ -67,6 +67,25 @@ function toPythonName(entryPoint: string): string {
     .toLowerCase();
 }
 
+function safeEntryPoint(entryPoint: string): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(entryPoint)
+    ? entryPoint
+    : 'solveProblem';
+}
+
+export function createImportedProblemSkeleton(entryPoint: string) {
+  const normalizedEntryPoint = safeEntryPoint(entryPoint);
+  const templates = createTemplates(normalizedEntryPoint);
+  return {
+    entryPoint: normalizedEntryPoint,
+    templates,
+    languageConfigs: normalizeProblemLanguageConfigs({
+      entryPoint: normalizedEntryPoint,
+      templates,
+    }),
+  };
+}
+
 function createTemplates(entryPoint: string): ProblemTemplates {
   const javascript = `function ${entryPoint}(input) {
   // TODO: implement your solution.
@@ -134,18 +153,15 @@ export function parseProblemDraft(
     );
   }
 
-  const templates = createTemplates(entryPoint);
+  const skeleton = createImportedProblemSkeleton(entryPoint);
   return {
     title,
     description: statement,
     difficulty: inferDifficulty(statement),
     constraints,
-    entryPoint,
-    templates,
-    languageConfigs: normalizeProblemLanguageConfigs({
-      entryPoint,
-      templates,
-    }),
+    entryPoint: skeleton.entryPoint,
+    templates: skeleton.templates,
+    languageConfigs: skeleton.languageConfigs,
     tests: [],
     testCoverage: 'none',
     warnings,

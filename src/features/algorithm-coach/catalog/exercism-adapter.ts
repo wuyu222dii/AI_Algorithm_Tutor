@@ -49,6 +49,8 @@ export interface ExercismAdapterOptions {
 
 export interface ExercismDiscoveryOptions {
   maxExercises?: number;
+  /** Maximum ordinary new exercises admitted while the review queue has room. */
+  maxNewExercises?: number;
   knownExternalIds?: Iterable<string>;
   recordedEvidence?: Iterable<ExercismRecordedEvidence>;
 }
@@ -272,6 +274,31 @@ function boundedMaximumExercises(value: number | undefined): number {
     throw new Error('Discovery maxExercises must be between 1 and 50.');
   }
   return value;
+}
+
+function boundedMaximumNewExercises(
+  value: number | undefined,
+  maximumExercises: number
+): number {
+  if (value === undefined) return maximumExercises;
+  if (!Number.isInteger(value) || value < 0 || value > 50) {
+    throw new Error('Discovery maxNewExercises must be between 0 and 50.');
+  }
+  return Math.min(value, maximumExercises);
+}
+
+export function selectExercismDiscoveryCandidates(
+  changedExercises: string[],
+  newExercises: string[],
+  maximumExercises: number,
+  maximumNewExercises: number
+): string[] {
+  const changed = changedExercises.slice(0, maximumExercises);
+  const remaining = maximumExercises - changed.length;
+  return [
+    ...changed,
+    ...newExercises.slice(0, Math.min(remaining, maximumNewExercises)),
+  ];
 }
 
 export class ExercismCatalogAdapter {
@@ -609,6 +636,10 @@ export class ExercismCatalogAdapter {
     options: ExercismDiscoveryFetchOptions = {}
   ): Promise<ExercismDiscoveryFetchResult> {
     const maximumExercises = boundedMaximumExercises(options.maxExercises);
+    const maximumNewExercises = boundedMaximumNewExercises(
+      options.maxNewExercises,
+      maximumExercises
+    );
     const conditionalState = options.previous?.backlogComplete
       ? options.previous
       : undefined;
@@ -649,21 +680,31 @@ export class ExercismCatalogAdapter {
       statements.set(externalId, statement);
     }
 
-    const recordedEvidence = new Map<string, ExercismRecordedEvidence>();
+    const recordedEvidence = new Map<string, ExercismRecordedEvidence[]>();
     for (const evidence of options.recordedEvidence ?? []) {
       if (
         !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(evidence.externalId) ||
         (evidence.statementBlobSha !== undefined &&
           !/^[a-f0-9]{40}$/.test(evidence.statementBlobSha)) ||
         (evidence.canonicalBlobSha !== undefined &&
-          !/^[a-f0-9]{40}$/.test(evidence.canonicalBlobSha)) ||
-        recordedEvidence.has(evidence.externalId)
+          !/^[a-f0-9]{40}$/.test(evidence.canonicalBlobSha))
       ) {
         throw new Error(
-          `Invalid or duplicate recorded Exercism evidence: ${evidence.externalId}`
+          `Invalid recorded Exercism evidence: ${evidence.externalId}`
         );
       }
-      recordedEvidence.set(evidence.externalId, evidence);
+      const entries = recordedEvidence.get(evidence.externalId) ?? [];
+      if (
+        !entries.some(
+          (entry) =>
+            entry.statementBlobSha === evidence.statementBlobSha &&
+            entry.canonicalBlobSha === evidence.canonicalBlobSha &&
+            entry.originOnly === evidence.originOnly
+        )
+      ) {
+        entries.push(evidence);
+        recordedEvidence.set(evidence.externalId, entries);
+      }
     }
     // Static fixtures can identify an existing exercise, but only persisted blob
     // evidence is strong enough to decide that its upstream content is unchanged.
@@ -688,7 +729,7 @@ export class ExercismCatalogAdapter {
     for (const externalId of allExternalIds) {
       if (legacyExcluded.has(externalId)) continue;
       const evidence = recordedEvidence.get(externalId);
-      if (!evidence) {
+      if (!evidence?.length) {
         newExercises.push(externalId);
         continue;
       }
@@ -699,17 +740,25 @@ export class ExercismCatalogAdapter {
         `exercises/${externalId}/canonical-data.json`
       );
       if (
-        !evidence.originOnly &&
-        evidence.statementBlobSha === statementEntry.sha &&
-        evidence.canonicalBlobSha === canonicalEntry?.sha
+        evidence.some(
+          (entry) =>
+            !entry.originOnly &&
+            entry.statementBlobSha === statementEntry.sha &&
+            entry.canonicalBlobSha === canonicalEntry?.sha
+        )
       ) {
         unchangedExercises.push(externalId);
       } else {
         changedExercises.push(externalId);
       }
     }
-    const candidates = [...newExercises, ...changedExercises];
-    const selected = candidates.slice(0, maximumExercises);
+    const candidates = [...changedExercises, ...newExercises];
+    const selected = selectExercismDiscoveryCandidates(
+      changedExercises,
+      newExercises,
+      maximumExercises,
+      maximumNewExercises
+    );
     const exercises: ExercismDiscoveredExercise[] = [];
 
     for (const externalId of selected) {

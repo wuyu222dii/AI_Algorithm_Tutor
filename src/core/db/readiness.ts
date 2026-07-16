@@ -1,7 +1,9 @@
-import { COACH_MODEL_WHITELIST } from '@/features/algorithm-coach/model';
+import { parseAiRelayPricingJson } from '@/features/algorithm-coach/model';
+import { resolveAiRelayEnvironment } from '@/features/algorithm-coach/relay-config';
 import postgres from 'postgres';
 
 import migrationJournal from '@/config/db/migrations/meta/_journal.json';
+import { isSafeRedisRestUrl } from '@/shared/lib/redis-url';
 import type { HealthCheckResult, HealthStatus } from '@/shared/types/health';
 
 import packageJson from '../../../package.json';
@@ -16,20 +18,24 @@ const EXPECTED_MIGRATIONS = migrationJournal.entries.map((entry) => ({
   timestamp: entry.when,
   tag: entry.tag,
 }));
+const ACTION_COACH_MODEL_ENV_NAMES = [
+  'PARSE',
+  'DIAGNOSE',
+  'HINT',
+  'COUNTEREXAMPLE',
+  'REVIEW_CARD',
+  'REVIEW_GRADE',
+  'CHAT',
+].flatMap((action) => [
+  `ALGO_COACH_${action}_MODEL`,
+  `ALGO_COACH_${action}_FALLBACK_MODEL`,
+]);
 const COACH_MODEL_ENV_NAMES = [
+  'AI_RELAY_PRIMARY_MODEL',
+  'AI_RELAY_FALLBACK_MODEL',
   'ALGO_COACH_MODEL',
   'ALGO_COACH_FALLBACK_MODEL',
-  ...[
-    'PARSE',
-    'DIAGNOSE',
-    'HINT',
-    'COUNTEREXAMPLE',
-    'REVIEW_CARD',
-    'CHAT',
-  ].flatMap((action) => [
-    `ALGO_COACH_${action}_MODEL`,
-    `ALGO_COACH_${action}_FALLBACK_MODEL`,
-  ]),
+  ...ACTION_COACH_MODEL_ENV_NAMES,
 ] as const;
 const BOOLEAN_FEATURE_FLAGS = [
   'DB_CATALOG_ENABLED',
@@ -75,16 +81,50 @@ function isHttpUrl(value: string | undefined): boolean {
   }
 }
 
+function isHttpsUrl(value: string | undefined): boolean {
+  if (!value?.trim()) return false;
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function invalidCoachModelSettings(env: NodeJS.ProcessEnv): string[] {
   return COACH_MODEL_ENV_NAMES.filter((name) => {
     const model = env[name]?.trim();
     return (
       Boolean(model) &&
-      !COACH_MODEL_WHITELIST.includes(
-        model as (typeof COACH_MODEL_WHITELIST)[number]
-      )
+      (model!.length > 160 || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model!))
     );
   });
+}
+
+function unpreflightedActionModelSettings(
+  env: NodeJS.ProcessEnv,
+  primary: string | undefined,
+  fallback: string | undefined
+): string[] {
+  if (!primary || !fallback) return [];
+  const allowed = new Set([primary, fallback]);
+  return ACTION_COACH_MODEL_ENV_NAMES.filter((name) => {
+    const model = env[name]?.trim();
+    return Boolean(model && !allowed.has(model));
+  });
+}
+
+function relayModels(env: NodeJS.ProcessEnv) {
+  const relay = resolveAiRelayEnvironment(env);
+  const usesRelayModelPair = Boolean(relay.primaryModel || relay.fallbackModel);
+  return {
+    relay,
+    primary: usesRelayModelPair
+      ? relay.primaryModel
+      : env.ALGO_COACH_MODEL?.trim(),
+    fallback: usesRelayModelPair
+      ? relay.fallbackModel
+      : env.ALGO_COACH_FALLBACK_MODEL?.trim(),
+  };
 }
 
 function ok(
@@ -117,6 +157,8 @@ export function checkRequiredConfiguration(
   const missing: string[] = [];
   const invalid: string[] = [];
   const production = env.NODE_ENV === 'production';
+  const { relay, primary, fallback } = relayModels(env);
+  const relayPricing = parseAiRelayPricingJson(env.AI_RELAY_PRICING_JSON);
 
   if (!env.DATABASE_URL?.trim()) missing.push('DATABASE_URL');
   if (production && !env.DATABASE_APPLICATION_ROLE?.trim()) {
@@ -135,6 +177,14 @@ export function checkRequiredConfiguration(
   for (const name of BOOLEAN_FEATURE_FLAGS) {
     const value = env[name]?.trim();
     if (value && value !== 'true' && value !== 'false') invalid.push(name);
+  }
+  if (
+    env.AI_RELAY_STRUCTURED_OUTPUT_MODE?.trim() &&
+    !['json', 'json-schema'].includes(
+      env.AI_RELAY_STRUCTURED_OUTPUT_MODE.trim()
+    )
+  ) {
+    invalid.push('AI_RELAY_STRUCTURED_OUTPUT_MODE');
   }
   if (
     env.CATALOG_MIN_PUBLISHED_PROBLEMS?.trim() &&
@@ -174,6 +224,33 @@ export function checkRequiredConfiguration(
       invalid.push('TRUSTED_PROXY_HEADERS');
     }
     if (env.DB_AUTO_MIGRATE === 'true') invalid.push('DB_AUTO_MIGRATE');
+    if (env.GOOGLE_AUTH_ENABLED !== 'true') invalid.push('GOOGLE_AUTH_ENABLED');
+    if (!env.SENTRY_DSN?.trim()) missing.push('SENTRY_DSN');
+    if (!relay.baseURL) missing.push('AI_RELAY_BASE_URL');
+    if (!primary) missing.push('AI_RELAY_PRIMARY_MODEL');
+    if (!fallback) missing.push('AI_RELAY_FALLBACK_MODEL');
+    if (!env.AI_RELAY_PRICING_JSON?.trim()) {
+      missing.push('AI_RELAY_PRICING_JSON');
+    }
+    if (relay.baseURL && !isHttpsUrl(relay.baseURL)) {
+      invalid.push('AI_RELAY_BASE_URL');
+    }
+    if (primary && fallback && primary === fallback) {
+      invalid.push('AI_RELAY_FALLBACK_MODEL');
+    }
+    if (
+      relayPricing &&
+      ((primary && !relayPricing[primary]) ||
+        (fallback && !relayPricing[fallback]))
+    ) {
+      invalid.push('AI_RELAY_PRICING_JSON');
+    }
+    if ((env.AI_RELAY_CANARY_TOKEN?.trim().length ?? 0) < 32) {
+      invalid.push('AI_RELAY_CANARY_TOKEN');
+    }
+    if (env.COACH_DEMO_FALLBACK_ENABLED === 'true') {
+      invalid.push('COACH_DEMO_FALLBACK_ENABLED');
+    }
   }
 
   const authRequired =
@@ -195,7 +272,7 @@ export function checkRequiredConfiguration(
   if (env.AUTH_URL?.trim() && !isHttpUrl(env.AUTH_URL)) {
     invalid.push('AUTH_URL');
   }
-  if (env.REDIS_URL?.trim() && !isHttpUrl(env.REDIS_URL)) {
+  if (env.REDIS_URL?.trim() && !isSafeRedisRestUrl(env.REDIS_URL, env)) {
     invalid.push('REDIS_URL');
   }
   if (Boolean(env.REDIS_URL?.trim()) !== Boolean(env.REDIS_TOKEN?.trim())) {
@@ -206,21 +283,32 @@ export function checkRequiredConfiguration(
       missing.push(missingRedisSetting);
     }
   }
-  if (env.OPENROUTER_BASE_URL?.trim() && !isHttpUrl(env.OPENROUTER_BASE_URL)) {
-    invalid.push('OPENROUTER_BASE_URL');
+  if (relay.baseURL && !isHttpUrl(relay.baseURL)) {
+    invalid.push('AI_RELAY_BASE_URL');
+  }
+  if (env.SENTRY_DSN?.trim() && !isHttpUrl(env.SENTRY_DSN)) {
+    invalid.push('SENTRY_DSN');
+  }
+  if (env.AI_RELAY_PRICING_JSON?.trim() && !relayPricing) {
+    invalid.push('AI_RELAY_PRICING_JSON');
   }
   invalid.push(...invalidCoachModelSettings(env));
+  if (production) {
+    invalid.push(...unpreflightedActionModelSettings(env, primary, fallback));
+  }
   if (
-    !env.OPENROUTER_API_KEY?.trim() &&
+    !relay.apiKey &&
     (production || env.COACH_DEMO_FALLBACK_ENABLED !== 'true')
   ) {
-    missing.push('OPENROUTER_API_KEY');
+    missing.push('AI_RELAY_API_KEY');
   }
 
   if (missing.length || invalid.length) {
+    const uniqueMissing = Array.from(new Set(missing));
+    const uniqueInvalid = Array.from(new Set(invalid));
     return error('invalid_configuration', undefined, {
-      ...(missing.length ? { missing } : {}),
-      ...(invalid.length ? { invalid } : {}),
+      ...(uniqueMissing.length ? { missing: uniqueMissing } : {}),
+      ...(uniqueInvalid.length ? { invalid: uniqueInvalid } : {}),
     });
   }
 
@@ -267,13 +355,24 @@ export function checkAuthenticationConfiguration(
 export function checkAiConfiguration(
   env: NodeJS.ProcessEnv = process.env
 ): HealthCheckResult {
-  const liveConfigured = Boolean(env.OPENROUTER_API_KEY?.trim());
+  const { relay, primary, fallback } = relayModels(env);
+  const liveConfigured = Boolean(relay.apiKey);
   const demoConfigured = env.COACH_DEMO_FALLBACK_ENABLED === 'true';
   const liveRequired = env.NODE_ENV === 'production';
-  const baseUrlReady =
-    !env.OPENROUTER_BASE_URL?.trim() || isHttpUrl(env.OPENROUTER_BASE_URL);
-  const invalidModelSettings = invalidCoachModelSettings(env);
-  const modelReady = invalidModelSettings.length === 0;
+  const baseUrlReady = liveRequired
+    ? isHttpsUrl(relay.baseURL)
+    : !relay.baseURL || isHttpUrl(relay.baseURL);
+  const invalidModelSettings = [
+    ...invalidCoachModelSettings(env),
+    ...(liveRequired
+      ? unpreflightedActionModelSettings(env, primary, fallback)
+      : []),
+  ];
+  const twoModelsConfigured = Boolean(
+    primary && fallback && primary !== fallback
+  );
+  const modelReady =
+    invalidModelSettings.length === 0 && (!liveRequired || twoModelsConfigured);
 
   if (
     (!liveConfigured && (liveRequired || !demoConfigured)) ||
@@ -286,12 +385,16 @@ export function checkAiConfiguration(
       liveRequired,
       baseUrlReady,
       modelReady,
+      twoModelsConfigured,
       ...(invalidModelSettings.length ? { invalidModelSettings } : {}),
     });
   }
   return ok(undefined, {
     mode: liveConfigured ? 'live' : 'demo',
+    provider: liveConfigured ? 'relay' : 'fixture',
     demoFallbackEnabled: demoConfigured,
+    twoModelsConfigured,
+    legacyConfiguration: relay.legacyVariables.length > 0,
     modelConfigured: COACH_MODEL_ENV_NAMES.some((name) =>
       Boolean(env[name]?.trim())
     ),
@@ -309,7 +412,7 @@ export async function checkRedisReadiness(
   if (!redisUrl && !redisToken && !required) {
     return ok(undefined, { mode: 'process-local', required: false });
   }
-  if (!redisUrl || !redisToken || !isHttpUrl(redisUrl)) {
+  if (!redisUrl || !redisToken || !isSafeRedisRestUrl(redisUrl, env)) {
     return error('redis_not_configured', undefined, {
       required,
       urlConfigured: Boolean(redisUrl),
@@ -350,17 +453,33 @@ export function checkMigrationVersions(
 ): HealthCheckResult {
   const applied = appliedTimestamps.map(Number);
   const expected = EXPECTED_MIGRATIONS.map((migration) => migration.timestamp);
-  const current =
-    applied.length === expected.length &&
-    applied.every((timestamp, index) => timestamp === expected[index]);
+  const strictlyIncreasing = applied.every(
+    (timestamp, index) =>
+      Number.isFinite(timestamp) &&
+      (index === 0 || timestamp > applied[index - 1]!)
+  );
+  const lastExpected = expected.at(-1) ?? Number.NEGATIVE_INFINITY;
+  const appendOnlyLead = applied
+    .slice(expected.length)
+    .every((timestamp) => timestamp > lastExpected);
+  const expectedPrefixPresent =
+    applied.length >= expected.length &&
+    expected.every((timestamp, index) => timestamp === applied[index]) &&
+    strictlyIncreasing &&
+    appendOnlyLead;
+  const databaseAhead = applied.length > expected.length;
   const expectedMigration = EXPECTED_MIGRATIONS.at(-1)?.tag ?? 'none';
   const appliedMigration =
     EXPECTED_MIGRATIONS.find(
       (migration) => migration.timestamp === applied.at(-1)
     )?.tag ?? (applied.length ? String(applied.at(-1)) : 'none');
 
-  return current
-    ? ok(undefined, { expectedMigration, appliedMigration })
+  return expectedPrefixPresent
+    ? ok(undefined, {
+        expectedMigration,
+        appliedMigration,
+        databaseAhead,
+      })
     : error('migration_version_mismatch', undefined, {
         expectedMigration,
         appliedMigration,
@@ -463,6 +582,8 @@ export async function readyHealthStatus(
               'coach_catalog_source',
               'coach_catalog_sync_run',
               'coach_problem_candidate',
+              'coach_catalog_ai_generation',
+              'coach_catalog_admin_mutation',
               'coach_problem_revision',
               'coach_problem_origin',
               'coach_catalog_review_audit',

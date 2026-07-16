@@ -1,5 +1,6 @@
 import { md5 } from '@/shared/lib/hash';
 import { recordOperationalEvent } from '@/shared/lib/observability';
+import { isSafeRedisRestUrl } from '@/shared/lib/redis-url';
 
 type MinIntervalOptions = {
   /**
@@ -237,8 +238,8 @@ async function incrementRedisWindow(
   const redisUrl = process.env.REDIS_URL?.trim().replace(/\/$/, '');
   const redisToken = process.env.REDIS_TOKEN?.trim();
   if (!redisUrl || !redisToken) return null;
-  if (!redisUrl.startsWith('https://') && !redisUrl.startsWith('http://')) {
-    throw new Error('REDIS_URL must be an HTTP Redis REST endpoint');
+  if (!isSafeRedisRestUrl(redisUrl)) {
+    throw new Error('REDIS_URL must be a secure Redis REST endpoint');
   }
 
   const response = await fetch(redisUrl, {

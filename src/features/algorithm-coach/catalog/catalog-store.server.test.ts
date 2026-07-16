@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   calculateCatalogCandidateDelta,
+  calculateCatalogValidationFingerprint,
   CatalogDatabaseStore,
   countConsecutiveDiscoveryFailures,
   isSuccessfulCatalogDiscoveryRun,
@@ -45,6 +46,28 @@ function createApprovalDatabase(status: string) {
 }
 
 describe('PostgreSQL catalog approval gate', () => {
+  it('fingerprints validation by draft, policy, and runner contract', () => {
+    const baseline = calculateCatalogValidationFingerprint({
+      draftHash: 'sha256:draft',
+      policyVersion: 'catalog-policy-v1',
+      runnerVersion: 'runner-v1',
+    });
+    expect(
+      calculateCatalogValidationFingerprint({
+        draftHash: 'sha256:draft',
+        policyVersion: 'catalog-policy-v1',
+        runnerVersion: 'runner-v1',
+      })
+    ).toBe(baseline);
+    expect(
+      calculateCatalogValidationFingerprint({
+        draftHash: 'sha256:draft',
+        policyVersion: 'catalog-policy-v1',
+        runnerVersion: 'runner-v2',
+      })
+    ).not.toBe(baseline);
+  });
+
   it('reports only unexpected candidate growth after the previous batch', () => {
     expect(calculateCatalogCandidateDelta({ candidateBacklog: 111 }, {})).toBe(
       undefined

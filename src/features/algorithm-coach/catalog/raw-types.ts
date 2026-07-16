@@ -142,8 +142,11 @@ export interface ExercismLicenseEvidence {
 export type ExercismDiscoveredExercise = ExercismUpstreamProblem;
 
 export interface ExercismDiscoveryAiMetadata {
-  provider: 'openrouter';
+  /** `openrouter` is retained only for already-persisted discovery evidence. */
+  provider: 'ai-relay' | 'openrouter';
   model: string;
+  attempts?: number;
+  fallbackFrom?: string;
   promptVersion: string;
   finishReason:
     | 'stop'
@@ -159,6 +162,22 @@ export interface ExercismDiscoveryAiMetadata {
   latencyMs: number;
   inputHash: string;
   outputHash: string;
+}
+
+export type ExercismDiscoveryAiFailureReason =
+  | 'credential_invalid'
+  | 'group_access_denied'
+  | 'rate_limited'
+  | 'channel_unavailable'
+  | 'timeout'
+  | 'invalid_output';
+
+export interface ExercismDiscoveryAiFailureMetadata {
+  attempts: number;
+  models: string[];
+  fallbackFrom?: string;
+  latencyMs: number;
+  reservedCostUsd: number;
 }
 
 export interface ExercismDiscoveryFunctionSignature
@@ -195,6 +214,10 @@ export interface ExercismDiscoveryDraft {
   upstream: ExercismDiscoveredExercise;
   /** Present only when a live provider successfully produced the proposal. */
   aiMetadata?: ExercismDiscoveryAiMetadata;
+  /** Safe failure classification when the deterministic fallback was retained. */
+  aiFailureReason?: ExercismDiscoveryAiFailureReason;
+  /** Bounded operational metadata; never contains prompts, bodies or credentials. */
+  aiFailureMetadata?: ExercismDiscoveryAiFailureMetadata;
   source: {
     provider: 'exercism';
     repository: 'exercism/problem-specifications';
@@ -322,6 +345,9 @@ export interface CatalogValidationResult {
   valid: boolean;
   issues: CatalogValidationIssue[];
   runnerCompatibility?: CatalogRunnerCompatibilityEvidence;
+  fingerprint?: string;
+  policyVersion?: string;
+  runnerVersion?: string;
 }
 
 export interface CatalogCandidate {

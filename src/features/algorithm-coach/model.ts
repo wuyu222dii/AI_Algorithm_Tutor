@@ -1,48 +1,58 @@
+import { resolveAiRelayEnvironment } from './relay-config';
 import type { CoachAction, CoachTokenUsage } from './types';
 
 export const COACH_PROMPT_VERSION = 'coach-v1.3';
-export const COACH_MODEL_WHITELIST = [
+export const COACH_MODEL_WHITELIST: readonly string[] = [
   'google/gemini-2.5-flash',
   'gpt-5.5',
   'openai/gpt-5.5',
   'anthropic/claude-4.5-sonnet',
-] as const;
+];
 export const DEFAULT_COACH_MODEL = COACH_MODEL_WHITELIST[0];
 export const DEFAULT_COACH_FALLBACK_MODEL = COACH_MODEL_WHITELIST[3];
 
-export type CoachModel = (typeof COACH_MODEL_WHITELIST)[number];
+export type CoachModel = string;
 export type CoachModelRoute = CoachAction | 'chat';
 export type CoachProviderFailureKind =
+  | 'credential_invalid'
+  | 'group_access_denied'
   | 'rate_limited'
-  | 'unavailable'
+  | 'channel_unavailable'
   | 'timeout'
-  | 'invalid_output'
-  | 'unknown';
+  | 'invalid_output';
 
 export class CoachModelError extends Error {
   constructor(
     message: string,
     public readonly code: 'model_not_allowed' | 'provider_failed',
-    public readonly reason: CoachProviderFailureKind = 'unknown',
-    public readonly attempts = 0
+    public readonly reason: CoachProviderFailureKind = 'channel_unavailable',
+    public readonly attempts = 0,
+    public readonly selectedModel?: CoachModel,
+    public readonly fallbackFrom?: CoachModel
   ) {
     super(message);
     this.name = 'CoachModelError';
   }
 }
 
+export function isValidCoachModelId(value: string): boolean {
+  return value.length <= 160 && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value);
+}
+
 export function resolveCoachModel(model?: string): CoachModel {
+  const relay = resolveAiRelayEnvironment();
   const candidate =
     model?.trim() ||
+    relay.primaryModel ||
     process.env.ALGO_COACH_MODEL?.trim() ||
     DEFAULT_COACH_MODEL;
-  if (!COACH_MODEL_WHITELIST.includes(candidate as CoachModel)) {
+  if (!isValidCoachModelId(candidate)) {
     throw new CoachModelError(
-      `Model "${candidate}" is not allowed for the coach endpoint.`,
+      `Model "${candidate}" is not a valid relay model identifier.`,
       'model_not_allowed'
     );
   }
-  return candidate as CoachModel;
+  return candidate;
 }
 
 function actionEnvironmentName(route: CoachModelRoute, fallback = false) {
@@ -54,12 +64,39 @@ export function resolveCoachModelRoute(route: CoachModelRoute): {
   primary: CoachModel;
   fallback?: CoachModel;
 } {
-  const primary = resolveCoachModel(process.env[actionEnvironmentName(route)]);
+  const relay = resolveAiRelayEnvironment();
+  const usesRelayModelPair = Boolean(relay.primaryModel || relay.fallbackModel);
+  if (usesRelayModelPair && (!relay.primaryModel || !relay.fallbackModel)) {
+    throw new CoachModelError(
+      'AI_RELAY_PRIMARY_MODEL and AI_RELAY_FALLBACK_MODEL must be configured together.',
+      'model_not_allowed'
+    );
+  }
+  const globalPrimary = resolveCoachModel(
+    usesRelayModelPair ? relay.primaryModel : process.env.ALGO_COACH_MODEL
+  );
+  const globalFallback = resolveCoachModel(
+    usesRelayModelPair
+      ? relay.fallbackModel
+      : process.env.ALGO_COACH_FALLBACK_MODEL || DEFAULT_COACH_FALLBACK_MODEL
+  );
+  const primary = resolveCoachModel(
+    process.env[actionEnvironmentName(route)]?.trim() || globalPrimary
+  );
   const configuredFallback =
-    process.env[actionEnvironmentName(route, true)]?.trim() ||
-    process.env.ALGO_COACH_FALLBACK_MODEL?.trim() ||
-    DEFAULT_COACH_FALLBACK_MODEL;
+    process.env[actionEnvironmentName(route, true)]?.trim() || globalFallback;
   const fallback = resolveCoachModel(configuredFallback);
+  if (
+    process.env.NODE_ENV === 'production' &&
+    [primary, fallback].some(
+      (model) => model !== globalPrimary && model !== globalFallback
+    )
+  ) {
+    throw new CoachModelError(
+      'Production action routes may only select preflighted relay models.',
+      'model_not_allowed'
+    );
+  }
   return fallback === primary ? { primary } : { primary, fallback };
 }
 
@@ -139,49 +176,122 @@ function statusCodeFromError(error: unknown): number | undefined {
   return undefined;
 }
 
+function providerErrorMessage(
+  error: unknown,
+  seen = new Set<object>(),
+  depth = 0
+): string {
+  if (depth > 4) return '';
+  if (typeof error === 'string') return error.slice(0, 8_000);
+  if (!error || typeof error !== 'object' || seen.has(error)) return '';
+  seen.add(error);
+  const candidate = error as {
+    name?: unknown;
+    message?: unknown;
+    cause?: unknown;
+    errors?: unknown[];
+    responseBody?: unknown;
+  };
+  const direct = [candidate.name, candidate.message]
+    .filter((value): value is string => typeof value === 'string')
+    .join(': ');
+  let responseBodyMessage = '';
+  if (typeof candidate.responseBody === 'string') {
+    try {
+      const body = JSON.parse(candidate.responseBody.slice(0, 8_000)) as {
+        error?: unknown;
+        message?: unknown;
+      };
+      const relayError =
+        body.error && typeof body.error === 'object'
+          ? (body.error as { message?: unknown; code?: unknown })
+          : undefined;
+      responseBodyMessage = [
+        relayError?.message,
+        relayError?.code,
+        body.message,
+      ]
+        .filter(
+          (value): value is string | number =>
+            typeof value === 'string' || typeof value === 'number'
+        )
+        .join(' ')
+        .slice(0, 2_000);
+    } catch {
+      responseBodyMessage = '';
+    }
+  }
+  const nested = [
+    responseBodyMessage,
+    providerErrorMessage(candidate.cause, seen, depth + 1),
+    ...(candidate.errors ?? [])
+      .slice(0, 4)
+      .map((item) => providerErrorMessage(item, seen, depth + 1)),
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return `${direct} ${nested}`.trim().slice(0, 8_000);
+}
+
 export function isCoachProviderAccessFailure(error: unknown): boolean {
-  const status = statusCodeFromError(error);
-  if (status === 401 || status === 403) return true;
-  const message =
-    error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-  return /invalid (?:api )?(?:key|token)|unauthori[sz]ed|forbidden|access denied|无权访问|权限不足|没有权限/i.test(
-    message
-  );
+  const reason = classifyCoachProviderError(error);
+  return reason === 'credential_invalid' || reason === 'group_access_denied';
 }
 
 export function classifyCoachProviderError(
   error: unknown
 ): CoachProviderFailureKind {
   const status = statusCodeFromError(error);
+  if (status === 401) return 'credential_invalid';
+  if (status === 403) return 'group_access_denied';
   if (status === 429) return 'rate_limited';
-  if (status && status >= 500) return 'unavailable';
+  if (status === 408 || status === 504) return 'timeout';
+  if (status && status >= 500) return 'channel_unavailable';
   const name = error instanceof Error ? error.name : '';
-  const message =
-    error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  const message = providerErrorMessage(error) || String(error);
+  if (
+    /credential[_ -]?invalid|invalid (?:api )?(?:key|token)|unauthori[sz]ed|authentication failed|令牌(?:无效|失效)|密钥(?:无效|错误)|未提供.*令牌/i.test(
+      message
+    )
+  ) {
+    return 'credential_invalid';
+  }
+  if (
+    /forbidden|access denied|group.*(?:access|permission)|无权访问.*(?:分组|模型)|权限不足|没有权限/i.test(
+      message
+    )
+  ) {
+    return 'group_access_denied';
+  }
+  if (/rate[ _-]?limit|too many requests|请求(?:过于)?频繁/i.test(message)) {
+    return 'rate_limited';
+  }
   if (/abort|timeout|timed out|deadline/i.test(`${name} ${message}`)) {
     return 'timeout';
   }
   if (
-    /no available channel|temporarily unavailable|service unavailable|overloaded|upstream.*(?:failed|error)/i.test(
+    /channel[_ -]?unavailable|no available channel|temporarily unavailable|service unavailable|overloaded|upstream.*(?:failed|error)|无可用(?:渠道|通道)|(?:渠道|通道)(?:不可用|异常)/i.test(
       message
     )
   ) {
-    return 'unavailable';
+    return 'channel_unavailable';
   }
   if (
     /schema|structured|parse|invalid json|no object generated/i.test(message)
   ) {
     return 'invalid_output';
   }
-  return 'unknown';
+  if (status && status >= 400 && status < 500) return 'invalid_output';
+  return 'channel_unavailable';
 }
 
 export function isCoachFailoverEligible(
   reason: CoachProviderFailureKind
 ): boolean {
   return (
+    reason === 'group_access_denied' ||
     reason === 'rate_limited' ||
-    reason === 'unavailable' ||
+    reason === 'channel_unavailable' ||
     reason === 'timeout'
   );
 }
@@ -206,46 +316,88 @@ function positiveNumber(value: string | undefined, fallback: number) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-const COACH_MODEL_PRICING: Record<
-  CoachModel,
-  { envPrefix: string; inputPerMillion: number; outputPerMillion: number }
-> = {
-  'google/gemini-2.5-flash': {
-    envPrefix: 'GEMINI_2_5_FLASH',
-    inputPerMillion: 2,
-    outputPerMillion: 10,
-  },
-  'gpt-5.5': {
-    envPrefix: 'GPT_5_5',
-    inputPerMillion: 15,
-    outputPerMillion: 75,
-  },
-  'openai/gpt-5.5': {
-    envPrefix: 'GPT_5_5',
-    inputPerMillion: 15,
-    outputPerMillion: 75,
-  },
-  'anthropic/claude-4.5-sonnet': {
-    envPrefix: 'CLAUDE_4_5_SONNET',
-    inputPerMillion: 5,
-    outputPerMillion: 25,
-  },
+const LEGACY_COACH_MODEL_PRICE_ENV: Record<string, string> = {
+  'google/gemini-2.5-flash': 'GEMINI_2_5_FLASH',
+  'gpt-5.5': 'GPT_5_5',
+  'openai/gpt-5.5': 'GPT_5_5',
+  'anthropic/claude-4.5-sonnet': 'CLAUDE_4_5_SONNET',
 };
+
+export interface AiRelayModelPricing {
+  inputPerMillionUsd: number;
+  outputPerMillionUsd: number;
+}
+
+export function parseAiRelayPricingJson(
+  raw: string | undefined
+): Record<string, AiRelayModelPricing> | undefined {
+  if (!raw?.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const pricing: Record<string, AiRelayModelPricing> = {};
+    for (const [model, value] of Object.entries(parsed)) {
+      if (
+        !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model) ||
+        !value ||
+        typeof value !== 'object' ||
+        Array.isArray(value)
+      ) {
+        return undefined;
+      }
+      const candidate = value as Record<string, unknown>;
+      if (
+        Object.keys(candidate).some(
+          (key) => key !== 'inputPerMillionUsd' && key !== 'outputPerMillionUsd'
+        ) ||
+        typeof candidate.inputPerMillionUsd !== 'number' ||
+        typeof candidate.outputPerMillionUsd !== 'number'
+      ) {
+        return undefined;
+      }
+      const inputPerMillionUsd = candidate.inputPerMillionUsd;
+      const outputPerMillionUsd = candidate.outputPerMillionUsd;
+      if (
+        !Number.isFinite(inputPerMillionUsd) ||
+        inputPerMillionUsd < 0 ||
+        !Number.isFinite(outputPerMillionUsd) ||
+        outputPerMillionUsd < 0
+      ) {
+        return undefined;
+      }
+      pricing[model] = { inputPerMillionUsd, outputPerMillionUsd };
+    }
+    return pricing;
+  } catch {
+    return undefined;
+  }
+}
 
 export function estimateCoachCostUsd(
   usage: CoachTokenUsage,
   model: CoachModel = DEFAULT_COACH_MODEL
 ): number {
-  const pricing = COACH_MODEL_PRICING[model];
+  const relayPricing = parseAiRelayPricingJson(
+    process.env.AI_RELAY_PRICING_JSON
+  )?.[model];
+  const legacyEnvPrefix = LEGACY_COACH_MODEL_PRICE_ENV[model];
   const inputPerMillion = positiveNumber(
-    process.env[`COACH_${pricing.envPrefix}_INPUT_COST_PER_MILLION_USD`] ??
+    relayPricing?.inputPerMillionUsd.toString() ??
+      (legacyEnvPrefix
+        ? process.env[`COACH_${legacyEnvPrefix}_INPUT_COST_PER_MILLION_USD`]
+        : undefined) ??
       process.env.COACH_INPUT_COST_PER_MILLION_USD,
-    pricing.inputPerMillion
+    100
   );
   const outputPerMillion = positiveNumber(
-    process.env[`COACH_${pricing.envPrefix}_OUTPUT_COST_PER_MILLION_USD`] ??
+    relayPricing?.outputPerMillionUsd.toString() ??
+      (legacyEnvPrefix
+        ? process.env[`COACH_${legacyEnvPrefix}_OUTPUT_COST_PER_MILLION_USD`]
+        : undefined) ??
       process.env.COACH_OUTPUT_COST_PER_MILLION_USD,
-    pricing.outputPerMillion
+    200
   );
   return Number(
     (

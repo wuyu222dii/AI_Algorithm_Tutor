@@ -26,6 +26,7 @@ const EXPECTED_RUNTIME_VERSIONS = {
   python: `pyodide@${PYODIDE_PACKAGE_VERSION}`,
   typescript: 'typescript@5.9.2 / quickjs-emscripten@0.32.0',
 } as const;
+export const CATALOG_RUNNER_VALIDATION_VERSION = 'catalog-runner-validation-v1';
 const QUICKJS_MEMORY_LIMIT_BYTES = 32 * 1024 * 1024;
 const RUNTIME_EXECUTION_TIMEOUT_MS = 2_800;
 const RUNTIME_STARTUP_TIMEOUT_MS = 30_000;

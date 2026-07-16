@@ -151,7 +151,8 @@ interface BootstrapCatalogStore {
 interface DiscoveryCatalogStore {
   recordedExercismEvidence(): Promise<ExercismRecordedEvidence[]>;
   discoveryState(): Promise<
-    ExercismDiscoveryPreviousState & CatalogDiscoveryMonitorState
+    ExercismDiscoveryPreviousState &
+      CatalogDiscoveryMonitorState & { pendingCandidateCount: number }
   >;
   recordDiscoveryFailure(
     actor: string,
@@ -168,6 +169,8 @@ interface DiscoveryCatalogStore {
     candidateIds: string[];
   }>;
 }
+
+const CATALOG_DISCOVERY_BACKLOG_HIGH_WATERMARK = 50;
 
 function positiveIntegerEnv(
   value: string | undefined,
@@ -315,8 +318,16 @@ async function discoverCatalog(options: CliOptions): Promise<void> {
           store.discoveryState(),
         ])
       : [[], undefined];
+    const pendingCandidateCount = previous?.pendingCandidateCount ?? 0;
+    const maximumNewExercises = store
+      ? Math.max(
+          0,
+          CATALOG_DISCOVERY_BACKLOG_HIGH_WATERMARK - pendingCandidateCount
+        )
+      : undefined;
     const fetched = await adapter.fetchDiscovery(curatedExercismProblems, {
       maxExercises: options.maxExercises,
+      maxNewExercises: maximumNewExercises,
       recordedEvidence,
       previous,
     });
@@ -367,6 +378,11 @@ async function discoverCatalog(options: CliOptions): Promise<void> {
           output: options.outputPath,
           revision: report.revision,
           counts: report.counts,
+          backpressure: {
+            highWatermark: CATALOG_DISCOVERY_BACKLOG_HIGH_WATERMARK,
+            pendingCandidateCount,
+            newCandidateCapacity: maximumNewExercises,
+          },
           reviewable: report.drafts.filter(
             (draft) => draft.status === 'needs_human_review'
           ).length,

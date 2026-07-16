@@ -29,9 +29,17 @@ jobs:
     env:
       NODE_VERSION: '22.13.0'
       PNPM_VERSION: '11.7.0'
+      AI_RELAY_API_KEY: ${{ secrets.AI_RELAY_API_KEY }}
+      AI_RELAY_BASE_URL: ${{ vars.AI_RELAY_BASE_URL }}
+      AI_RELAY_PRIMARY_MODEL: ${{ vars.AI_RELAY_PRIMARY_MODEL || vars.ALGO_COACH_MODEL }}
+      AI_RELAY_FALLBACK_MODEL: ${{ vars.AI_RELAY_FALLBACK_MODEL || vars.ALGO_COACH_FALLBACK_MODEL }}
+      AI_RELAY_STRUCTURED_OUTPUT_MODE: ${{ vars.AI_RELAY_STRUCTURED_OUTPUT_MODE || 'json' }}
+      AI_RELAY_PRICING_JSON: ${{ vars.AI_RELAY_PRICING_JSON }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
-      ALGO_COACH_MODEL: ${{ vars.ALGO_COACH_MODEL }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_PROVIDER: postgresql
+      DB_SCHEMA: algocoach
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -44,9 +52,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Require live evaluation credentials
         run: |
-          if [ -z "$OPENROUTER_API_KEY" ]; then
-            echo "OPENROUTER_API_KEY must be configured in the selected GitHub Environment."
+          if [ -z "$AI_RELAY_PRIMARY_MODEL" ] || [ -z "$AI_RELAY_FALLBACK_MODEL" ] || [ -z "$AI_RELAY_PRICING_JSON" ]; then
+            echo "Two relay models and actual pricing must be configured in the selected GitHub Environment."
             exit 1
           fi
+      - name: Verify relay protocol and both configured models
+        run: pnpm ai:preflight
+        env:
+          NODE_ENV: production
       - name: Run live evaluation quality gate
         run: pnpm eval:coach:live
+        env:
+          NODE_ENV: production

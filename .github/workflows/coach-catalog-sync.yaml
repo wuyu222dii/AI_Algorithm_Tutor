@@ -59,6 +59,7 @@ jobs:
 
   discover-review-drafts:
     needs: sync-database-candidates
+    if: github.event_name == 'schedule' || inputs.bootstrap != true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: catalog-sync-production
@@ -74,8 +75,16 @@ jobs:
       CATALOG_DISCOVERY_INGEST_ENABLED: 'true'
       CATALOG_DISCOVERY_MAX_EXERCISES: '10'
       CATALOG_AI_DRAFT_ENABLED: ${{ vars.CATALOG_AI_DRAFT_ENABLED || 'false' }}
-      CATALOG_AI_MODEL: ${{ vars.CATALOG_AI_MODEL || 'google/gemini-2.5-flash' }}
+      CATALOG_AI_MODEL: ${{ vars.CATALOG_AI_MODEL || vars.AI_RELAY_PRIMARY_MODEL || vars.ALGO_COACH_MODEL }}
+      AI_RELAY_API_KEY: ${{ secrets.AI_RELAY_API_KEY }}
+      AI_RELAY_BASE_URL: ${{ vars.AI_RELAY_BASE_URL }}
+      AI_RELAY_PRIMARY_MODEL: ${{ vars.AI_RELAY_PRIMARY_MODEL || vars.ALGO_COACH_MODEL }}
+      AI_RELAY_FALLBACK_MODEL: ${{ vars.AI_RELAY_FALLBACK_MODEL || vars.ALGO_COACH_FALLBACK_MODEL }}
+      AI_RELAY_STRUCTURED_OUTPUT_MODE: ${{ vars.AI_RELAY_STRUCTURED_OUTPUT_MODE || 'json' }}
+      AI_RELAY_PRICING_JSON: ${{ vars.AI_RELAY_PRICING_JSON }}
+      # Legacy aliases remain for one release while catalog enrichment migrates.
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
       EXERCISM_GITHUB_TOKEN: ${{ github.token }}
       DISCOVERY_REPORT: .catalog/exercism-discovery.json
     steps:
@@ -90,6 +99,18 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Validate the restricted catalog writer URL
         run: pnpm catalog:db:preflight
+      - name: Validate optional catalog AI relay configuration
+        if: env.CATALOG_AI_DRAFT_ENABLED == 'true'
+        run: |
+          if [ -z "$CATALOG_AI_MODEL" ] || [ -z "$AI_RELAY_PRICING_JSON" ]; then
+            echo "Catalog AI drafts require a preflighted model and actual pricing."
+            exit 1
+          fi
+          if [ "$CATALOG_AI_MODEL" != "$AI_RELAY_PRIMARY_MODEL" ] && [ "$CATALOG_AI_MODEL" != "$AI_RELAY_FALLBACK_MODEL" ]; then
+            echo "CATALOG_AI_MODEL must use a preflighted primary or fallback relay model."
+            exit 1
+          fi
+          pnpm ai:preflight
       - name: Discover unreviewed exercises at a fixed commit
         run: pnpm catalog:discover -- --output "$DISCOVERY_REPORT" --ingest --reviewer "github:${GITHUB_ACTOR}"
       - name: Validate ingested discovery drafts
@@ -104,7 +125,7 @@ jobs:
 
   catalog-anomaly-monitor:
     needs: [sync-database-candidates, discover-review-drafts]
-    if: always()
+    if: always() && (github.event_name == 'schedule' || inputs.bootstrap != true)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: catalog-sync-production

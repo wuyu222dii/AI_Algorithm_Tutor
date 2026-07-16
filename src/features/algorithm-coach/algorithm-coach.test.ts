@@ -11,6 +11,7 @@ import {
   estimateCoachCostUsd,
   isCoachModelCircuitOpen,
   isCoachProviderAccessFailure,
+  parseAiRelayPricingJson,
   recordCoachModelFailure,
   recordCoachModelSuccess,
   resetCoachModelCircuits,
@@ -69,12 +70,15 @@ describe('algorithm coach domain', () => {
     }
   });
 
-  it('accepts only explicit model identifiers from the coach whitelist', () => {
+  it('accepts relay model identifiers without assuming an upstream catalog', () => {
     for (const model of COACH_MODEL_WHITELIST) {
       expect(resolveCoachModel(model)).toBe(model);
     }
-    expect(() => resolveCoachModel('gpt-5.5-unavailable')).toThrow(
-      'is not allowed'
+    expect(resolveCoachModel('relay/custom-model-v2')).toBe(
+      'relay/custom-model-v2'
+    );
+    expect(() => resolveCoachModel('model with spaces')).toThrow(
+      'not a valid relay model identifier'
     );
   });
 
@@ -91,17 +95,64 @@ describe('algorithm coach domain', () => {
     }
     expect(
       classifyCoachProviderError(new Error('No available channel for model'))
-    ).toBe('unavailable');
+    ).toBe('channel_unavailable');
     expect(classifyCoachProviderError({ statusCode: 429 })).toBe(
       'rate_limited'
     );
-    expect(classifyCoachProviderError({ status: 503 })).toBe('unavailable');
+    expect(classifyCoachProviderError({ status: 503 })).toBe(
+      'channel_unavailable'
+    );
+    expect(classifyCoachProviderError({ status: 408 })).toBe('timeout');
+    expect(classifyCoachProviderError({ status: 504 })).toBe('timeout');
+    expect(classifyCoachProviderError({ status: 400 })).toBe('invalid_output');
+    expect(classifyCoachProviderError({ status: 404 })).toBe('invalid_output');
+    expect(
+      classifyCoachProviderError({ status: 400, message: '无可用渠道' })
+    ).toBe('channel_unavailable');
+    expect(
+      classifyCoachProviderError({
+        status: 400,
+        message: '无权访问 gpt-5.5 分组',
+      })
+    ).toBe('group_access_denied');
     expect(classifyCoachProviderError(new Error('request timed out'))).toBe(
       'timeout'
     );
     expect(
       classifyCoachProviderError(new Error('schema validation failed'))
     ).toBe('invalid_output');
+    expect(classifyCoachProviderError({ statusCode: 401 })).toBe(
+      'credential_invalid'
+    );
+    expect(classifyCoachProviderError(new Error('无权访问 gpt-5.5 分组'))).toBe(
+      'group_access_denied'
+    );
+    expect(classifyCoachProviderError(new Error('无可用渠道'))).toBe(
+      'channel_unavailable'
+    );
+  });
+
+  it('limits production action routes to the preflighted model pair', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('AI_RELAY_PRIMARY_MODEL', 'relay-primary');
+    vi.stubEnv('AI_RELAY_FALLBACK_MODEL', 'relay-fallback');
+    vi.stubEnv('ALGO_COACH_HINT_MODEL', 'relay-unchecked');
+
+    expect(() => resolveCoachModelRoute('hint')).toThrow(
+      'preflighted relay models'
+    );
+    vi.stubEnv('ALGO_COACH_HINT_MODEL', 'relay-fallback');
+    expect(resolveCoachModelRoute('hint').primary).toBe('relay-fallback');
+  });
+
+  it('does not mix new and legacy model pairs', () => {
+    vi.stubEnv('AI_RELAY_PRIMARY_MODEL', 'relay-primary');
+    vi.stubEnv('AI_RELAY_FALLBACK_MODEL', '');
+    vi.stubEnv('ALGO_COACH_FALLBACK_MODEL', 'legacy-fallback');
+
+    expect(() => resolveCoachModelRoute('chat')).toThrow(
+      'must be configured together'
+    );
   });
 
   it('detects terminal provider credential and model access failures', () => {
@@ -118,10 +169,10 @@ describe('algorithm coach domain', () => {
   it('opens and resets a model circuit after repeated transient failures', () => {
     resetCoachModelCircuits();
     const model = DEFAULT_COACH_MODEL;
-    recordCoachModelFailure(model, 'unavailable', 1000);
-    recordCoachModelFailure(model, 'unavailable', 1000);
+    recordCoachModelFailure(model, 'channel_unavailable', 1000);
+    recordCoachModelFailure(model, 'channel_unavailable', 1000);
     expect(isCoachModelCircuitOpen(model, 1000)).toBe(false);
-    recordCoachModelFailure(model, 'unavailable', 1000);
+    recordCoachModelFailure(model, 'channel_unavailable', 1000);
     expect(isCoachModelCircuitOpen(model, 1000)).toBe(true);
     recordCoachModelSuccess(model);
     expect(isCoachModelCircuitOpen(model, 1000)).toBe(false);
@@ -136,7 +187,7 @@ describe('algorithm coach domain', () => {
         outputTokens: 500,
         totalTokens: 1_500,
       })
-    ).toBe(0.007);
+    ).toBe(0.2);
   });
 
   it('prices primary and fallback models independently', () => {
@@ -148,13 +199,61 @@ describe('algorithm coach domain', () => {
       totalTokens: 2_000_000,
     };
 
+    vi.stubEnv(
+      'AI_RELAY_PRICING_JSON',
+      JSON.stringify({
+        'google/gemini-2.5-flash': {
+          inputPerMillionUsd: 2,
+          outputPerMillionUsd: 10,
+        },
+        'openai/gpt-5.5': {
+          inputPerMillionUsd: 15,
+          outputPerMillionUsd: 75,
+        },
+        'anthropic/claude-4.5-sonnet': {
+          inputPerMillionUsd: 5,
+          outputPerMillionUsd: 25,
+        },
+      })
+    );
+
     expect(estimateCoachCostUsd(usage, 'google/gemini-2.5-flash')).toBe(12);
     expect(estimateCoachCostUsd(usage, 'openai/gpt-5.5')).toBe(90);
     expect(estimateCoachCostUsd(usage, 'anthropic/claude-4.5-sonnet')).toBe(30);
 
+    vi.stubEnv('AI_RELAY_PRICING_JSON', '{}');
     vi.stubEnv('COACH_GPT_5_5_INPUT_COST_PER_MILLION_USD', '3');
     vi.stubEnv('COACH_GPT_5_5_OUTPUT_COST_PER_MILLION_USD', '7');
     expect(estimateCoachCostUsd(usage, 'openai/gpt-5.5')).toBe(10);
+  });
+
+  it('validates relay pricing without assuming official model prices', () => {
+    expect(
+      parseAiRelayPricingJson(
+        JSON.stringify({
+          'relay/custom': {
+            inputPerMillionUsd: 1.25,
+            outputPerMillionUsd: 4.5,
+          },
+        })
+      )
+    ).toEqual({
+      'relay/custom': {
+        inputPerMillionUsd: 1.25,
+        outputPerMillionUsd: 4.5,
+      },
+    });
+    expect(parseAiRelayPricingJson('{not-json')).toBeUndefined();
+    expect(
+      parseAiRelayPricingJson(
+        JSON.stringify({
+          'relay/custom': {
+            inputPerMillionUsd: -1,
+            outputPerMillionUsd: 4.5,
+          },
+        })
+      )
+    ).toBeUndefined();
   });
 
   it('ships thirty-eight bilingual problems with verified tests and three hint levels', () => {

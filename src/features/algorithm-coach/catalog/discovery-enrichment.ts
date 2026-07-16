@@ -1,14 +1,23 @@
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { generateObject } from 'ai';
 import { z } from 'zod';
 
 import {
-  COACH_MODEL_WHITELIST,
-  DEFAULT_COACH_MODEL,
+  classifyCoachProviderError,
+  CoachModelError,
+  estimateCoachCostUsd,
+  isCoachFailoverEligible,
+  isValidCoachModelId,
   type CoachModel,
+  type CoachProviderFailureKind,
 } from '../model';
 import {
+  resolveAiRelayEnvironment,
+  warnAiRelayLegacyConfiguration,
+} from '../relay-config';
+import {
   calculateCanonicalDataHash,
+  calculateCatalogRawEvidenceHash,
   sha256,
   stableStringify,
 } from './content-hash';
@@ -183,6 +192,7 @@ export interface StructuredDraftProvider {
     model: CoachModel;
     apiKey: string;
     baseURL?: string;
+    structuredOutputMode?: 'json' | 'json-schema';
     system: string;
     prompt: string;
   }): Promise<StructuredDraftProviderResult>;
@@ -194,14 +204,50 @@ function nonnegativeNumber(value: unknown): number | undefined {
     : undefined;
 }
 
-const openRouterDraftProvider: StructuredDraftProvider = {
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
+
+const relayDraftProvider: StructuredDraftProvider = {
   async generate(input) {
-    const openrouter = createOpenRouter({
+    if (!input.baseURL) {
+      throw new CoachModelError(
+        'AI_RELAY_BASE_URL is required for catalog AI drafts.',
+        'provider_failed',
+        'credential_invalid'
+      );
+    }
+    let relayUrl: URL;
+    try {
+      relayUrl = new URL(input.baseURL);
+    } catch {
+      throw new CoachModelError(
+        'AI_RELAY_BASE_URL is invalid for catalog AI drafts.',
+        'provider_failed',
+        'credential_invalid'
+      );
+    }
+    const localRelay = ['localhost', '127.0.0.1', '::1'].includes(
+      relayUrl.hostname
+    );
+    if (relayUrl.protocol !== 'https:' && !localRelay) {
+      throw new CoachModelError(
+        'AI_RELAY_BASE_URL must use HTTPS except for local development.',
+        'provider_failed',
+        'credential_invalid'
+      );
+    }
+    const relay = createOpenAICompatible({
+      name: 'algocoach-catalog-relay',
       apiKey: input.apiKey,
       baseURL: input.baseURL,
+      includeUsage: true,
+      supportsStructuredOutputs: input.structuredOutputMode === 'json-schema',
     });
     const result = await generateObject({
-      model: openrouter.chat(input.model, { usage: { include: true } }),
+      model: relay.chatModel(input.model),
       schema: aiDraftSchema,
       schemaName: 'exercism_discovery_review_draft',
       schemaDescription:
@@ -213,9 +259,19 @@ const openRouterDraftProvider: StructuredDraftProvider = {
       maxOutputTokens: AI_DRAFT_MAX_OUTPUT_TOKENS,
       abortSignal: AbortSignal.timeout(AI_DRAFT_TIMEOUT_MS),
     });
-    const openRouterMetadata = result.providerMetadata?.openrouter as
-      | { usage?: { cost?: unknown } }
-      | undefined;
+    const inputTokens = nonnegativeNumber(result.usage.inputTokens);
+    const outputTokens = nonnegativeNumber(result.usage.outputTokens);
+    const estimatedCostUsd =
+      inputTokens === undefined || outputTokens === undefined
+        ? undefined
+        : estimateCoachCostUsd(
+            {
+              inputTokens,
+              outputTokens,
+              totalTokens: inputTokens + outputTokens,
+            },
+            input.model
+          );
     return {
       object: result.object,
       finishReason: result.finishReason,
@@ -227,13 +283,7 @@ const openRouterDraftProvider: StructuredDraftProvider = {
           ? {}
           : { outputTokens: result.usage.outputTokens }),
       },
-      ...(nonnegativeNumber(openRouterMetadata?.usage?.cost) === undefined
-        ? {}
-        : {
-            estimatedCostUsd: nonnegativeNumber(
-              openRouterMetadata?.usage?.cost
-            )!,
-          }),
+      ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
     };
   },
 };
@@ -346,18 +396,15 @@ export interface DiscoveryContentEvidence {
 export function calculateDiscoveryContentHash(
   evidence: DiscoveryContentEvidence
 ): string {
-  return sha256(
-    stableStringify({
-      externalId: evidence.externalId,
-      revision: evidence.revision,
-      statementHash: evidence.statementHash,
-      statementBlobSha: evidence.statementBlobSha,
-      canonicalDataHash: evidence.canonicalDataHash,
-      canonicalBlobSha: evidence.canonicalBlobSha ?? '',
-      licenseGitBlobSha: evidence.licenseGitBlobSha,
-      licenseContentHash: evidence.licenseContentHash,
-    })
-  );
+  return calculateCatalogRawEvidenceHash({
+    externalId: evidence.externalId,
+    statementHash: evidence.statementHash,
+    statementBlobSha: evidence.statementBlobSha,
+    canonicalDataHash: evidence.canonicalDataHash,
+    canonicalBlobSha: evidence.canonicalBlobSha,
+    licenseGitBlobSha: evidence.licenseGitBlobSha,
+    licenseContentHash: evidence.licenseContentHash,
+  });
 }
 
 /** Deterministic fixture used until a reviewed server-side AI generator is configured. */
@@ -433,10 +480,12 @@ export class DeterministicDiscoveryDraftGenerator
   }
 }
 
-export interface OpenRouterDiscoveryDraftGeneratorOptions {
+export interface RelayDiscoveryDraftGeneratorOptions {
   apiKey: string;
   baseURL?: string;
   model?: string;
+  fallbackModel?: string;
+  structuredOutputMode?: 'json' | 'json-schema';
   provider?: StructuredDraftProvider;
   now?: () => number;
 }
@@ -625,11 +674,12 @@ function aiDraftPrompt(request: ExercismDraftGenerationRequest): string {
 
 function aiDraftInputHash(
   request: ExercismDraftGenerationRequest,
-  model: CoachModel
+  model: CoachModel,
+  provider: ExercismDiscoveryAiMetadata['provider'] = 'ai-relay'
 ): string {
   return sha256(
     stableStringify({
-      provider: 'openrouter',
+      provider,
       model,
       promptVersion: CATALOG_AI_DRAFT_PROMPT_VERSION,
       system: AI_DRAFT_SYSTEM,
@@ -671,11 +721,16 @@ function aiOutputFromDraft(
 }
 
 function allowedDraftModel(value: string | undefined): CoachModel {
-  const candidate = value?.trim() || DEFAULT_COACH_MODEL;
-  if (!COACH_MODEL_WHITELIST.includes(candidate as CoachModel)) {
-    throw new Error(`Catalog AI draft model ${candidate} is not allowlisted.`);
+  const candidate = value?.trim();
+  if (!candidate) {
+    throw new Error(
+      'CATALOG_AI_MODEL or AI_RELAY_PRIMARY_MODEL is required for catalog AI drafts.'
+    );
   }
-  return candidate as CoachModel;
+  if (!isValidCoachModelId(candidate)) {
+    throw new Error(`Catalog AI draft model ${candidate} is invalid.`);
+  }
+  return candidate;
 }
 
 function aiDraftOutputIsSafe(output: AiDraftOutput): boolean {
@@ -695,27 +750,33 @@ function aiDraftOutputIsSafe(output: AiDraftOutput): boolean {
   );
 }
 
-export class OpenRouterDiscoveryDraftGenerator
-  implements ExercismDraftGenerator
-{
+export class RelayDiscoveryDraftGenerator implements ExercismDraftGenerator {
   readonly id: string;
   private readonly apiKey: string;
   private readonly baseURL?: string;
-  private readonly model: CoachModel;
+  private readonly structuredOutputMode: 'json' | 'json-schema';
+  private readonly models: CoachModel[];
   private readonly provider: StructuredDraftProvider;
   private readonly now: () => number;
   private readonly fallback = new DeterministicDiscoveryDraftGenerator();
 
-  constructor(options: OpenRouterDiscoveryDraftGeneratorOptions) {
+  constructor(options: RelayDiscoveryDraftGeneratorOptions) {
     this.apiKey = options.apiKey.trim();
     if (!this.apiKey) {
-      throw new Error('OPENROUTER_API_KEY is required for catalog AI drafts.');
+      throw new Error('AI_RELAY_API_KEY is required for catalog AI drafts.');
     }
     this.baseURL = options.baseURL?.trim() || undefined;
-    this.model = allowedDraftModel(options.model);
-    this.provider = options.provider ?? openRouterDraftProvider;
+    const primaryModel = allowedDraftModel(options.model);
+    const fallbackModel = options.fallbackModel?.trim()
+      ? allowedDraftModel(options.fallbackModel)
+      : undefined;
+    this.models = Array.from(
+      new Set([primaryModel, fallbackModel].filter(Boolean))
+    ) as CoachModel[];
+    this.structuredOutputMode = options.structuredOutputMode ?? 'json';
+    this.provider = options.provider ?? relayDraftProvider;
     this.now = options.now ?? Date.now;
-    this.id = `openrouter-discovery-draft-v2:${this.model}`;
+    this.id = `ai-relay-discovery-draft-v3:${this.models.join(':')}`;
   }
 
   async generate(
@@ -726,73 +787,184 @@ export class OpenRouterDiscoveryDraftGenerator
 
     const prompt = aiDraftPrompt(request);
     const startedAt = this.now();
-    try {
-      const generated = await this.provider.generate({
-        model: this.model,
-        apiKey: this.apiKey,
-        baseURL: this.baseURL,
-        system: AI_DRAFT_SYSTEM,
-        prompt,
-      });
-      const parsedOutput = aiDraftSchema.safeParse(generated.object);
-      if (!parsedOutput.success || !aiDraftOutputIsSafe(parsedOutput.data)) {
-        throw new Error('Catalog AI draft failed output safety validation.');
-      }
-      const output = parsedOutput.data;
-      const starterTemplates = generateDiscoveryStarterTemplates(
-        output.functionSignature
+    const estimatedInputTokens = Math.max(
+      1,
+      Math.ceil(
+        new TextEncoder().encode(`${AI_DRAFT_SYSTEM}\n${prompt}`).byteLength / 4
+      )
+    );
+    const attemptedModels: CoachModel[] = [];
+    let attempts = 0;
+    let lastFailure: CoachProviderFailureKind = 'channel_unavailable';
+    const failedDraft = (aiFailureReason: CoachProviderFailureKind) => {
+      const reservedCostUsd = attemptedModels.reduce(
+        (total, attemptedModel) =>
+          total +
+          estimateCoachCostUsd(
+            {
+              inputTokens: estimatedInputTokens,
+              outputTokens: AI_DRAFT_MAX_OUTPUT_TOKENS,
+              totalTokens: estimatedInputTokens + AI_DRAFT_MAX_OUTPUT_TOKENS,
+            },
+            attemptedModel
+          ),
+        0
       );
-      const inputTokens = nonnegativeNumber(generated.usage?.inputTokens);
-      const outputTokens = nonnegativeNumber(generated.usage?.outputTokens);
-      const estimatedCostUsd = nonnegativeNumber(generated.estimatedCostUsd);
       return {
         ...deterministic,
-        aiMetadata: {
-          provider: 'openrouter',
-          model: this.model,
-          promptVersion: CATALOG_AI_DRAFT_PROMPT_VERSION,
-          finishReason: generated.finishReason,
-          ...(inputTokens === undefined ? {} : { inputTokens }),
-          ...(outputTokens === undefined ? {} : { outputTokens }),
-          ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
+        aiFailureReason,
+        aiFailureMetadata: {
+          attempts,
+          models: attemptedModels,
+          ...(new Set(attemptedModels).size > 1
+            ? { fallbackFrom: attemptedModels[0] }
+            : {}),
           latencyMs: Math.max(0, Math.round(this.now() - startedAt)),
-          inputHash: aiDraftInputHash(request, this.model),
-          outputHash: aiDraftOutputHash(output),
+          reservedCostUsd,
         },
-        proposed: {
-          title: output.title,
-          description: output.description,
-          difficulty: output.difficulty,
-          topics: output.topics,
-          learningObjectives: output.learningObjectives,
-          functionSignature: output.functionSignature,
-          starterTemplates,
-          tests: [],
-        },
-        warnings: [...output.warnings, ...AI_DRAFT_PERSISTED_WARNINGS],
-      };
-    } catch {
-      return {
-        ...deterministic,
         warnings: [
           'Live AI draft generation failed; the deterministic review draft was retained.',
           ...deterministic.warnings,
         ],
       };
+    };
+
+    for (const model of this.models) {
+      let repairAttempted = false;
+      while (true) {
+        attempts += 1;
+        attemptedModels.push(model);
+        try {
+          const generated = await this.provider.generate({
+            model,
+            apiKey: this.apiKey,
+            baseURL: this.baseURL,
+            structuredOutputMode: this.structuredOutputMode,
+            system: repairAttempted
+              ? `${AI_DRAFT_SYSTEM}\nThe previous response failed strict schema or safety validation. Return only a corrected object matching the requested schema.`
+              : AI_DRAFT_SYSTEM,
+            prompt,
+          });
+          const parsedOutput = aiDraftSchema.safeParse(generated.object);
+          if (
+            !parsedOutput.success ||
+            !aiDraftOutputIsSafe(parsedOutput.data)
+          ) {
+            throw new CoachModelError(
+              'Catalog AI draft failed output safety validation.',
+              'provider_failed',
+              'invalid_output'
+            );
+          }
+          const output = parsedOutput.data;
+          const starterTemplates = generateDiscoveryStarterTemplates(
+            output.functionSignature
+          );
+          const reportedInputTokens = positiveNumber(
+            generated.usage?.inputTokens
+          );
+          const reportedOutputTokens = positiveNumber(
+            generated.usage?.outputTokens
+          );
+          const usageReported = Boolean(
+            reportedInputTokens && reportedOutputTokens
+          );
+          const inputTokens = usageReported
+            ? reportedInputTokens!
+            : estimatedInputTokens;
+          const outputTokens = usageReported
+            ? reportedOutputTokens!
+            : AI_DRAFT_MAX_OUTPUT_TOKENS;
+          const failedAttemptCostUsd = attemptedModels.slice(0, -1).reduce(
+            (total, attemptedModel) =>
+              total +
+              estimateCoachCostUsd(
+                {
+                  inputTokens: estimatedInputTokens,
+                  outputTokens: AI_DRAFT_MAX_OUTPUT_TOKENS,
+                  totalTokens:
+                    estimatedInputTokens + AI_DRAFT_MAX_OUTPUT_TOKENS,
+                },
+                attemptedModel
+              ),
+            0
+          );
+          const estimatedCostUsd =
+            failedAttemptCostUsd +
+            ((usageReported
+              ? nonnegativeNumber(generated.estimatedCostUsd)
+              : undefined) ??
+              estimateCoachCostUsd(
+                {
+                  inputTokens,
+                  outputTokens,
+                  totalTokens: inputTokens + outputTokens,
+                },
+                model
+              ));
+          return {
+            ...deterministic,
+            aiMetadata: {
+              provider: 'ai-relay',
+              model,
+              promptVersion: CATALOG_AI_DRAFT_PROMPT_VERSION,
+              finishReason: generated.finishReason,
+              attempts,
+              ...(model === this.models[0]
+                ? {}
+                : { fallbackFrom: this.models[0] }),
+              inputTokens,
+              outputTokens,
+              estimatedCostUsd,
+              latencyMs: Math.max(0, Math.round(this.now() - startedAt)),
+              inputHash: aiDraftInputHash(request, model),
+              outputHash: aiDraftOutputHash(output),
+            },
+            proposed: {
+              title: output.title,
+              description: output.description,
+              difficulty: output.difficulty,
+              topics: output.topics,
+              learningObjectives: output.learningObjectives,
+              functionSignature: output.functionSignature,
+              starterTemplates,
+              tests: [],
+            },
+            warnings: [...output.warnings, ...AI_DRAFT_PERSISTED_WARNINGS],
+          };
+        } catch (error) {
+          lastFailure =
+            error instanceof CoachModelError
+              ? error.reason
+              : classifyCoachProviderError(error);
+          if (lastFailure === 'invalid_output' && !repairAttempted) {
+            repairAttempted = true;
+            continue;
+          }
+          if (isCoachFailoverEligible(lastFailure)) break;
+          return failedDraft(lastFailure);
+        }
+      }
     }
+    return failedDraft(lastFailure);
   }
 }
 
 export function discoveryDraftGeneratorFromEnv(
-  env: NodeJS.ProcessEnv = process.env
+  env: Readonly<Record<string, string | undefined>> = process.env
 ): ExercismDraftGenerator {
   if (env.CATALOG_AI_DRAFT_ENABLED !== 'true') {
     return new DeterministicDiscoveryDraftGenerator();
   }
-  return new OpenRouterDiscoveryDraftGenerator({
-    apiKey: env.OPENROUTER_API_KEY ?? '',
-    baseURL: env.OPENROUTER_BASE_URL,
-    model: env.CATALOG_AI_MODEL ?? env.CATALOG_AI_DRAFT_MODEL,
+  const relay = resolveAiRelayEnvironment(env);
+  warnAiRelayLegacyConfiguration(relay.legacyVariables);
+  return new RelayDiscoveryDraftGenerator({
+    apiKey: relay.apiKey,
+    baseURL: relay.baseURL,
+    model:
+      env.CATALOG_AI_MODEL ?? env.CATALOG_AI_DRAFT_MODEL ?? relay.primaryModel,
+    fallbackModel: relay.fallbackModel,
+    structuredOutputMode: relay.structuredOutputMode,
   });
 }
 
@@ -840,8 +1012,16 @@ export function assertDiscoveryDraftBoundary(
     ) === stableStringify(expectedTemplates as unknown as CatalogJsonValue);
   const aiMetadataValid =
     draft.aiMetadata === undefined ||
-    (draft.aiMetadata.provider === 'openrouter' &&
-      COACH_MODEL_WHITELIST.includes(draft.aiMetadata.model as CoachModel) &&
+    ((draft.aiMetadata.provider === 'ai-relay' ||
+      draft.aiMetadata.provider === 'openrouter') &&
+      isValidCoachModelId(draft.aiMetadata.model) &&
+      (draft.aiMetadata.attempts === undefined ||
+        (Number.isInteger(draft.aiMetadata.attempts) &&
+          draft.aiMetadata.attempts > 0 &&
+          draft.aiMetadata.attempts <= 4)) &&
+      (draft.aiMetadata.fallbackFrom === undefined ||
+        (isValidCoachModelId(draft.aiMetadata.fallbackFrom) &&
+          draft.aiMetadata.fallbackFrom !== draft.aiMetadata.model)) &&
       draft.aiMetadata.promptVersion === CATALOG_AI_DRAFT_PROMPT_VERSION &&
       AI_DRAFT_FINISH_REASONS.has(draft.aiMetadata.finishReason) &&
       Number.isInteger(draft.aiMetadata.latencyMs) &&
@@ -856,9 +1036,37 @@ export function assertDiscoveryDraftBoundary(
         (Number.isFinite(draft.aiMetadata.estimatedCostUsd) &&
           draft.aiMetadata.estimatedCostUsd >= 0)) &&
       draft.aiMetadata.inputHash ===
-        aiDraftInputHash(request, draft.aiMetadata.model as CoachModel) &&
+        aiDraftInputHash(
+          request,
+          draft.aiMetadata.model,
+          draft.aiMetadata.provider
+        ) &&
       aiOutput !== undefined &&
       draft.aiMetadata.outputHash === aiDraftOutputHash(aiOutput));
+  const aiFailureValid =
+    draft.aiFailureReason === undefined ||
+    (draft.aiMetadata === undefined &&
+      [
+        'credential_invalid',
+        'group_access_denied',
+        'rate_limited',
+        'channel_unavailable',
+        'timeout',
+        'invalid_output',
+      ].includes(draft.aiFailureReason) &&
+      (draft.aiFailureMetadata === undefined ||
+        (Number.isInteger(draft.aiFailureMetadata.attempts) &&
+          draft.aiFailureMetadata.attempts > 0 &&
+          draft.aiFailureMetadata.attempts <= 4 &&
+          draft.aiFailureMetadata.models.length ===
+            draft.aiFailureMetadata.attempts &&
+          draft.aiFailureMetadata.models.every(isValidCoachModelId) &&
+          (draft.aiFailureMetadata.fallbackFrom === undefined ||
+            isValidCoachModelId(draft.aiFailureMetadata.fallbackFrom)) &&
+          Number.isInteger(draft.aiFailureMetadata.latencyMs) &&
+          draft.aiFailureMetadata.latencyMs >= 0 &&
+          Number.isFinite(draft.aiFailureMetadata.reservedCostUsd) &&
+          draft.aiFailureMetadata.reservedCostUsd >= 0)));
   if (
     draft.schemaVersion !== 1 ||
     draft.discoveryContentHash !== expectedContentHash ||
@@ -867,6 +1075,9 @@ export function assertDiscoveryDraftBoundary(
     !upstreamHashesMatch ||
     !signatureAndTemplatesValid ||
     !aiMetadataValid ||
+    !aiFailureValid ||
+    (draft.aiFailureMetadata !== undefined &&
+      draft.aiFailureReason === undefined) ||
     !['needs_human_review', 'rejected'].includes(draft.status) ||
     draft.externalId !== request.exercise.externalId ||
     draft.source.provider !== 'exercism' ||

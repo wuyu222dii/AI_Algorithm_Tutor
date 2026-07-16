@@ -123,6 +123,7 @@ const copy = {
     unavailable: 'AI 服务暂时不可用，请稍后重试。',
     quotaExceeded: '今日 AI 使用额度已用完，请稍后再试。',
     requestTimeout: 'AI 响应超时，请重试。',
+    invalidRequest: 'AI 请求参数无效，请刷新页面后重试。',
     error: '代码运行失败，请检查语法或稍后重试。',
     completed: '本题已完成。',
     imported: '导入题',
@@ -198,6 +199,7 @@ const copy = {
     unavailable: 'AI is temporarily unavailable. Please try again later.',
     quotaExceeded: 'Your AI allowance is exhausted. Please try again later.',
     requestTimeout: 'The AI response timed out. Please retry.',
+    invalidRequest: 'The AI request is invalid. Refresh the page and retry.',
     error: 'Code execution failed. Check the syntax or try again.',
     completed: 'Problem completed.',
     imported: 'Imported',
@@ -254,14 +256,28 @@ type ArtifactView = {
   status?: CodeRunResult['status'];
 };
 
-class ChatRequestError extends Error {
+class CoachRequestError extends Error {
   constructor(
     public readonly status: number,
     public readonly code?: string
   ) {
-    super(code ?? `Chat request failed with ${status}`);
-    this.name = 'ChatRequestError';
+    super(code ?? `Coach request failed with ${status}`);
+    this.name = 'CoachRequestError';
   }
+}
+
+async function readCoachRequestError(response: Response) {
+  let code: string | undefined;
+  try {
+    const payload = (await response.json()) as {
+      error?: string | { code?: string };
+    };
+    code =
+      typeof payload.error === 'string' ? payload.error : payload.error?.code;
+  } catch {
+    // The status still provides a safe localized fallback.
+  }
+  return new CoachRequestError(response.status, code);
 }
 
 export function PracticeWorkspace({
@@ -633,7 +649,7 @@ export function PracticeWorkspace({
           locale,
         }),
       });
-      if (!response.ok) throw new Error('Coach request failed');
+      if (!response.ok) throw await readCoachRequestError(response);
       const payload = (await response.json()) as CoachResponse;
       const artifact = payload.artifact;
       const content = artifactText(artifact, locale);
@@ -675,8 +691,21 @@ export function PracticeWorkspace({
           },
         });
       }
-    } catch {
-      if (!silent) toast.info(t.unavailable);
+    } catch (error) {
+      if (!silent) {
+        if (error instanceof CoachRequestError && error.status === 429) {
+          toast.info(t.quotaExceeded);
+        } else if (
+          error instanceof CoachRequestError &&
+          (error.status === 504 || error.code === 'provider_timeout')
+        ) {
+          toast.info(t.requestTimeout);
+        } else if (error instanceof CoachRequestError && error.status === 400) {
+          toast.error(t.invalidRequest);
+        } else {
+          toast.info(t.unavailable);
+        }
+      }
     } finally {
       setAiLoading(null);
     }
@@ -733,16 +762,7 @@ export function PracticeWorkspace({
         signal: controller.signal,
       });
       if (!response.ok) {
-        let code: string | undefined;
-        try {
-          const payload = (await response.json()) as {
-            error?: { code?: string };
-          };
-          code = payload.error?.code;
-        } catch {
-          // Status alone is enough to present a safe, localized error.
-        }
-        throw new ChatRequestError(response.status, code);
+        throw await readCoachRequestError(response);
       }
       const contentType = response.headers.get('content-type') ?? '';
       let content = '';
@@ -818,11 +838,11 @@ export function PracticeWorkspace({
         });
         return;
       }
-      if (error instanceof ChatRequestError && error.status === 429) {
+      if (error instanceof CoachRequestError && error.status === 429) {
         setChatRetry({ prompt, reason: 'quota' });
         toast.info(t.quotaExceeded);
       } else if (
-        error instanceof ChatRequestError &&
+        error instanceof CoachRequestError &&
         (error.status === 504 || error.code === 'provider_timeout')
       ) {
         setChatRetry({ prompt, reason: 'timeout' });

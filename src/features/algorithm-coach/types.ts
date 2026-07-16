@@ -687,6 +687,7 @@ export interface CoachGenerationResult {
   fallbackFrom?: string;
   finishReason: string;
   usage: CoachTokenUsage;
+  usageReported: boolean;
   estimatedCostUsd: number;
 }
 
@@ -701,6 +702,7 @@ export interface CoachResponse {
   fallbackFrom?: string;
   finishReason?: string;
   usage?: CoachTokenUsage;
+  usageReported?: boolean;
   estimatedCostUsd?: number;
 }
 

@@ -1,12 +1,11 @@
 import 'server-only';
 
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { generateObject, streamText } from 'ai';
 import { z } from 'zod';
 
 import { getAllConfigs } from '@/shared/models/config';
 
-import { normalizeProblemLanguageConfigs } from './languages';
 import {
   classifyCoachProviderError,
   COACH_MODEL_WHITELIST,
@@ -15,14 +14,20 @@ import {
   CoachModelError,
   estimateCoachCostUsd,
   isCoachFailoverEligible,
-  isCoachModelCircuitOpen,
   normalizeCoachUsage,
-  recordCoachModelFailure,
-  recordCoachModelSuccess,
   resolveCoachModel,
   resolveCoachModelRoute,
 } from './model';
-import { parseProblemDraft } from './parser';
+import {
+  isDistributedCoachCircuitOpen,
+  recordDistributedCoachModelFailure,
+  recordDistributedCoachModelSuccess,
+} from './model-circuit.server';
+import { createImportedProblemSkeleton, parseProblemDraft } from './parser';
+import {
+  resolveAiRelayEnvironment,
+  warnAiRelayLegacyConfiguration,
+} from './relay-config';
 import {
   isReviewGradeOutputSafe,
   normalizeReviewGrade,
@@ -153,6 +158,7 @@ export interface CoachRuntimeConfig {
   model: CoachModel;
   fallbackModel?: CoachModel;
   timeoutMs?: number;
+  structuredOutputMode?: 'json' | 'json-schema';
 }
 
 export const COACH_ARTIFACT_MAX_OUTPUT_TOKENS = 500;
@@ -174,17 +180,18 @@ export async function getCoachRuntimeConfig(
   route: CoachAction | 'chat' = 'hint'
 ): Promise<CoachRuntimeConfig> {
   const configs = await getAllConfigs();
-  const apiKey =
-    configs.openrouter_api_key ?? process.env.OPENROUTER_API_KEY ?? '';
+  const relay = resolveAiRelayEnvironment(process.env, {
+    openrouter_api_key: configs.openrouter_api_key,
+    openrouter_base_url: configs.openrouter_base_url,
+  });
+  warnAiRelayLegacyConfiguration(relay.legacyVariables);
   const models = resolveCoachModelRoute(route);
   return {
-    apiKey: apiKey.trim(),
-    baseURL:
-      configs.openrouter_base_url ||
-      process.env.OPENROUTER_BASE_URL ||
-      undefined,
+    apiKey: relay.apiKey,
+    baseURL: relay.baseURL,
     model: models.primary,
     fallbackModel: models.fallback,
+    structuredOutputMode: relay.structuredOutputMode,
     timeoutMs: boundedInteger(
       process.env.COACH_PROVIDER_TIMEOUT_MS,
       10_000,
@@ -288,9 +295,29 @@ function containsSolutionShapedCode(value: unknown): boolean {
     /\b(?:export\s+default\s+)?(?:async\s+)?function\s+[A-Za-z_$][\w$]*\s*\(/i,
     /\bdef\s+[A-Za-z_]\w*\s*\(/i,
     /\b(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/i,
+    /\bexport\s+default\s+(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/i,
+    /\b[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/,
+    /\blambda\b[^:\n]{0,200}:/i,
     /\bclass\s+Solution\b/i,
     /\b(?:for|while)\s*\([^)]*\)\s*\{[\s\S]{0,1600}\breturn\b/i,
     /\bfor\s+\w+\s+in\s+[^\n]+:\s*\n[\s\S]{0,1200}\breturn\b/i,
+  ].some((pattern) => pattern.test(text));
+}
+
+function containsChatCodeStart(value: unknown): boolean {
+  const text = JSON.stringify(value);
+  return [
+    /```/,
+    /\b(?:export\s+default\s+)?(?:async\s+)?function\s+[A-Za-z_$][\w$]*\s*\(/i,
+    /\bdef\s+[A-Za-z_]\w*\s*\(/i,
+    /\b(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/i,
+    /\bexport\s+default\s+(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/i,
+    /\b[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/,
+    /\blambda\b[^:\n]{0,200}:/i,
+    /\bclass\s+Solution\b/i,
+    /\b(?:for|while)\s*\([^)]*\)\s*\{/i,
+    /\bfor\s+\w+\s+in\s+[^\n]+:/i,
+    /\breturn\s+[^;\n]{1,400}[;}]/i,
   ].some((pattern) => pattern.test(text));
 }
 
@@ -414,12 +441,12 @@ function normalizeLiveArtifact(
     artifact.diagnosisCategory = diagnosisCategory(request);
   } else if (request.action === 'parse' && 'draft' in output) {
     const fallbackDraft = parseProblemDraft(request.statement ?? '', locale);
+    const skeleton = createImportedProblemSkeleton(output.draft.entryPoint);
     artifact.draft = {
       ...output.draft,
-      languageConfigs: normalizeProblemLanguageConfigs({
-        entryPoint: output.draft.entryPoint,
-        templates: output.draft.templates,
-      }),
+      entryPoint: skeleton.entryPoint,
+      templates: skeleton.templates,
+      languageConfigs: skeleton.languageConfigs,
       tests: [],
       testCoverage: 'none',
       source: 'imported',
@@ -474,7 +501,14 @@ function normalizeLiveArtifact(
     );
   }
 
-  if (request.action !== 'parse' && containsSolutionShapedCode(output)) {
+  const solutionLeakTarget =
+    request.action === 'parse' && 'draft' in output
+      ? {
+          ...output,
+          draft: { ...output.draft, templates: undefined },
+        }
+      : output;
+  if (containsSolutionShapedCode(solutionLeakTarget)) {
     throw new CoachModelError(
       'The provider response contained a complete solution.',
       'provider_failed',
@@ -490,44 +524,156 @@ function configuredModels(config: CoachRuntimeConfig): CoachModel[] {
   ) as CoachModel[];
 }
 
-function providerFailure(error: unknown, attempts: number): CoachModelError {
+function createRelayProvider(config: CoachRuntimeConfig) {
+  if (!config.baseURL) {
+    throw new CoachModelError(
+      'AI_RELAY_BASE_URL is required for the AI relay.',
+      'model_not_allowed'
+    );
+  }
+  let relayURL: URL;
+  try {
+    relayURL = new URL(config.baseURL);
+  } catch {
+    throw new CoachModelError(
+      'AI_RELAY_BASE_URL must be a valid HTTP(S) URL.',
+      'model_not_allowed'
+    );
+  }
+  if (relayURL.protocol !== 'https:' && relayURL.protocol !== 'http:') {
+    throw new CoachModelError(
+      'AI_RELAY_BASE_URL must use HTTP(S).',
+      'model_not_allowed'
+    );
+  }
+  const localRelay = ['localhost', '127.0.0.1', '::1'].includes(
+    relayURL.hostname
+  );
+  if (
+    relayURL.protocol !== 'https:' &&
+    (!localRelay || process.env.NODE_ENV === 'production')
+  ) {
+    throw new CoachModelError(
+      'AI_RELAY_BASE_URL must use HTTPS except for local development.',
+      'model_not_allowed'
+    );
+  }
+  return createOpenAICompatible({
+    name: 'algocoach-relay',
+    apiKey: config.apiKey,
+    baseURL: config.baseURL.replace(/\/+$/, ''),
+    includeUsage: true,
+    supportsStructuredOutputs: config.structuredOutputMode === 'json-schema',
+  });
+}
+
+function relayCircuitKey(config: CoachRuntimeConfig, model: CoachModel) {
+  try {
+    return `${new URL(config.baseURL ?? '').origin}:${model}`;
+  } catch {
+    return `unconfigured:${model}`;
+  }
+}
+
+function providerFailure(
+  error: unknown,
+  attempts: number,
+  model: CoachModel,
+  primaryModel: CoachModel
+): CoachModelError {
+  const fallbackFrom = model === primaryModel ? undefined : primaryModel;
   if (error instanceof CoachModelError) {
     return new CoachModelError(
       error.message,
       error.code,
       error.reason,
-      attempts
+      attempts,
+      error.selectedModel ?? model,
+      error.fallbackFrom ?? fallbackFrom
     );
   }
-  const message =
-    error instanceof Error ? error.message : 'Unknown provider error';
+  const reason = classifyCoachProviderError(error);
+  const message = {
+    credential_invalid: 'The AI relay rejected its configured credentials.',
+    group_access_denied:
+      'The AI relay denied access to the configured model group.',
+    rate_limited: 'The AI relay rate limit was reached.',
+    channel_unavailable: 'The AI relay channel is unavailable.',
+    timeout: 'The AI relay request timed out.',
+    invalid_output: 'The AI relay returned an invalid structured response.',
+  }[reason];
   return new CoachModelError(
     message,
     'provider_failed',
-    classifyCoachProviderError(error),
-    attempts
+    reason,
+    attempts,
+    model,
+    fallbackFrom
   );
+}
+
+function usageWithConservativeFallback(
+  rawUsage:
+    | {
+        inputTokens?: number;
+        outputTokens?: number;
+        totalTokens?: number;
+      }
+    | undefined,
+  input: string,
+  maxOutputTokens: number
+) {
+  const inputTokens = rawUsage?.inputTokens;
+  const outputTokens = rawUsage?.outputTokens;
+  const totalTokens = rawUsage?.totalTokens;
+  const usageReported = Boolean(
+    Number.isInteger(inputTokens) &&
+      inputTokens! > 0 &&
+      Number.isInteger(outputTokens) &&
+      outputTokens! > 0 &&
+      (totalTokens === undefined ||
+        (Number.isInteger(totalTokens) &&
+          totalTokens >= inputTokens! + outputTokens!))
+  );
+  if (usageReported) {
+    return {
+      usage: normalizeCoachUsage(rawUsage ?? {}),
+      usageReported,
+    };
+  }
+  const estimatedInputTokens = Math.max(
+    1,
+    Math.ceil(new TextEncoder().encode(input).byteLength / 3)
+  );
+  return {
+    usage: {
+      inputTokens: estimatedInputTokens,
+      outputTokens: maxOutputTokens,
+      totalTokens: estimatedInputTokens + maxOutputTokens,
+    },
+    usageReported,
+  };
 }
 
 export async function generateLiveArtifact(
   request: CoachRequest,
   config: CoachRuntimeConfig
 ): Promise<CoachGenerationResult> {
-  const openrouter = createOpenRouter({
-    apiKey: config.apiKey,
-    baseURL: config.baseURL,
-  });
+  const relay = createRelayProvider(config);
   const models = configuredModels(config);
   let attempts = 0;
   let lastError: CoachModelError | undefined;
 
   for (const model of models) {
-    if (isCoachModelCircuitOpen(model)) {
+    const circuitKey = relayCircuitKey(config, model);
+    if (await isDistributedCoachCircuitOpen(circuitKey)) {
       lastError = new CoachModelError(
         `The circuit for model ${model} is open.`,
         'provider_failed',
-        'unavailable',
-        attempts
+        'channel_unavailable',
+        attempts,
+        model,
+        model === config.model ? undefined : config.model
       );
       continue;
     }
@@ -538,14 +684,16 @@ export async function generateLiveArtifact(
         const repairInstruction = repairAttempted
           ? '\nA previous response failed schema or safety validation. Repair it by returning exactly the requested structure with no extra fields or executable solution.'
           : '';
+        const system = `${systemPrompt(request.action, request.locale ?? 'zh')}${repairInstruction}`;
+        const prompt = userPrompt(request);
         const result = await generateObject({
-          model: openrouter.chat(model),
+          model: relay.chatModel(model),
           schema: outputSchemaForAction(request.action),
           schemaName: `${request.action}_learning_artifact`,
           schemaDescription:
             'A grounded learning artifact for an algorithm learner.',
-          system: `${systemPrompt(request.action, request.locale ?? 'zh')}${repairInstruction}`,
-          prompt: userPrompt(request),
+          system,
+          prompt,
           maxOutputTokens: COACH_ARTIFACT_MAX_OUTPUT_TOKENS,
           temperature: 0.2,
           maxRetries: 0,
@@ -559,8 +707,12 @@ export async function generateLiveArtifact(
           request.action === 'diagnose' && 'diagnosisCategory' in result.object
             ? result.object.diagnosisCategory
             : undefined;
-        const usage = normalizeCoachUsage(result.usage);
-        recordCoachModelSuccess(model);
+        const { usage, usageReported } = usageWithConservativeFallback(
+          result.usage,
+          `${system}\n${prompt}`,
+          COACH_ARTIFACT_MAX_OUTPUT_TOKENS
+        );
+        await recordDistributedCoachModelSuccess(circuitKey);
         return {
           artifact,
           providerDiagnosisCategory,
@@ -569,16 +721,17 @@ export async function generateLiveArtifact(
           fallbackFrom: model === config.model ? undefined : config.model,
           finishReason: result.finishReason,
           usage,
+          usageReported,
           estimatedCostUsd: estimateCoachCostUsd(usage, model),
         };
       } catch (error) {
-        const failure = providerFailure(error, attempts);
+        const failure = providerFailure(error, attempts, model, config.model);
         lastError = failure;
         if (failure.reason === 'invalid_output' && !repairAttempted) {
           repairAttempted = true;
           continue;
         }
-        recordCoachModelFailure(model, failure.reason);
+        await recordDistributedCoachModelFailure(circuitKey, failure.reason);
         if (!isCoachFailoverEligible(failure.reason)) throw failure;
         break;
       }
@@ -590,7 +743,7 @@ export async function generateLiveArtifact(
     new CoachModelError(
       'No configured coach model is available.',
       'provider_failed',
-      'unavailable',
+      'channel_unavailable',
       attempts
     )
   );
@@ -599,7 +752,19 @@ export async function generateLiveArtifact(
 export interface CoachChatCompletion {
   finishReason: string;
   usage: CoachTokenUsage;
+  usageReported: boolean;
   estimatedCostUsd: number;
+}
+
+export class CoachChatCancelledError extends Error {
+  constructor(
+    public readonly attempts: number,
+    public readonly selectedModel: CoachModel,
+    public readonly fallbackFrom?: CoachModel
+  ) {
+    super('The learner cancelled the AI relay stream.');
+    this.name = 'CoachChatCancelledError';
+  }
 }
 
 export interface CoachChatGenerationResult {
@@ -614,10 +779,7 @@ export async function streamLiveCoachChat(
   request: CoachChatRequest,
   config: CoachRuntimeConfig
 ): Promise<CoachChatGenerationResult> {
-  const openrouter = createOpenRouter({
-    apiKey: config.apiKey,
-    baseURL: config.baseURL,
-  });
+  const relay = createRelayProvider(config);
   const context = buildProblemContext(request);
   const system = [
     'You are AlgoCoach, a concise Socratic tutor for algorithm practice.',
@@ -632,19 +794,22 @@ export async function streamLiveCoachChat(
   let lastError: CoachModelError | undefined;
 
   for (const model of configuredModels(config)) {
-    if (isCoachModelCircuitOpen(model)) {
+    const circuitKey = relayCircuitKey(config, model);
+    if (await isDistributedCoachCircuitOpen(circuitKey)) {
       lastError = new CoachModelError(
         `The circuit for model ${model} is open.`,
         'provider_failed',
-        'unavailable',
-        attempts
+        'channel_unavailable',
+        attempts,
+        model,
+        model === config.model ? undefined : config.model
       );
       continue;
     }
     attempts += 1;
     try {
       const result = streamText({
-        model: openrouter.chat(model),
+        model: relay.chatModel(model),
         system,
         messages: request.messages.map((message) => ({
           role: message.role,
@@ -656,20 +821,22 @@ export async function streamLiveCoachChat(
         abortSignal: AbortSignal.timeout(config.timeoutMs ?? 10_000),
       });
       const reader = result.textStream.getReader();
-      let first = await reader.read();
-      while (!first.done && !first.value) first = await reader.read();
-      if (first.done)
-        throw new Error('The provider returned an empty response.');
-
-      let resolveCompletion!: (value: CoachChatCompletion) => void;
-      let rejectCompletion!: (reason: unknown) => void;
-      const completion = new Promise<CoachChatCompletion>((resolve, reject) => {
-        resolveCompletion = resolve;
-        rejectCompletion = reject;
-      });
-      const encoder = new TextEncoder();
-      let accumulated = first.value;
-      if (containsSolutionShapedCode(accumulated)) {
+      let prefetched = '';
+      while (!prefetched.trim()) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        prefetched += chunk.value ?? '';
+        if (prefetched.length > 8_192) break;
+      }
+      if (!prefetched.trim()) {
+        throw new CoachModelError(
+          'The provider returned an empty response.',
+          'provider_failed',
+          'invalid_output',
+          attempts
+        );
+      }
+      if (containsChatCodeStart(prefetched)) {
         await reader.cancel('solution leakage blocked');
         throw new CoachModelError(
           'The provider response contained a complete solution.',
@@ -679,9 +846,35 @@ export async function streamLiveCoachChat(
         );
       }
 
+      let resolveCompletion!: (value: CoachChatCompletion) => void;
+      let rejectCompletion!: (reason: unknown) => void;
+      const completion = new Promise<CoachChatCompletion>((resolve, reject) => {
+        resolveCompletion = resolve;
+        rejectCompletion = reject;
+      });
+      const encoder = new TextEncoder();
+      let accumulated = prefetched;
+      let pending = prefetched;
+      let terminal = false;
+      const safetyTail = 160;
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
-          controller.enqueue(encoder.encode(first.value));
+          const flushSafeText = (force = false) => {
+            let releaseLength = force ? pending.length : 0;
+            if (!force) {
+              for (const match of pending.matchAll(/[。！？.!?\n]/g)) {
+                releaseLength = (match.index ?? -1) + match[0].length;
+              }
+              if (!releaseLength && pending.length > safetyTail) {
+                releaseLength = pending.length - safetyTail;
+              }
+            }
+            if (releaseLength <= 0) return;
+            const safeText = pending.slice(0, releaseLength);
+            pending = pending.slice(releaseLength);
+            controller.enqueue(encoder.encode(safeText));
+          };
+          flushSafeText();
           void (async () => {
             try {
               while (true) {
@@ -689,7 +882,8 @@ export async function streamLiveCoachChat(
                 if (chunk.done) break;
                 if (!chunk.value) continue;
                 accumulated += chunk.value;
-                if (containsSolutionShapedCode(accumulated)) {
+                pending += chunk.value;
+                if (containsChatCodeStart(accumulated)) {
                   await reader.cancel('solution leakage blocked');
                   throw new CoachModelError(
                     'The provider response contained a complete solution.',
@@ -698,29 +892,77 @@ export async function streamLiveCoachChat(
                     attempts
                   );
                 }
-                controller.enqueue(encoder.encode(chunk.value));
+                flushSafeText();
+              }
+              if (!accumulated.trim()) {
+                throw new CoachModelError(
+                  'The provider returned an empty response.',
+                  'provider_failed',
+                  'invalid_output',
+                  attempts
+                );
               }
               const [finishReason, rawUsage] = await Promise.all([
                 result.finishReason,
                 result.usage,
               ]);
-              const usage = normalizeCoachUsage(rawUsage);
-              recordCoachModelSuccess(model);
+              if (
+                !['stop', 'length', 'content-filter'].includes(finishReason)
+              ) {
+                throw new CoachModelError(
+                  'The provider stream ended without a valid finish reason.',
+                  'provider_failed',
+                  'invalid_output',
+                  attempts
+                );
+              }
+              const { usage, usageReported } = usageWithConservativeFallback(
+                rawUsage,
+                `${system}\n${request.messages
+                  .map((message) => `${message.role}:${message.content}`)
+                  .join('\n')}`,
+                COACH_CHAT_MAX_OUTPUT_TOKENS
+              );
+              if (terminal) return;
+              terminal = true;
+              await recordDistributedCoachModelSuccess(circuitKey);
               resolveCompletion({
                 finishReason,
                 usage,
+                usageReported,
                 estimatedCostUsd: estimateCoachCostUsd(usage, model),
               });
+              flushSafeText(true);
               controller.close();
             } catch (error) {
-              const failure = providerFailure(error, attempts);
-              recordCoachModelFailure(model, failure.reason);
+              if (terminal) return;
+              terminal = true;
+              const failure = providerFailure(
+                error,
+                attempts,
+                model,
+                config.model
+              );
+              await recordDistributedCoachModelFailure(
+                circuitKey,
+                failure.reason
+              );
               rejectCompletion(failure);
               controller.error(failure);
             }
           })();
         },
         cancel(reason) {
+          if (!terminal) {
+            terminal = true;
+            rejectCompletion(
+              new CoachChatCancelledError(
+                attempts,
+                model,
+                model === config.model ? undefined : config.model
+              )
+            );
+          }
           return reader.cancel(reason);
         },
       });
@@ -733,9 +975,9 @@ export async function streamLiveCoachChat(
         completion,
       };
     } catch (error) {
-      const failure = providerFailure(error, attempts);
+      const failure = providerFailure(error, attempts, model, config.model);
       lastError = failure;
-      recordCoachModelFailure(model, failure.reason);
+      await recordDistributedCoachModelFailure(circuitKey, failure.reason);
       if (!isCoachFailoverEligible(failure.reason)) throw failure;
     }
   }
@@ -745,7 +987,7 @@ export async function streamLiveCoachChat(
     new CoachModelError(
       'No configured coach model is available.',
       'provider_failed',
-      'unavailable',
+      'channel_unavailable',
       attempts
     )
   );
