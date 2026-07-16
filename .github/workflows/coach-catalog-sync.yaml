@@ -78,13 +78,15 @@ jobs:
       CATALOG_AI_MODEL: ${{ vars.CATALOG_AI_MODEL || vars.AI_RELAY_PRIMARY_MODEL || vars.ALGO_COACH_MODEL }}
       AI_RELAY_API_KEY: ${{ secrets.AI_RELAY_API_KEY }}
       AI_RELAY_BASE_URL: ${{ vars.AI_RELAY_BASE_URL }}
-      AI_RELAY_PRIMARY_MODEL: ${{ vars.AI_RELAY_PRIMARY_MODEL || vars.ALGO_COACH_MODEL }}
-      AI_RELAY_FALLBACK_MODEL: ${{ vars.AI_RELAY_FALLBACK_MODEL || vars.ALGO_COACH_FALLBACK_MODEL }}
+      AI_RELAY_PRIMARY_MODEL: ${{ vars.AI_RELAY_PRIMARY_MODEL }}
+      AI_RELAY_FALLBACK_MODEL: ${{ vars.AI_RELAY_FALLBACK_MODEL }}
       AI_RELAY_STRUCTURED_OUTPUT_MODE: ${{ vars.AI_RELAY_STRUCTURED_OUTPUT_MODE || 'json' }}
       AI_RELAY_PRICING_JSON: ${{ vars.AI_RELAY_PRICING_JSON }}
       # Legacy aliases remain for one release while catalog enrichment migrates.
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
+      ALGO_COACH_MODEL: ${{ vars.ALGO_COACH_MODEL }}
+      ALGO_COACH_FALLBACK_MODEL: ${{ vars.ALGO_COACH_FALLBACK_MODEL }}
       EXERCISM_GITHUB_TOKEN: ${{ github.token }}
       DISCOVERY_REPORT: .catalog/exercism-discovery.json
     steps:
@@ -101,15 +103,47 @@ jobs:
         run: pnpm catalog:db:preflight
       - name: Validate optional catalog AI relay configuration
         if: env.CATALOG_AI_DRAFT_ENABLED == 'true'
+        shell: bash
         run: |
-          if [ -z "$CATALOG_AI_MODEL" ] || [ -z "$AI_RELAY_PRICING_JSON" ]; then
-            echo "Catalog AI drafts require a preflighted model and actual pricing."
+          missing=()
+
+          if [[ -n "$AI_RELAY_API_KEY" || -n "$AI_RELAY_BASE_URL" ]]; then
+            [[ -n "$AI_RELAY_API_KEY" ]] || missing+=("AI_RELAY_API_KEY")
+            [[ -n "$AI_RELAY_BASE_URL" ]] || missing+=("AI_RELAY_BASE_URL")
+          elif [[ -z "$OPENROUTER_API_KEY" || -z "$OPENROUTER_BASE_URL" ]]; then
+            missing+=("AI_RELAY_API_KEY/AI_RELAY_BASE_URL (or the complete legacy OPENROUTER pair)")
+          fi
+
+          if [[ -n "$AI_RELAY_PRIMARY_MODEL" || -n "$AI_RELAY_FALLBACK_MODEL" ]]; then
+            [[ -n "$AI_RELAY_PRIMARY_MODEL" ]] || missing+=("AI_RELAY_PRIMARY_MODEL")
+            [[ -n "$AI_RELAY_FALLBACK_MODEL" ]] || missing+=("AI_RELAY_FALLBACK_MODEL")
+            primary_model="$AI_RELAY_PRIMARY_MODEL"
+            fallback_model="$AI_RELAY_FALLBACK_MODEL"
+          else
+            [[ -n "$ALGO_COACH_MODEL" ]] || missing+=("AI_RELAY_PRIMARY_MODEL (or legacy ALGO_COACH_MODEL)")
+            [[ -n "$ALGO_COACH_FALLBACK_MODEL" ]] || missing+=("AI_RELAY_FALLBACK_MODEL (or legacy ALGO_COACH_FALLBACK_MODEL)")
+            primary_model="$ALGO_COACH_MODEL"
+            fallback_model="$ALGO_COACH_FALLBACK_MODEL"
+          fi
+
+          [[ -n "$CATALOG_AI_MODEL" ]] || missing+=("CATALOG_AI_MODEL")
+          [[ -n "$AI_RELAY_PRICING_JSON" ]] || missing+=("AI_RELAY_PRICING_JSON")
+
+          if (( ${#missing[@]} )); then
+            printf '::error title=Incomplete catalog AI relay configuration::Missing GitHub Environment values: %s\n' "$(IFS=', '; echo "${missing[*]}")"
             exit 1
           fi
-          if [ "$CATALOG_AI_MODEL" != "$AI_RELAY_PRIMARY_MODEL" ] && [ "$CATALOG_AI_MODEL" != "$AI_RELAY_FALLBACK_MODEL" ]; then
-            echo "CATALOG_AI_MODEL must use a preflighted primary or fallback relay model."
+
+          if [[ "$primary_model" == "$fallback_model" ]]; then
+            echo "::error title=Invalid catalog AI relay configuration::Primary and fallback models must be different."
             exit 1
           fi
+
+          if [[ "$CATALOG_AI_MODEL" != "$primary_model" && "$CATALOG_AI_MODEL" != "$fallback_model" ]]; then
+            echo "::error title=Invalid catalog AI relay configuration::CATALOG_AI_MODEL must use the configured primary or fallback relay model."
+            exit 1
+          fi
+
           pnpm ai:preflight
       - name: Discover unreviewed exercises at a fixed commit
         run: pnpm catalog:discover -- --output "$DISCOVERY_REPORT" --ingest --reviewer "github:${GITHUB_ACTOR}"

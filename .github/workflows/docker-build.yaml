@@ -303,12 +303,14 @@ jobs:
     env:
       AI_RELAY_API_KEY: ${{ secrets.AI_RELAY_API_KEY }}
       AI_RELAY_BASE_URL: ${{ vars.AI_RELAY_BASE_URL }}
-      AI_RELAY_PRIMARY_MODEL: ${{ vars.AI_RELAY_PRIMARY_MODEL || vars.ALGO_COACH_MODEL }}
-      AI_RELAY_FALLBACK_MODEL: ${{ vars.AI_RELAY_FALLBACK_MODEL || vars.ALGO_COACH_FALLBACK_MODEL }}
+      AI_RELAY_PRIMARY_MODEL: ${{ vars.AI_RELAY_PRIMARY_MODEL }}
+      AI_RELAY_FALLBACK_MODEL: ${{ vars.AI_RELAY_FALLBACK_MODEL }}
       AI_RELAY_STRUCTURED_OUTPUT_MODE: ${{ vars.AI_RELAY_STRUCTURED_OUTPUT_MODE || 'json' }}
       AI_RELAY_PRICING_JSON: ${{ vars.AI_RELAY_PRICING_JSON }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
+      ALGO_COACH_MODEL: ${{ vars.ALGO_COACH_MODEL }}
+      ALGO_COACH_FALLBACK_MODEL: ${{ vars.ALGO_COACH_FALLBACK_MODEL }}
     steps:
       - name: Restrict production releases to main
         if: inputs.environment == 'production' && github.ref_name != 'main'
@@ -316,9 +318,38 @@ jobs:
           echo "Production releases must run from main."
           exit 1
       - name: Validate AI relay release configuration
+        shell: bash
         run: |
-          if [ -z "$AI_RELAY_PRIMARY_MODEL" ] || [ -z "$AI_RELAY_FALLBACK_MODEL" ] || [ -z "$AI_RELAY_PRICING_JSON" ]; then
-            echo "Configure both model variables and AI_RELAY_PRICING_JSON in the selected GitHub Environment."
+          missing=()
+
+          if [[ -n "$AI_RELAY_API_KEY" || -n "$AI_RELAY_BASE_URL" ]]; then
+            [[ -n "$AI_RELAY_API_KEY" ]] || missing+=("AI_RELAY_API_KEY")
+            [[ -n "$AI_RELAY_BASE_URL" ]] || missing+=("AI_RELAY_BASE_URL")
+          elif [[ -z "$OPENROUTER_API_KEY" || -z "$OPENROUTER_BASE_URL" ]]; then
+            missing+=("AI_RELAY_API_KEY/AI_RELAY_BASE_URL (or the complete legacy OPENROUTER pair)")
+          fi
+
+          if [[ -n "$AI_RELAY_PRIMARY_MODEL" || -n "$AI_RELAY_FALLBACK_MODEL" ]]; then
+            [[ -n "$AI_RELAY_PRIMARY_MODEL" ]] || missing+=("AI_RELAY_PRIMARY_MODEL")
+            [[ -n "$AI_RELAY_FALLBACK_MODEL" ]] || missing+=("AI_RELAY_FALLBACK_MODEL")
+            primary_model="$AI_RELAY_PRIMARY_MODEL"
+            fallback_model="$AI_RELAY_FALLBACK_MODEL"
+          else
+            [[ -n "$ALGO_COACH_MODEL" ]] || missing+=("AI_RELAY_PRIMARY_MODEL (or legacy ALGO_COACH_MODEL)")
+            [[ -n "$ALGO_COACH_FALLBACK_MODEL" ]] || missing+=("AI_RELAY_FALLBACK_MODEL (or legacy ALGO_COACH_FALLBACK_MODEL)")
+            primary_model="$ALGO_COACH_MODEL"
+            fallback_model="$ALGO_COACH_FALLBACK_MODEL"
+          fi
+
+          [[ -n "$AI_RELAY_PRICING_JSON" ]] || missing+=("AI_RELAY_PRICING_JSON")
+
+          if (( ${#missing[@]} )); then
+            printf '::error title=Incomplete AI relay configuration::Missing GitHub Environment values: %s\n' "$(IFS=', '; echo "${missing[*]}")"
+            exit 1
+          fi
+
+          if [[ "$primary_model" == "$fallback_model" ]]; then
+            echo "::error title=Invalid AI relay configuration::Primary and fallback models must be different."
             exit 1
           fi
       - uses: actions/checkout@v4
