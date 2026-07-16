@@ -315,6 +315,90 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
   await completeOnboarding(page);
   await page.goto('/practice/first-unique-position');
 
+  // The reviewed hint must render before a delayed relay response arrives.
+  let releaseHintRequest = () => {};
+  let hintRequestCount = 0;
+  const delayedHintRequest = new Promise<void>((resolve) => {
+    releaseHintRequest = resolve;
+  });
+  await page.route(/\/api\/coach$/, async (route) => {
+    const request = route.request().postDataJSON() as {
+      action?: string;
+      hintLevel?: 1 | 2 | 3;
+      runResult?: unknown;
+    };
+    if (request.action !== 'hint' || !request.hintLevel) {
+      await route.continue();
+      return;
+    }
+    hintRequestCount += 1;
+    if (request.hintLevel === 1) {
+      expect(request.runResult).toBeUndefined();
+      await delayedHintRequest;
+    }
+    const summaries = {
+      1: '先想清楚需要为每个值保存什么信息。',
+      2: '第一次遍历统计频次，第二次按原顺序查找。',
+      3: 'freq = 计数(values)；依次检查 i，若 freq[values[i]] == 1 则返回 i。',
+    } as const;
+    const summary = summaries[request.hintLevel];
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        mode: 'live',
+        model: 'e2e-hint-model',
+        promptVersion: 'e2e-hint-v1',
+        traceId: `e2e-hint-trace-${request.hintLevel}`,
+        latencyMs: request.hintLevel === 1 ? 1_500 : 10,
+        artifact: {
+          id: `e2e-hint-level-${request.hintLevel}`,
+          type: 'hint',
+          locale: 'zh',
+          problemSlug: 'first-unique-position',
+          problemContentVersion: 1,
+          title: `第 ${request.hintLevel} 级提示`,
+          summary,
+          details: [],
+          evidence: [],
+          hint: {
+            level: request.hintLevel,
+            principle: summary,
+          },
+          createdAt: new Date().toISOString(),
+        },
+      }),
+    });
+  });
+  const firstHintButton = page
+    .getByRole('button', { name: '查看提示' })
+    .first();
+  await firstHintButton.evaluate((button) => {
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await expect(
+    page
+      .getByText('先想清楚需要为每个值保存什么信息。', { exact: true })
+      .first()
+  ).toBeVisible({ timeout: 750 });
+  await expect(page.getByText('细化中', { exact: true }).first()).toBeVisible();
+  await expect.poll(() => hintRequestCount).toBe(1);
+
+  await page.getByRole('button', { name: '查看提示' }).first().click();
+  await expect(
+    page
+      .getByText('第一次遍历统计频次，第二次按原顺序查找。', {
+        exact: true,
+      })
+      .first()
+  ).toBeVisible({ timeout: 750 });
+  expect(hintRequestCount).toBe(1);
+  releaseHintRequest();
+  await expect(page.getByText('细化中', { exact: true })).toHaveCount(0, {
+    timeout: 10_000,
+  });
+
   await page.getByRole('button', { name: '运行样例' }).click();
   await expect(page.getByText('仍需调整', { exact: true }).first()).toBeVisible(
     {
@@ -327,11 +411,7 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
     page.getByText('纠错时间线', { exact: true }).filter({ visible: true })
   ).toBeVisible();
   await expect(
-    page
-      .getByText('本次运行通过 0/2 个测试；诊断只依据上方真实运行结果。', {
-        exact: true,
-      })
-      .first()
+    page.getByText(/本次运行通过 0\/2 个测试；.*真实运行/).first()
   ).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole('button', { name: '生成反例' }).click();
@@ -344,8 +424,6 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
   ).toBeVisible({ timeout: 10_000 });
 
   for (const hint of [
-    '先想清楚需要为每个值保存什么信息。',
-    '第一次遍历统计频次，第二次按原顺序查找。',
     'freq = 计数(values)；依次检查 i，若 freq[values[i]] == 1 则返回 i。',
   ]) {
     await page.getByRole('button', { name: '查看提示' }).first().click();
@@ -356,6 +434,7 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
   await expect(
     page.getByText('在线 AI', { exact: true }).first()
   ).toBeVisible();
+  await expect.poll(() => hintRequestCount).toBe(3);
 
   await page
     .getByPlaceholder('追问思路、复杂度或某个错误…')

@@ -21,6 +21,13 @@ const mocks = vi.hoisted(() => {
   return {
     CoachModelError: MockCoachModelError,
     acquireCoachCapacity: vi.fn(),
+    coachArtifactMaxAttempts: vi.fn(
+      (action: string, modelCount: number) =>
+        modelCount * (action === 'hint' ? 1 : 2)
+    ),
+    coachArtifactMaxOutputTokens: vi.fn((action: string) =>
+      action === 'hint' ? 320 : 500
+    ),
     commitCoachConservativeUsage: vi.fn(),
     commitCoachFailedUsage: vi.fn(),
     commitCoachUsage: vi.fn(),
@@ -52,6 +59,8 @@ vi.mock('@/features/algorithm-coach/server', () => ({
   COACH_ARTIFACT_MAX_OUTPUT_TOKENS: 500,
   COACH_PROMPT_VERSION: 'coach-test-v1',
   CoachModelError: mocks.CoachModelError,
+  coachArtifactMaxAttempts: mocks.coachArtifactMaxAttempts,
+  coachArtifactMaxOutputTokens: mocks.coachArtifactMaxOutputTokens,
   generateLiveArtifact: mocks.generateLiveArtifact,
   getCoachRuntimeConfig: mocks.getCoachRuntimeConfig,
 }));
@@ -225,6 +234,12 @@ describe('POST /api/coach provider fallback', () => {
   });
 
   it('ignores a client model field and uses action-based server routing', async () => {
+    mocks.getCoachRuntimeConfig.mockResolvedValueOnce({
+      apiKey: 'configured-test-key',
+      baseURL: 'https://provider.example/v1',
+      model: 'gpt-5.5',
+      fallbackModel: 'gpt-5.4-mini',
+    });
     mocks.generateLiveArtifact.mockResolvedValue({
       artifact: {
         id: 'hint-1',
@@ -254,7 +269,10 @@ describe('POST /api/coach provider fallback', () => {
       expect.any(Request),
       'artifact',
       undefined,
-      expect.objectContaining({ maxAttempts: 4 })
+      expect.objectContaining({
+        maxOutputTokens: 320,
+        maxAttempts: 2,
+      })
     );
     expect(mocks.generateLiveArtifact.mock.calls[0]?.[0]).not.toHaveProperty(
       'model'

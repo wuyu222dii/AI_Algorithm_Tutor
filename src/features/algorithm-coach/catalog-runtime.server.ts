@@ -1,6 +1,7 @@
 import 'server-only';
 
 import {
+  getPublishedCoachProblemBySlug,
   getPublishedProblemBySlug,
   listPublishedProblems,
   type PublishedProblem,
@@ -13,6 +14,77 @@ import {
   type EnabledLanguage,
 } from './languages';
 import type { Problem } from './types';
+
+const MAX_CACHED_REVISIONS = 512;
+
+declare global {
+  var __algocoachRuntimeRevisionCache:
+    | Map<string, PublishedProblem>
+    | undefined;
+  var __algocoachCoachContextCache: Map<string, PublishedProblem> | undefined;
+}
+
+function revisionCache() {
+  if (!globalThis.__algocoachRuntimeRevisionCache) {
+    globalThis.__algocoachRuntimeRevisionCache = new Map();
+  }
+  return globalThis.__algocoachRuntimeRevisionCache;
+}
+
+function coachContextCache() {
+  if (!globalThis.__algocoachCoachContextCache) {
+    globalThis.__algocoachCoachContextCache = new Map();
+  }
+  return globalThis.__algocoachCoachContextCache;
+}
+
+function revisionCacheKey(
+  namespace: 'database' | 'fixture',
+  slug: string,
+  contentVersion: number
+) {
+  return `${namespace}:${slug}:${contentVersion}`;
+}
+
+function rememberRevision(
+  namespace: 'database' | 'fixture',
+  problem: PublishedProblem
+) {
+  const contentVersion = problem.version?.contentVersion;
+  if (!Number.isInteger(contentVersion) || !contentVersion) return;
+  const cache = revisionCache();
+  const key = revisionCacheKey(namespace, problem.slug, contentVersion);
+  cache.delete(key);
+  cache.set(key, problem);
+  coachContextCache().delete(key);
+  while (cache.size > MAX_CACHED_REVISIONS) {
+    const oldest = cache.keys().next().value;
+    if (typeof oldest !== 'string') break;
+    cache.delete(oldest);
+  }
+}
+
+function rememberCoachContext(
+  namespace: 'database' | 'fixture',
+  problem: PublishedProblem
+) {
+  const contentVersion = problem.version?.contentVersion;
+  if (!Number.isInteger(contentVersion) || !contentVersion) return;
+  const cache = coachContextCache();
+  const key = revisionCacheKey(namespace, problem.slug, contentVersion);
+  cache.delete(key);
+  cache.set(key, problem);
+  while (cache.size > MAX_CACHED_REVISIONS) {
+    const oldest = cache.keys().next().value;
+    if (typeof oldest !== 'string') break;
+    cache.delete(oldest);
+  }
+}
+
+export function resetRuntimeProblemCacheForTests() {
+  revisionCache().clear();
+  coachContextCache().clear();
+}
 
 function databaseCatalogEnabled(env: NodeJS.ProcessEnv = process.env) {
   if (env.DB_CATALOG_ENABLED === 'true') return true;
@@ -119,7 +191,9 @@ export async function listRuntimeProblems(
   options: PublishedProblemQuery = {}
 ): Promise<PublishedProblem[]> {
   if (!databaseCatalogEnabled()) {
-    return filterFixtureCatalog(await loadFixtureCatalog(), options);
+    const catalog = filterFixtureCatalog(await loadFixtureCatalog(), options);
+    catalog.forEach((problem) => rememberRevision('fixture', problem));
+    return catalog;
   }
   const catalog = (await listPublishedProblems(options)).map(
     normalizeCatalogProblem
@@ -127,6 +201,7 @@ export async function listRuntimeProblems(
   if (!catalog.length) {
     throw new Error('The published PostgreSQL problem catalog is empty.');
   }
+  catalog.forEach((problem) => rememberRevision('database', problem));
   return catalog;
 }
 
@@ -134,14 +209,49 @@ export async function getRuntimeProblem(
   slug: string,
   contentVersion?: number
 ): Promise<PublishedProblem | undefined> {
-  if (!databaseCatalogEnabled()) {
-    return (await loadFixtureCatalog()).find(
+  const databaseEnabled = databaseCatalogEnabled();
+  const namespace = databaseEnabled ? 'database' : 'fixture';
+  if (contentVersion !== undefined) {
+    const cached = revisionCache().get(
+      revisionCacheKey(namespace, slug, contentVersion)
+    );
+    if (cached) return cached;
+  }
+  if (!databaseEnabled) {
+    const problem = (await loadFixtureCatalog()).find(
       (problem) =>
         problem.slug === slug &&
         (contentVersion === undefined ||
           problem.version?.contentVersion === contentVersion)
     );
+    if (problem) rememberRevision('fixture', problem);
+    return problem;
   }
   const problem = await getPublishedProblemBySlug(slug, contentVersion);
-  return problem ? normalizeCatalogProblem(problem) : undefined;
+  if (!problem) return undefined;
+  const normalized = normalizeCatalogProblem(problem);
+  rememberRevision('database', normalized);
+  return normalized;
+}
+
+export async function getRuntimeCoachProblem(
+  slug: string,
+  contentVersion?: number
+): Promise<PublishedProblem | undefined> {
+  const databaseEnabled = databaseCatalogEnabled();
+  const namespace = databaseEnabled ? 'database' : 'fixture';
+  if (contentVersion !== undefined) {
+    const key = revisionCacheKey(namespace, slug, contentVersion);
+    const fullRevision = revisionCache().get(key);
+    if (fullRevision) return fullRevision;
+    const cachedContext = coachContextCache().get(key);
+    if (cachedContext) return cachedContext;
+  }
+  if (!databaseEnabled) return getRuntimeProblem(slug, contentVersion);
+
+  const problem = await getPublishedCoachProblemBySlug(slug, contentVersion);
+  if (!problem) return undefined;
+  const normalized = normalizeCatalogProblem(problem);
+  rememberCoachContext('database', normalized);
+  return normalized;
 }

@@ -176,6 +176,45 @@ export function problemHint(
   return localized(value, locale);
 }
 
+export function localHintPreview(
+  problem: Problem,
+  locale: 'zh' | 'en',
+  level: 1 | 2 | 3
+) {
+  const curatedHint = problemHint(problem, locale, level - 1).trim();
+  if (curatedHint) return curatedHint;
+
+  const title = localized(problem.title, locale, problem.slug);
+  const generic =
+    locale === 'zh'
+      ? [
+          `先从「${title}」的输入、输出和约束中，找出必须保持的关键信息。`,
+          `围绕「${title}」先写出直接过程，再寻找可以复用的状态或单调关系。`,
+          `为「${title}」只列出初始化、循环条件、状态更新和返回条件，暂时不要填写完整代码。`,
+        ]
+      : [
+          `Start with the inputs, outputs, and constraints of “${title}”, then identify the key information that must be preserved.`,
+          `Write a direct process for “${title}”, then look for reusable state or a monotonic relationship.`,
+          `For “${title}”, list only the initialization, loop condition, state update, and return condition without writing the full code.`,
+        ];
+
+  return generic[level - 1];
+}
+
+export function localHintPreviews(
+  problem: Problem,
+  locale: 'zh' | 'en',
+  revealedLevel: 0 | 1 | 2 | 3,
+  resolvedLevels: ReadonlySet<1 | 2 | 3>
+) {
+  return ([1, 2, 3] as const)
+    .filter((level) => level <= revealedLevel && !resolvedLevels.has(level))
+    .map((level) => ({
+      level,
+      content: localHintPreview(problem, locale, level),
+    }));
+}
+
 export function difficultyLabel(difficulty: string, locale: 'zh' | 'en') {
   const map = {
     easy: locale === 'zh' ? '简单' : 'Easy',

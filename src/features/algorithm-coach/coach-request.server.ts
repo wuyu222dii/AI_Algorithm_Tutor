@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { getRuntimeProblem } from './catalog-runtime.server';
+import { getRuntimeCoachProblem } from './catalog-runtime.server';
 import { CoachHttpError } from './http';
 import { getProblemContentVersion, getProblemEntryPoint } from './languages';
 import type {
@@ -79,7 +79,7 @@ export async function hydrateCoachCatalogRequest<T extends CatalogCoachRequest>(
     };
   }
 
-  const problem = await getRuntimeProblem(slug, requestedVersion);
+  const problem = await getRuntimeCoachProblem(slug, requestedVersion);
   if (!problem) {
     throw new CoachHttpError(
       requestedVersion === undefined ? 404 : 409,

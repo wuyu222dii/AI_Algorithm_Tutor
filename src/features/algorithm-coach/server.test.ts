@@ -211,6 +211,20 @@ describe('live coach model routing', () => {
       model: 'relay/primary',
       fallbackModel: 'relay/fallback',
     });
+    expect(mocks.getAllConfigs).not.toHaveBeenCalled();
+  });
+
+  it('loads legacy relay settings only when AI_RELAY credentials are absent', async () => {
+    mocks.getAllConfigs.mockResolvedValue({
+      openrouter_api_key: 'legacy-db-key',
+      openrouter_base_url: 'https://legacy.example/v1',
+    });
+
+    await expect(getCoachRuntimeConfig('hint')).resolves.toMatchObject({
+      apiKey: 'legacy-db-key',
+      baseURL: 'https://legacy.example/v1',
+    });
+    expect(mocks.getAllConfigs).toHaveBeenCalledTimes(1);
   });
 
   it('fails over when the relay denies the primary model group', async () => {
@@ -271,12 +285,9 @@ describe('live coach model routing', () => {
       generateLiveArtifact(hintRequest, config)
     ).rejects.toMatchObject({
       reason: 'invalid_output',
-      attempts: 2,
+      attempts: 1,
     });
-    expect(mocks.generateObject).toHaveBeenCalledTimes(2);
-    expect(mocks.generateObject.mock.calls[1]?.[0].model).toBe(
-      mocks.generateObject.mock.calls[0]?.[0].model
-    );
+    expect(mocks.generateObject).toHaveBeenCalledTimes(1);
   });
 
   it('uses a conservative nonzero cost when relay usage is missing', async () => {
@@ -287,8 +298,93 @@ describe('live coach model routing', () => {
     const generation = await generateLiveArtifact(hintRequest, config);
 
     expect(generation.usageReported).toBe(false);
-    expect(generation.usage.outputTokens).toBe(500);
+    expect(generation.usage.outputTokens).toBe(320);
     expect(generation.estimatedCostUsd).toBeGreaterThan(0);
+  });
+
+  it('uses compact, version-bound fast settings for progressive hints', async () => {
+    mocks.generateObject.mockResolvedValueOnce(generatedHint());
+    const request: CoachRequest = {
+      ...hintRequest,
+      problemContentVersion: 7,
+      language: 'javascript',
+      code: 'function solve(values) { /* current draft */ }',
+      runResult: {
+        id: 'run-hint-1',
+        problemSlug: 'dependency-cycle',
+        problemContentVersion: 7,
+        language: 'javascript',
+        status: 'failed',
+        passedTests: 1,
+        totalTests: 3,
+        testResults: [
+          {
+            testId: 'first-failure',
+            passed: false,
+            expected: true,
+            actual: false,
+            durationMs: 1,
+          },
+          {
+            testId: 'unused-failure',
+            passed: false,
+            expected: true,
+            actual: false,
+            durationMs: 1,
+          },
+        ],
+        console: ['large debug output is omitted'],
+        durationMs: 2,
+        executedAt: '2026-07-16T00:00:00.000Z',
+        codeSnapshot: 'function solve() { return leakedOldDraft; }',
+      },
+    };
+
+    await generateLiveArtifact(request, config);
+
+    const providerCall = mocks.generateObject.mock.calls[0]?.[0];
+    const prompt = JSON.parse(providerCall.prompt) as {
+      hintLevel: number;
+      context: {
+        problemContentVersion: number;
+        code: string;
+        runEvidence: {
+          failedTest: { testId: string };
+          testResults?: unknown;
+        };
+      };
+    };
+    expect(providerCall).toMatchObject({
+      maxOutputTokens: 320,
+      maxRetries: 0,
+      providerOptions: {
+        'openai-compatible': { reasoningEffort: 'low' },
+      },
+    });
+    expect(providerCall.system).not.toContain('For diagnosis');
+    expect(prompt).toMatchObject({
+      hintLevel: 1,
+      context: {
+        problemContentVersion: 7,
+        code: 'function solve(values) { /* current draft */ }',
+        runEvidence: { failedTest: { testId: 'first-failure' } },
+      },
+    });
+    expect(prompt.context.runEvidence.testResults).toBeUndefined();
+    expect(providerCall.prompt).not.toContain('unused-failure');
+    expect(providerCall.prompt).not.toContain('leakedOldDraft');
+    expect(providerCall.prompt).not.toContain('large debug output');
+  });
+
+  it('rejects a mismatched hint level without a second slow generation', async () => {
+    const response = generatedHint();
+    response.object.hint.level = 2;
+    mocks.generateObject.mockResolvedValueOnce(response);
+
+    await expect(
+      generateLiveArtifact(hintRequest, config)
+    ).rejects.toMatchObject({ reason: 'invalid_output', attempts: 1 });
+    expect(mocks.generateObject).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -305,11 +401,11 @@ describe('live coach model routing', () => {
 
     expect(generation.usageReported).toBe(false);
     expect(generation.usage.inputTokens).toBeGreaterThan(0);
-    expect(generation.usage.outputTokens).toBe(500);
+    expect(generation.usage.outputTokens).toBe(320);
     expect(generation.estimatedCostUsd).toBeGreaterThan(0);
   });
 
-  it('does not spend the fallback on an invalid structured output', async () => {
+  it('does not repeat a slow hint after an invalid structured output', async () => {
     mocks.generateObject.mockRejectedValue(
       new Error('schema validation failed')
     );
@@ -319,12 +415,9 @@ describe('live coach model routing', () => {
     ).rejects.toMatchObject({
       code: 'provider_failed',
       reason: 'invalid_output',
-      attempts: 2,
+      attempts: 1,
     });
-    expect(mocks.generateObject).toHaveBeenCalledTimes(2);
-    expect(mocks.generateObject.mock.calls[1]?.[0].system).toContain(
-      'previous response failed schema'
-    );
+    expect(mocks.generateObject).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -337,7 +430,7 @@ describe('live coach model routing', () => {
 
     await expect(
       generateLiveArtifact(hintRequest, config)
-    ).rejects.toMatchObject({ reason: 'invalid_output', attempts: 2 });
+    ).rejects.toMatchObject({ reason: 'invalid_output', attempts: 1 });
   });
 
   it('allows level-three loop pseudocode without exposing a full solution', async () => {
@@ -445,9 +538,9 @@ describe('live coach model routing', () => {
       generateLiveArtifact(hintRequest, config)
     ).rejects.toMatchObject({
       reason: 'invalid_output',
-      attempts: 2,
+      attempts: 1,
     });
-    expect(mocks.generateObject).toHaveBeenCalledTimes(2);
+    expect(mocks.generateObject).toHaveBeenCalledTimes(1);
   });
 
   it('binds diagnosis category and evidence to the real failed run', async () => {

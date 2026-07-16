@@ -73,6 +73,7 @@ import {
   getPreferredLanguage,
   getTestResults,
   localeKey,
+  localHintPreviews,
   localizedProblem,
   runDuration,
   runError,
@@ -111,6 +112,9 @@ const copy = {
     hintPseudo: '第 3 层 · 伪代码',
     reveal: '查看提示',
     revealed: '已查看',
+    refining: '细化中',
+    curatedHint: '题目提示',
+    hintFallback: '在线细化未完成，已保留当前题目提示。',
     needRun: '请先运行代码，AI 才能依据真实错误或测试结果诊断。',
     aiWelcome:
       '我会基于当前题目、代码和真实运行结果提供引导，不直接给出完整答案。',
@@ -186,6 +190,10 @@ const copy = {
     hintPseudo: 'Level 3 · Pseudocode',
     reveal: 'Reveal hint',
     revealed: 'Revealed',
+    refining: 'Refining',
+    curatedHint: 'Problem hint',
+    hintFallback:
+      'Online refinement did not finish. The problem hint is still available.',
     needRun:
       'Run your code first so the diagnosis can cite a real error or test result.',
     aiWelcome:
@@ -254,6 +262,19 @@ type ArtifactView = {
   runId?: string;
   createdAt?: string;
   status?: CodeRunResult['status'];
+  hintLevel?: 1 | 2 | 3;
+};
+
+type HintPreview = {
+  id: string;
+  level: 1 | 2 | 3;
+  content: string;
+  status: 'enhancing' | 'ready';
+};
+
+type ActiveHintRefinement = {
+  contextKey: string;
+  level: 1 | 2 | 3;
 };
 
 class CoachRequestError extends Error {
@@ -359,6 +380,8 @@ export function PracticeWorkspace({
   const [running, setRunning] = useState<'sample' | 'all' | null>(null);
   const [activeMobileTab, setActiveMobileTab] = useState('problem');
   const [hintLevel, setHintLevel] = useState<0 | 1 | 2 | 3>(0);
+  const [activeHintRefinement, setActiveHintRefinement] =
+    useState<ActiveHintRefinement | null>(null);
   const [aiLoading, setAiLoading] = useState<string | null>(null);
   const [messages, setMessages] = useState<CoachMessage[]>([
     { id: 'welcome', role: 'assistant', content: t.aiWelcome },
@@ -369,10 +392,40 @@ export function PracticeWorkspace({
   const codeInitializedFor = useRef('');
   const contextInitializedFor = useRef('');
   const chatAbortRef = useRef<AbortController | null>(null);
+  const hintLevelRef = useRef<0 | 1 | 2 | 3>(0);
+  const hintRefinementRef = useRef<ActiveHintRefinement | null>(null);
+  const hintRefinementQueueRef = useRef<Array<() => Promise<void>>>([]);
   const problemContentVersion = problem ? getProblemContentVersion(problem) : 1;
   const sessionKey = problem
     ? getPracticeSessionKey(problem.slug, problemContentVersion)
     : '';
+  const hintPreviewContext = `${sessionKey}:${locale}`;
+  const resolvedHintLevels = useMemo(() => {
+    const levels = state.artifacts
+      .filter(
+        (artifact) =>
+          artifact.type === 'hint' &&
+          artifact.problemSlug === problem?.slug &&
+          (artifact.problemContentVersion ?? 1) === problemContentVersion &&
+          artifact.locale === locale
+      )
+      .map((artifact) => artifact.hint?.level)
+      .filter((level): level is 1 | 2 | 3 => level !== undefined);
+    return new Set(levels);
+  }, [locale, problem?.slug, problemContentVersion, state.artifacts]);
+  const currentHintPreviews: HintPreview[] = problem
+    ? localHintPreviews(problem, locale, hintLevel, resolvedHintLevels).map(
+        (preview) => ({
+          ...preview,
+          id: `hint-preview:${hintPreviewContext}:${preview.level}`,
+          status:
+            activeHintRefinement?.contextKey === hintPreviewContext &&
+            activeHintRefinement.level === preview.level
+              ? 'enhancing'
+              : 'ready',
+        })
+      )
+    : [];
 
   const artifacts = useMemo<ArtifactView[]>(() => {
     if (!problem) return [];
@@ -390,6 +443,7 @@ export function PracticeWorkspace({
         mode: artifact.generationMode ?? 'local',
         runId: artifact.runId,
         createdAt: artifact.createdAt,
+        hintLevel: artifact.hint?.level,
       }))
       .filter((artifact) => artifact.content);
 
@@ -411,7 +465,7 @@ export function PracticeWorkspace({
       (left, right) =>
         Date.parse(left.executedAt) - Date.parse(right.executedAt)
     );
-    const runArtifacts = chronologicalRuns.map((run, index) => {
+    const runArtifacts: ArtifactView[] = chronologicalRuns.map((run, index) => {
       const previousRun = chronologicalRuns[index - 1];
       const codeChanged =
         previousRun?.codeSnapshot !== undefined &&
@@ -430,11 +484,20 @@ export function PracticeWorkspace({
       };
     });
 
+    const seenHintLevels = new Set<number>();
     return [...coachArtifacts, ...runArtifacts]
       .sort(
         (left, right) =>
           Date.parse(right.createdAt ?? '') - Date.parse(left.createdAt ?? '')
       )
+      .filter((artifact) => {
+        if (artifact.type !== 'hint' || artifact.hintLevel === undefined) {
+          return true;
+        }
+        if (seenHintLevels.has(artifact.hintLevel)) return false;
+        seenHintLevels.add(artifact.hintLevel);
+        return true;
+      })
       .slice(0, 16);
   }, [
     locale,
@@ -491,7 +554,9 @@ export function PracticeWorkspace({
     if (contextInitializedFor.current === contextKey) return;
 
     const session = state.sessions[sessionKey];
-    setHintLevel(session?.hintLevel ?? 0);
+    const restoredHintLevel = session?.hintLevel ?? 0;
+    hintLevelRef.current = restoredHintLevel;
+    setHintLevel(restoredHintLevel);
     setResult(session?.runs.at(-1) ?? null);
     const saved = loadPracticeContext(
       sessionKey,
@@ -593,12 +658,24 @@ export function PracticeWorkspace({
         await requestArtifact('review_card', nextResult, true);
       }
     } catch (error) {
-      const fallback = {
-        passed: false,
+      const fallback: CodeRunResult = {
+        id: crypto.randomUUID(),
+        problemSlug: problem.slug,
+        language,
+        status: 'runtime_error',
+        passedTests: 0,
+        totalTests: 0,
+        testResults: [],
+        console: [],
         error: error instanceof Error ? error.message : t.error,
-        tests: [],
         durationMs: 0,
-      } as unknown as CodeRunResult;
+        executedAt: new Date().toISOString(),
+        codeSnapshot: code,
+        testScope: scope === 'all' ? 'full' : 'sample',
+        submitted: scope === 'all',
+        problemContentVersion: getProblemContentVersion(problem),
+        runnerMode: 'browser-worker',
+      };
       setResult(fallback);
       toast.error(t.error);
     } finally {
@@ -609,18 +686,72 @@ export function PracticeWorkspace({
   async function requestArtifact(
     action: 'diagnose' | 'hint' | 'counterexample' | 'review_card',
     runResult = result,
-    silent = false
+    silent = false,
+    requestedHintLevel?: 1 | 2 | 3,
+    refinementOnly = false
   ) {
-    if (!problem || aiLoading) return;
+    if (!problem) return;
+    if (action !== 'hint' && (aiLoading || hintRefinementRef.current !== null))
+      return;
+    if (
+      action === 'hint' &&
+      !refinementOnly &&
+      aiLoading &&
+      aiLoading !== 'hint'
+    )
+      return;
     if (action === 'diagnose' && !runResult) {
       toast.info(t.needRun);
       return;
     }
-    const nextHintLevel = (
-      action === 'hint' ? Math.min(3, hintLevel + 1) : hintLevel
-    ) as 0 | 1 | 2 | 3;
+    let effectiveHintLevel: 1 | 2 | 3 | undefined;
+    if (action === 'hint') {
+      if (!requestedHintLevel) return;
+      effectiveHintLevel = requestedHintLevel;
+
+      if (!refinementOnly) {
+        const currentLevel = hintLevelRef.current;
+        if (currentLevel >= 3 || requestedHintLevel !== currentLevel + 1) {
+          return;
+        }
+        hintLevelRef.current = requestedHintLevel;
+        setHintLevel(requestedHintLevel);
+        if (!silent) setActiveMobileTab('coach');
+      }
+
+      if (!refinementOnly) {
+        coach.revealHint(problem.slug, problemContentVersion);
+        coach.trackEvent('experiment_exposed', {
+          problemSlug: problem.slug,
+          properties: {
+            experiment: 'hint-copy',
+            variant: getExperimentVariant(problem.slug, coach.storageScope),
+            hintLevel: requestedHintLevel,
+          },
+        });
+      }
+
+      if (hintRefinementRef.current) {
+        if (!refinementOnly) {
+          hintRefinementQueueRef.current.push(() =>
+            requestArtifact('hint', runResult, silent, requestedHintLevel, true)
+          );
+        }
+        return;
+      }
+
+      const refinement = {
+        contextKey: hintPreviewContext,
+        level: requestedHintLevel,
+      };
+      hintRefinementRef.current = refinement;
+      setActiveHintRefinement(refinement);
+    } else if (!silent) {
+      setActiveMobileTab('coach');
+    }
+
+    if (action === 'hint' && effectiveHintLevel === undefined) return;
     setAiLoading(action);
-    if (!silent) setActiveMobileTab('coach');
     try {
       const response = await fetch('/api/coach', {
         method: 'POST',
@@ -640,8 +771,8 @@ export function PracticeWorkspace({
           },
           language,
           code,
-          runResult,
-          ...(action === 'hint' ? { hintLevel: nextHintLevel } : {}),
+          ...(runResult ? { runResult } : {}),
+          ...(effectiveHintLevel ? { hintLevel: effectiveHintLevel } : {}),
           experimentVariant: getExperimentVariant(
             problem.slug,
             coach.storageScope
@@ -655,8 +786,23 @@ export function PracticeWorkspace({
       const content = artifactText(artifact, locale);
       if (!content) throw new Error('Empty coach response');
 
+      const normalizedHint =
+        action === 'hint' && effectiveHintLevel
+          ? (artifact.hint ?? {
+              level: effectiveHintLevel,
+              principle: content,
+            })
+          : undefined;
       coach.addArtifact({
         ...artifact,
+        ...(normalizedHint
+          ? {
+              hint: {
+                ...normalizedHint,
+                level: effectiveHintLevel ?? normalizedHint.level,
+              },
+            }
+          : {}),
         type: action,
         problemSlug: problem.slug,
         problemContentVersion: getProblemContentVersion(problem),
@@ -679,21 +825,11 @@ export function PracticeWorkspace({
           problemSlug: problem.slug,
         });
       }
-      if (action === 'hint') {
-        setHintLevel(nextHintLevel);
-        coach.revealHint(problem.slug, problemContentVersion);
-        coach.trackEvent('experiment_exposed', {
-          problemSlug: problem.slug,
-          properties: {
-            experiment: 'hint-copy',
-            variant: getExperimentVariant(problem.slug, coach.storageScope),
-            hintLevel: nextHintLevel,
-          },
-        });
-      }
     } catch (error) {
       if (!silent) {
-        if (error instanceof CoachRequestError && error.status === 429) {
+        if (action === 'hint' && effectiveHintLevel) {
+          toast.info(t.hintFallback);
+        } else if (error instanceof CoachRequestError && error.status === 429) {
           toast.info(t.quotaExceeded);
         } else if (
           error instanceof CoachRequestError &&
@@ -707,6 +843,15 @@ export function PracticeWorkspace({
         }
       }
     } finally {
+      if (action === 'hint') {
+        hintRefinementRef.current = null;
+        const nextRefinement = hintRefinementQueueRef.current.shift();
+        if (nextRefinement) {
+          void nextRefinement();
+          return;
+        }
+        setActiveHintRefinement(null);
+      }
       setAiLoading(null);
     }
   }
@@ -743,7 +888,7 @@ export function PracticeWorkspace({
           problemContentVersion: getProblemContentVersion(problem),
           language,
           code,
-          runResult: result,
+          ...(result ? { runResult: result } : {}),
           locale,
           problem: {
             slug: problem.slug,
@@ -936,6 +1081,7 @@ export function PracticeWorkspace({
       artifacts={artifacts}
       correctionEpisodes={correctionEpisodes}
       hintLevel={hintLevel}
+      hintPreviews={currentHintPreviews}
       aiLoading={aiLoading}
       messages={messages}
       chatInput={chatInput}
@@ -943,6 +1089,7 @@ export function PracticeWorkspace({
       chatRetry={chatRetry}
       hasResult={Boolean(result)}
       onArtifact={requestArtifact}
+      onHint={(level) => requestArtifact('hint', result, false, level)}
       onChatInput={setChatInput}
       onChatSubmit={sendChat}
       onChatStop={stopChat}
@@ -1273,6 +1420,7 @@ function CoachPanel({
   artifacts,
   correctionEpisodes,
   hintLevel,
+  hintPreviews,
   aiLoading,
   messages,
   chatInput,
@@ -1280,6 +1428,7 @@ function CoachPanel({
   chatRetry,
   hasResult,
   onArtifact,
+  onHint,
   onChatInput,
   onChatSubmit,
   onChatStop,
@@ -1289,6 +1438,7 @@ function CoachPanel({
   artifacts: ArtifactView[];
   correctionEpisodes: CorrectionEpisode[];
   hintLevel: number;
+  hintPreviews: HintPreview[];
   aiLoading: string | null;
   messages: CoachMessage[];
   chatInput: string;
@@ -1298,6 +1448,7 @@ function CoachPanel({
   onArtifact: (
     action: 'diagnose' | 'hint' | 'counterexample' | 'review_card'
   ) => void;
+  onHint: (level: 1 | 2 | 3) => void;
   onChatInput: (value: string) => void;
   onChatSubmit: (event: FormEvent) => void;
   onChatStop: () => void;
@@ -1369,9 +1520,10 @@ function CoachPanel({
           </div>
           <div className="mt-3 space-y-2">
             {hintLabels.map((label, index) => {
-              const level = index + 1;
+              const level = (index + 1) as 1 | 2 | 3;
               const revealed = hintLevel >= level;
               const locked = hintLevel < index;
+              const preview = hintPreviews.find((item) => item.level === level);
               return (
                 <div
                   key={label}
@@ -1397,17 +1549,21 @@ function CoachPanel({
                       variant="ghost"
                       size="sm"
                       className="h-7 px-2 text-xs"
-                      onClick={() => onArtifact('hint')}
-                      disabled={locked || Boolean(aiLoading)}
+                      onClick={() => onHint(level)}
+                      disabled={
+                        locked || Boolean(aiLoading && aiLoading !== 'hint')
+                      }
                     >
-                      {aiLoading === 'hint' && !locked ? (
-                        <LoaderCircle className="animate-spin" />
-                      ) : null}
                       {t.reveal}
                     </Button>
                   ) : (
-                    <span className="text-[11px] text-amber-700 dark:text-amber-300">
-                      {t.revealed}
+                    <span className="flex items-center gap-1 text-[11px] text-amber-700 dark:text-amber-300">
+                      {preview?.status === 'enhancing' ? (
+                        <LoaderCircle className="size-3 animate-spin" />
+                      ) : null}
+                      {preview?.status === 'enhancing'
+                        ? t.refining
+                        : t.revealed}
                     </span>
                   )}
                 </div>
@@ -1416,12 +1572,41 @@ function CoachPanel({
           </div>
         </div>
 
-        {artifacts.length || correctionEpisodes.length ? (
+        {hintPreviews.length ||
+        artifacts.length ||
+        correctionEpisodes.length ? (
           <div className="space-y-3 border-b p-4">
             <div className="text-muted-foreground flex items-center gap-2 text-xs font-semibold">
               <Clock3 className="size-3.5" />
               {t.timeline}
             </div>
+            {[...hintPreviews].reverse().map((preview) => (
+              <div
+                key={preview.id}
+                role="status"
+                aria-live="polite"
+                className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-3"
+              >
+                <div className="flex items-center gap-2 text-xs font-semibold">
+                  <Lightbulb className="size-3.5 text-amber-600" />
+                  <span>{hintLabels[preview.level - 1]}</span>
+                  <Badge
+                    variant="outline"
+                    className="ml-auto gap-1 rounded-md px-1.5 py-0 text-[10px] font-normal"
+                  >
+                    {preview.status === 'enhancing' ? (
+                      <LoaderCircle className="size-3 animate-spin" />
+                    ) : null}
+                    {preview.status === 'enhancing'
+                      ? t.refining
+                      : t.curatedHint}
+                  </Badge>
+                </div>
+                <p className="text-muted-foreground mt-2 text-xs leading-6 whitespace-pre-wrap">
+                  {preview.content}
+                </p>
+              </div>
+            ))}
             {correctionEpisodes.map((episode) => (
               <div
                 key={episode.id}
@@ -1511,7 +1696,11 @@ function CoachPanel({
                       <XCircle className="size-3.5 text-red-600" />
                     )
                   ) : null}
-                  <span>{artifactTitle(artifact.type, t)}</span>
+                  <span>
+                    {artifact.type === 'hint' && artifact.hintLevel
+                      ? hintLabels[artifact.hintLevel - 1]
+                      : artifactTitle(artifact.type, t)}
+                  </span>
                   <Badge
                     variant="outline"
                     className="ml-auto rounded-md px-1.5 py-0 text-[10px] font-normal"

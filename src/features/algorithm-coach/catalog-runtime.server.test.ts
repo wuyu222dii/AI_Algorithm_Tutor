@@ -3,11 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getRuntimeProblem,
   listRuntimeProblems,
+  resetRuntimeProblemCacheForTests,
   runtimeEnabledLanguages,
 } from './catalog-runtime.server';
 import { compileTypeScript } from './runner/typescript';
 
 afterEach(() => {
+  resetRuntimeProblemCacheForTests();
   vi.unstubAllEnvs();
 });
 
@@ -33,6 +35,9 @@ describe('runtime problem catalog', () => {
         (problem) => problem.origin?.provider === 'algocoach-original'
       )
     ).toHaveLength(15);
+    await expect(getRuntimeProblem('dependency-cycle', 1)).resolves.toBe(
+      catalog.find((problem) => problem.slug === 'dependency-cycle')
+    );
     for (const problem of catalog) {
       for (const language of ['javascript', 'typescript', 'python'] as const) {
         const config = problem.languageConfigs?.[language];

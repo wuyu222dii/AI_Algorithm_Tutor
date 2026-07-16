@@ -130,6 +130,17 @@ export async function POST(request: Request) {
     const body = await readJsonBody(request);
     const parsed = coachChatRequestSchema.safeParse(body);
     if (!parsed.success) {
+      void recordOperationalEvent({
+        event: 'coach_chat_request_validation_failed',
+        level: 'warn',
+        traceId,
+        properties: {
+          issues: parsed.error.issues.slice(0, 12).map((issue) => ({
+            path: issue.path.join('.').slice(0, 160),
+            code: issue.code,
+          })),
+        },
+      });
       throw new CoachHttpError(
         400,
         'invalid_request',

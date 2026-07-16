@@ -285,3 +285,20 @@ export async function getPublishedProblemBySlug(
   const rows = await selectProblemRows({ limit: 1 }, normalizedSlug, version);
   return (await hydrateRows(rows))[0];
 }
+
+/**
+ * Loads trusted revision content for AI context without fetching executable
+ * tests. Test vectors are not needed for Hint prompts and can be large.
+ */
+export async function getPublishedCoachProblemBySlug(
+  slug: string,
+  version?: number
+): Promise<PublishedProblem | undefined> {
+  const normalizedSlug = slug.trim();
+  if (!normalizedSlug) return undefined;
+  if (version !== undefined && (!Number.isInteger(version) || version < 1)) {
+    return undefined;
+  }
+  const rows = await selectProblemRows({ limit: 1 }, normalizedSlug, version);
+  return rows[0] ? hydrateProblem(rows[0], []) : undefined;
+}

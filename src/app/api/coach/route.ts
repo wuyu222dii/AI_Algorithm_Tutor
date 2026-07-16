@@ -24,8 +24,9 @@ import {
   normalizeCoachRequest,
 } from '@/features/algorithm-coach/schemas';
 import {
-  COACH_ARTIFACT_MAX_OUTPUT_TOKENS,
   COACH_PROMPT_VERSION,
+  coachArtifactMaxAttempts,
+  coachArtifactMaxOutputTokens,
   CoachModelError,
   generateLiveArtifact,
   getCoachRuntimeConfig,
@@ -143,6 +144,25 @@ export async function POST(request: Request) {
     const body = await readJsonBody(request);
     const parsed = coachRequestSchema.safeParse(body);
     if (!parsed.success) {
+      const action =
+        body &&
+        typeof body === 'object' &&
+        'action' in body &&
+        typeof body.action === 'string'
+          ? body.action.slice(0, 80)
+          : 'unknown';
+      void recordOperationalEvent({
+        event: 'coach_request_validation_failed',
+        level: 'warn',
+        traceId,
+        properties: {
+          action,
+          issues: parsed.error.issues.slice(0, 12).map((issue) => ({
+            path: issue.path.join('.').slice(0, 160),
+            code: issue.code,
+          })),
+        },
+      });
       throw new CoachHttpError(
         400,
         'invalid_request',
@@ -179,18 +199,25 @@ export async function POST(request: Request) {
       );
     }
 
+    const models = Array.from(
+      new Set(
+        [config.model, config.fallbackModel].filter((model): model is string =>
+          Boolean(model)
+        )
+      )
+    );
     const capacity = await acquireCoachCapacity(
       request,
       'artifact',
       undefined,
       {
-        models: [
-          config.model,
-          ...(config.fallbackModel ? [config.fallbackModel] : []),
-        ],
+        models,
         input: coachRequest,
-        maxOutputTokens: COACH_ARTIFACT_MAX_OUTPUT_TOKENS,
-        maxAttempts: 4,
+        maxOutputTokens: coachArtifactMaxOutputTokens(coachRequest.action),
+        maxAttempts: coachArtifactMaxAttempts(
+          coachRequest.action,
+          models.length
+        ),
       }
     );
     if (capacity instanceof Response) {
