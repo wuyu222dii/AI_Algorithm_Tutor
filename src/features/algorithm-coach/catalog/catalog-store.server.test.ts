@@ -4,6 +4,7 @@ import {
   calculateCatalogCandidateDelta,
   CatalogDatabaseStore,
   countConsecutiveDiscoveryFailures,
+  isSuccessfulCatalogDiscoveryRun,
 } from './catalog-store.server';
 
 function createApprovalDatabase(status: string) {
@@ -44,23 +45,40 @@ function createApprovalDatabase(status: string) {
 }
 
 describe('PostgreSQL catalog approval gate', () => {
-  it('reports the absolute candidate delta between discovery runs', () => {
+  it('reports only unexpected candidate growth after the previous batch', () => {
+    expect(calculateCatalogCandidateDelta({ candidateBacklog: 111 }, {})).toBe(
+      undefined
+    );
     expect(
       calculateCatalogCandidateDelta(
-        { discovered: 12 },
-        { selectedExercises: 7 },
-        80
+        { candidateBacklog: 111 },
+        { candidateBacklog: 121, discovered: 10 }
       )
-    ).toBe(5);
-    expect(calculateCatalogCandidateDelta({ discovered: 4 }, {}, 80)).toBe(4);
-    expect(calculateCatalogCandidateDelta({}, {}, 80)).toBe(80);
+    ).toBe(0);
     expect(
       calculateCatalogCandidateDelta(
-        { candidateBacklog: 40, discovered: 10 },
-        { candidateBacklog: 10, discovered: 10 },
-        80
+        { candidateBacklog: 141 },
+        { candidateBacklog: 121, discovered: 10 }
       )
     ).toBe(30);
+    expect(
+      calculateCatalogCandidateDelta(
+        { candidateBacklog: 90 },
+        { candidateBacklog: 121, discovered: 10 }
+      )
+    ).toBe(0);
+  });
+
+  it('uses successful discovery snapshots instead of failure records for deltas', () => {
+    const runs = [
+      { status: 'partial', statistics: { kind: 'discovery' } },
+      { status: 'failed', statistics: { kind: 'discovery' } },
+      { status: 'succeeded', statistics: { kind: 'discovery' } },
+    ];
+
+    expect(
+      runs.filter(isSuccessfulCatalogDiscoveryRun).map((run) => run.status)
+    ).toEqual(['partial', 'succeeded']);
   });
 
   it('counts discovery failures across unrelated successful sync runs', () => {

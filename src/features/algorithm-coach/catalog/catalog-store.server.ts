@@ -196,27 +196,44 @@ export interface DatabaseSyncSummary {
 
 export function calculateCatalogCandidateDelta(
   latestStatistics: Record<string, unknown>,
-  previousStatistics: Record<string, unknown>,
-  totalCandidateCount: number
-): number {
-  const count = (statistics: Record<string, unknown>) => {
-    const value =
-      statistics.candidateBacklog ??
-      statistics.undiscoveredExercises ??
-      statistics.discovered ??
-      statistics.selectedExercises ??
-      undefined;
+  previousStatistics: Record<string, unknown>
+): number | undefined {
+  const count = (statistics: Record<string, unknown>, ...keys: string[]) => {
+    const value = keys
+      .map((key) => statistics[key])
+      .find((candidate) => candidate !== undefined);
     return typeof value === 'number' && Number.isFinite(value)
       ? Math.max(0, value)
       : undefined;
   };
-  const latest = count(latestStatistics);
-  const previous = count(previousStatistics);
-  if (latest !== undefined && previous !== undefined) {
-    return Math.abs(latest - previous);
+  const latestBacklog = count(
+    latestStatistics,
+    'candidateBacklog',
+    'undiscoveredExercises'
+  );
+  const previousBacklog = count(
+    previousStatistics,
+    'candidateBacklog',
+    'undiscoveredExercises'
+  );
+  const previousDiscovered = count(previousStatistics, 'discovered');
+  if (
+    latestBacklog === undefined ||
+    previousBacklog === undefined ||
+    previousDiscovered === undefined
+  ) {
+    return undefined;
   }
-  if (latest !== undefined) return latest;
-  return Math.max(0, totalCandidateCount);
+  const expectedBacklog = Math.max(0, previousBacklog - previousDiscovered);
+  return Math.max(0, latestBacklog - expectedBacklog);
+}
+
+export function isSuccessfulCatalogDiscoveryRun(run: {
+  status: string;
+  statistics: unknown;
+}): boolean {
+  const statistics = run.statistics as { kind?: unknown } | null;
+  return statistics?.kind === 'discovery' && run.status !== 'failed';
 }
 
 export function countConsecutiveDiscoveryFailures(
@@ -1943,10 +1960,7 @@ export class CatalogDatabaseStore {
         .from(coachProblemCandidate)
         .where(eq(coachProblemCandidate.sourceId, source.id)),
     ]);
-    const discoveries = runs.filter((run) => {
-      const statistics = run.statistics as { kind?: unknown };
-      return statistics?.kind === 'discovery';
-    });
+    const discoveries = runs.filter(isSuccessfulCatalogDiscoveryRun);
     const consecutiveFailures = countConsecutiveDiscoveryFailures(runs);
     const latest = discoveries[0];
     const previous = discoveries[1];
@@ -1963,8 +1977,7 @@ export class CatalogDatabaseStore {
     const latestTreeExercises = optionalNumber(latestStats.treeExercises);
     const latestCandidateDelta = calculateCatalogCandidateDelta(
       latestStats,
-      previousStats,
-      candidates.length
+      previousStats
     );
     return {
       ...(latest?.cursor ? { etag: latest.cursor } : {}),
@@ -1995,7 +2008,7 @@ export class CatalogDatabaseStore {
         : {}),
       ...(previousTreeExercises === undefined ? {} : { previousTreeExercises }),
       ...(latestTreeExercises === undefined ? {} : { latestTreeExercises }),
-      latestCandidateDelta,
+      ...(latestCandidateDelta === undefined ? {} : { latestCandidateDelta }),
       candidateCount: candidates.length,
     };
   }

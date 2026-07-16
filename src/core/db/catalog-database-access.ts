@@ -3,6 +3,7 @@ export type CatalogDatabaseAccessErrorCode =
   | 'schema_usage_missing'
   | 'sync_role_missing'
   | 'candidate_write_missing'
+  | 'migration_0021_required'
   | 'published_catalog_write_present';
 
 const ACCESS_ERROR_MESSAGES: Record<CatalogDatabaseAccessErrorCode, string> = {
@@ -14,6 +15,8 @@ const ACCESS_ERROR_MESSAGES: Record<CatalogDatabaseAccessErrorCode, string> = {
     'The authenticated database role is not a member of algocoach_catalog_sync.',
   candidate_write_missing:
     'The authenticated database role requires INSERT and UPDATE on coach_problem_candidate.',
+  migration_0021_required:
+    'Catalog migration 0021 is required; apply the release migration before running sync or discovery.',
   published_catalog_write_present:
     'The catalog sync role has unsafe write access to coach_problem; use the restricted sync credential.',
 };
@@ -25,6 +28,7 @@ export interface CatalogDatabaseAccessSnapshot {
   syncRoleMember: boolean;
   candidateInsert: boolean;
   candidateUpdate: boolean;
+  rawContentUniqueIndex: boolean;
   publishedProblemInsert: boolean;
   publishedProblemUpdate: boolean;
   publishedProblemDelete: boolean;
@@ -76,5 +80,8 @@ export function validateCatalogDatabaseAccess(
     snapshot.publishedProblemDelete
   ) {
     throw new CatalogDatabaseAccessError('published_catalog_write_present');
+  }
+  if (!snapshot.rawContentUniqueIndex) {
+    throw new CatalogDatabaseAccessError('migration_0021_required');
   }
 }

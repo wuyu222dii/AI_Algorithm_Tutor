@@ -31,6 +31,7 @@ async function main(): Promise<void> {
   try {
     const candidateTable = `${schema}.coach_problem_candidate`;
     const publishedProblemTable = `${schema}.coach_problem`;
+    const rawContentUniqueIndex = `${schema}.uq_coach_problem_candidate_raw_content`;
     const [snapshot] = await sql<CatalogDatabaseAccessSnapshot[]>`
       SELECT
         current_user AS "currentUser",
@@ -39,6 +40,7 @@ async function main(): Promise<void> {
         pg_has_role(current_user, 'algocoach_catalog_sync', 'member') AS "syncRoleMember",
         has_table_privilege(current_user, ${candidateTable}, 'INSERT') AS "candidateInsert",
         has_table_privilege(current_user, ${candidateTable}, 'UPDATE') AS "candidateUpdate",
+        to_regclass(${rawContentUniqueIndex}) IS NOT NULL AS "rawContentUniqueIndex",
         has_table_privilege(current_user, ${publishedProblemTable}, 'INSERT') AS "publishedProblemInsert",
         has_table_privilege(current_user, ${publishedProblemTable}, 'UPDATE') AS "publishedProblemUpdate",
         has_table_privilege(current_user, ${publishedProblemTable}, 'DELETE') AS "publishedProblemDelete"
@@ -63,7 +65,7 @@ function reportFailure(error: unknown): void {
     );
   } else {
     console.error(
-      '[catalog] database access preflight failed (connection_or_probe_failed): verify the secret, network access, migration 0020, and restricted role grants.'
+      '[catalog] database access preflight failed (connection_or_probe_failed): verify the secret, network access, migrations through 0021, and restricted role grants.'
     );
   }
   process.exitCode = 1;
