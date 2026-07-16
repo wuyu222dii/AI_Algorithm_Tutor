@@ -671,6 +671,7 @@ function providerFailure(
     credential_invalid: 'The AI relay rejected its configured credentials.',
     group_access_denied:
       'The AI relay denied access to the configured model group.',
+    quota_exhausted: 'The AI relay account quota has been exhausted.',
     rate_limited: 'The AI relay rate limit was reached.',
     channel_unavailable: 'The AI relay channel is unavailable.',
     timeout: 'The AI relay request timed out.',

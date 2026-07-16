@@ -4,7 +4,7 @@ import {
   warnAiRelayLegacyConfiguration,
 } from '../src/features/algorithm-coach/relay-config';
 import {
-  AiRelayProbeError,
+  aiRelayPreflightFailureReport,
   runAiRelayPreflight,
 } from '../src/features/algorithm-coach/relay-preflight';
 
@@ -54,15 +54,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  const failure =
-    error instanceof AiRelayProbeError
-      ? {
-          status: 'error',
-          kind: error.kind,
-          ...(error.httpStatus ? { httpStatus: error.httpStatus } : {}),
-          ...(error.requestId ? { requestId: error.requestId } : {}),
-        }
-      : { status: 'error', kind: 'invalid_configuration' };
-  console.error(JSON.stringify(failure));
+  console.error(JSON.stringify(aiRelayPreflightFailureReport(error)));
   process.exitCode = 1;
 });

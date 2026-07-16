@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { runAiRelayPreflight } from './relay-preflight';
+import {
+  aiRelayPreflightFailureReport,
+  runAiRelayPreflight,
+} from './relay-preflight';
 
 function response(payload: unknown, status = 200, headers?: HeadersInit) {
   return new Response(JSON.stringify(payload), { status, headers });
@@ -91,7 +94,111 @@ describe('AI relay preflight', () => {
       kind,
       httpStatus: status,
       requestId: 'relay-request-id',
+      stage: 'models_list',
+      model: 'relay-primary',
     });
+  });
+
+  it('reports the model-specific stage without exposing the key or response body', async () => {
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'GET') {
+          return response({
+            data: [{ id: 'relay-primary' }, { id: 'relay-fallback' }],
+          });
+        }
+        return response(
+          { error: { message: 'denied sk-private-response-body' } },
+          403,
+          { 'x-request-id': 'completion-request-id' }
+        );
+      }
+    );
+    const error = await runAiRelayPreflight({ ...config, fetcher }).catch(
+      (caught) => caught
+    );
+
+    const report = aiRelayPreflightFailureReport(error);
+    expect(report).toEqual({
+      status: 'error',
+      kind: 'group_access_denied',
+      httpStatus: 403,
+      stage: 'ordinary_completion',
+      model: 'relay-primary',
+      requestId: 'completion-request-id',
+    });
+    expect(JSON.stringify(report)).not.toContain('relay-secret');
+    expect(JSON.stringify(report)).not.toContain('private-response-body');
+  });
+
+  it('classifies CodeApiX insufficient quota before its generic HTTP 403', async () => {
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'GET') {
+          return response({
+            data: [{ id: 'relay-primary' }, { id: 'relay-fallback' }],
+          });
+        }
+        return response(
+          {
+            error: {
+              message: 'Insufficient user quota',
+              type: 'new_api_error',
+              code: 'insufficient_user_quota',
+            },
+          },
+          403,
+          { 'x-request-id': 'codeapix-request-id' }
+        );
+      }
+    );
+    const error = await runAiRelayPreflight({ ...config, fetcher }).catch(
+      (caught) => caught
+    );
+
+    expect(aiRelayPreflightFailureReport(error)).toEqual({
+      status: 'error',
+      kind: 'quota_exhausted',
+      httpStatus: 403,
+      stage: 'ordinary_completion',
+      model: 'relay-primary',
+      requestId: 'codeapix-request-id',
+    });
+  });
+
+  it('reports a missing model with only a limited, related model list', async () => {
+    const relatedModels = Array.from({ length: 12 }, (_, index) => ({
+      id: `relay-primary-variant-${index}`,
+    }));
+    const fetcher = vi.fn().mockResolvedValue(
+      response(
+        {
+          data: [
+            { id: 'relay-fallback' },
+            ...relatedModels,
+            { id: 'private-catalog-entry' },
+          ],
+        },
+        200,
+        { 'x-request-id': 'models-request-id' }
+      )
+    );
+    const error = await runAiRelayPreflight({ ...config, fetcher }).catch(
+      (caught) => caught
+    );
+
+    const report = aiRelayPreflightFailureReport(error);
+    expect(report).toMatchObject({
+      status: 'error',
+      kind: 'group_access_denied',
+      httpStatus: 200,
+      stage: 'models_list',
+      model: 'relay-primary',
+      requestId: 'models-request-id',
+    });
+    expect(report.availableModels).toHaveLength(8);
+    expect(report.availableModels?.[0]).toBe('relay-fallback');
+    expect(report.availableModels).not.toContain('private-catalog-entry');
   });
 
   it('classifies a relay error payload returned with HTTP 200', async () => {

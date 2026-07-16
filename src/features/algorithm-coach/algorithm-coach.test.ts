@@ -9,6 +9,7 @@ import {
   COACH_MODEL_WHITELIST,
   DEFAULT_COACH_MODEL,
   estimateCoachCostUsd,
+  isCoachFailoverEligible,
   isCoachModelCircuitOpen,
   isCoachProviderAccessFailure,
   parseAiRelayPricingJson,
@@ -124,6 +125,38 @@ describe('algorithm coach domain', () => {
     expect(classifyCoachProviderError({ statusCode: 401 })).toBe(
       'credential_invalid'
     );
+    expect(
+      classifyCoachProviderError({
+        statusCode: 403,
+        responseBody: JSON.stringify({
+          error: {
+            code: 'insufficient_user_quota',
+            message: 'provider detail must stay private',
+          },
+        }),
+      })
+    ).toBe('quota_exhausted');
+    expect(
+      classifyCoachProviderError({
+        statusCode: 403,
+        message: 'insufficient_user_quota',
+      })
+    ).toBe('quota_exhausted');
+    expect(
+      classifyCoachProviderError({
+        statusCode: 403,
+        responseBody: JSON.stringify({
+          error: { message: 'relay: insufficient_user_quota' },
+        }),
+      })
+    ).toBe('quota_exhausted');
+    expect(
+      classifyCoachProviderError({
+        statusCode: 403,
+        message: 'insufficient_user_quota_hint',
+      })
+    ).toBe('group_access_denied');
+    expect(isCoachFailoverEligible('quota_exhausted')).toBe(false);
     expect(classifyCoachProviderError(new Error('无权访问 gpt-5.5 分组'))).toBe(
       'group_access_denied'
     );

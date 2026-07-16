@@ -200,6 +200,7 @@ describe('POST /api/coach provider fallback', () => {
 
   it.each([
     ['timeout', 504, 'provider_timeout'],
+    ['quota_exhausted', 503, 'provider_quota_exhausted'],
     ['rate_limited', 429, 'provider_rate_limited'],
     ['invalid_output', 502, 'provider_invalid_output'],
   ])(

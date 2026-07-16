@@ -241,6 +241,26 @@ describe('live coach model routing', () => {
     expect(generation.attempts).toBe(2);
   });
 
+  it('does not retry or fail over when the relay account quota is exhausted', async () => {
+    mocks.generateObject.mockRejectedValueOnce({
+      statusCode: 403,
+      message: 'provider detail must stay private',
+      responseBody: JSON.stringify({
+        error: { code: 'insufficient_user_quota' },
+      }),
+    });
+
+    await expect(
+      generateLiveArtifact(hintRequest, config)
+    ).rejects.toMatchObject({
+      message: 'The AI relay account quota has been exhausted.',
+      reason: 'quota_exhausted',
+      attempts: 1,
+      selectedModel: 'openai/gpt-5.5',
+    });
+    expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+  });
+
   it('fails over for a codeapix-style HTTP 200 error envelope', async () => {
     mocks.generateObject
       .mockRejectedValueOnce({
@@ -697,6 +717,30 @@ describe('live coach model routing', () => {
     });
     expect(generation.selectedModel).toBe('google/gemini-2.5-flash');
     expect(generation.attempts).toBe(2);
+  });
+
+  it('does not fail over when chat starts with an exhausted relay quota', async () => {
+    const failedStream = new ReadableStream<string>({
+      start(controller) {
+        controller.error({
+          statusCode: 403,
+          responseBody: JSON.stringify({
+            error: { code: 'insufficient_user_quota' },
+          }),
+        });
+      },
+    });
+    mocks.streamText.mockReturnValueOnce(streamedText(failedStream));
+
+    await expect(
+      streamLiveCoachChat(chatRequest, config)
+    ).rejects.toMatchObject({
+      message: 'The AI relay account quota has been exhausted.',
+      reason: 'quota_exhausted',
+      attempts: 1,
+      selectedModel: 'openai/gpt-5.5',
+    });
+    expect(mocks.streamText).toHaveBeenCalledTimes(1);
   });
 
   it('propagates a relay error that arrives after safe chat text starts', async () => {

@@ -60,6 +60,11 @@ function coachModelErrorResponse(error: CoachModelError, traceId: string) {
       message:
         'The configured AI relay model is not available to this account.',
     },
+    quota_exhausted: {
+      status: 503,
+      code: 'provider_quota_exhausted',
+      message: 'The AI provider quota has been exhausted.',
+    },
     rate_limited: {
       status: 429,
       code: 'provider_rate_limited',

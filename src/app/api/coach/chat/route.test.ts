@@ -174,6 +174,27 @@ describe('POST /api/coach/chat provider fallback', () => {
     expect(JSON.stringify(body)).not.toContain('No available channel');
   });
 
+  it('maps an exhausted provider quota to a stable production error', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    mocks.streamLiveCoachChat.mockRejectedValueOnce(
+      new mocks.CoachModelError(
+        'provider detail must stay private',
+        'provider_failed',
+        'quota_exhausted'
+      )
+    );
+
+    const response = await POST(chatRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.error).toMatchObject({
+      code: 'provider_quota_exhausted',
+      message: 'The AI provider quota has been exhausted.',
+    });
+    expect(JSON.stringify(body)).not.toContain('provider detail');
+  });
+
   it('records successful stream usage after the response completes', async () => {
     mocks.streamLiveCoachChat.mockResolvedValue({
       stream: new ReadableStream<Uint8Array>({

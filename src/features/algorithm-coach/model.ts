@@ -16,6 +16,7 @@ export type CoachModelRoute = CoachAction | 'chat';
 export type CoachProviderFailureKind =
   | 'credential_invalid'
   | 'group_access_denied'
+  | 'quota_exhausted'
   | 'rate_limited'
   | 'channel_unavailable'
   | 'timeout'
@@ -176,6 +177,50 @@ function statusCodeFromError(error: unknown): number | undefined {
   return undefined;
 }
 
+function hasStructuredProviderErrorCode(
+  error: unknown,
+  expectedCode: string,
+  seen = new Set<object>(),
+  depth = 0
+): boolean {
+  if (depth > 4 || !error || typeof error !== 'object' || seen.has(error)) {
+    return false;
+  }
+  seen.add(error);
+  const candidate = error as {
+    code?: unknown;
+    error?: unknown;
+    data?: unknown;
+    cause?: unknown;
+    errors?: unknown[];
+    responseBody?: unknown;
+  };
+  if (candidate.code === expectedCode) return true;
+  if (typeof candidate.responseBody === 'string') {
+    try {
+      const body = JSON.parse(
+        candidate.responseBody.slice(0, 8_000)
+      ) as unknown;
+      if (hasStructuredProviderErrorCode(body, expectedCode, seen, depth + 1)) {
+        return true;
+      }
+    } catch {
+      // Provider response bodies are untrusted and may not be JSON.
+    }
+  }
+  for (const nested of [
+    candidate.error,
+    candidate.data,
+    candidate.cause,
+    ...(candidate.errors ?? []).slice(0, 4),
+  ]) {
+    if (hasStructuredProviderErrorCode(nested, expectedCode, seen, depth + 1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function providerErrorMessage(
   error: unknown,
   seen = new Set<object>(),
@@ -242,13 +287,23 @@ export function classifyCoachProviderError(
   error: unknown
 ): CoachProviderFailureKind {
   const status = statusCodeFromError(error);
+  const providerMessage = providerErrorMessage(error);
+  if (
+    status === 403 &&
+    (hasStructuredProviderErrorCode(error, 'insufficient_user_quota') ||
+      /(?:^|[^A-Za-z0-9_])insufficient_user_quota(?:$|[^A-Za-z0-9_])/i.test(
+        providerMessage
+      ))
+  ) {
+    return 'quota_exhausted';
+  }
   if (status === 401) return 'credential_invalid';
   if (status === 403) return 'group_access_denied';
   if (status === 429) return 'rate_limited';
   if (status === 408 || status === 504) return 'timeout';
   if (status && status >= 500) return 'channel_unavailable';
   const name = error instanceof Error ? error.name : '';
-  const message = providerErrorMessage(error) || String(error);
+  const message = providerMessage || String(error);
   if (
     /credential[_ -]?invalid|invalid (?:api )?(?:key|token)|unauthori[sz]ed|authentication failed|令牌(?:无效|失效)|密钥(?:无效|错误)|未提供.*令牌/i.test(
       message

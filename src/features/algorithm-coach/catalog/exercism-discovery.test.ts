@@ -922,6 +922,40 @@ describe('non-publishable discovery enrichment', () => {
     expect(report.drafts[0].aiFailureReason).toBe('rate_limited');
   });
 
+  it('retains quota exhaustion without trying the catalog fallback model', async () => {
+    const snapshot = await new ExercismCatalogAdapter({
+      fetch: discoveryFetch(),
+    }).discoverExercises([curatedExercismProblems[0]]);
+    const generate = vi.fn(async () => {
+      throw {
+        statusCode: 403,
+        responseBody: JSON.stringify({
+          error: { code: 'insufficient_user_quota' },
+        }),
+      };
+    });
+
+    const report = await generateDiscoveryReport(
+      snapshot,
+      new RelayDiscoveryDraftGenerator({
+        apiKey: 'test-key',
+        model: 'relay-primary',
+        fallbackModel: 'relay-fallback',
+        provider: { generate },
+      })
+    );
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(report.drafts[0]).toMatchObject({
+      aiFailureReason: 'quota_exhausted',
+      aiFailureMetadata: {
+        attempts: 1,
+        models: ['relay-primary'],
+      },
+    });
+    expect(report.drafts[0].aiFailureMetadata?.fallbackFrom).toBeUndefined();
+  });
+
   it('does not send catalog credentials to a plaintext remote relay', async () => {
     const snapshot = await new ExercismCatalogAdapter({
       fetch: discoveryFetch(),

@@ -4,6 +4,7 @@ export type AiRelayFailureKind =
   | 'invalid_configuration'
   | 'credential_invalid'
   | 'group_access_denied'
+  | 'quota_exhausted'
   | 'rate_limited'
   | 'channel_unavailable'
   | 'timeout'
@@ -33,15 +34,108 @@ export interface AiRelayPreflightResult {
   models: AiRelayModelCapabilities[];
 }
 
+export type AiRelayProbeStage =
+  | 'models_list'
+  | 'ordinary_completion'
+  | 'streaming_completion'
+  | 'structured_output';
+
+interface AiRelayProbeDiagnostic {
+  stage?: AiRelayProbeStage;
+  model?: string;
+  availableModels?: string[];
+}
+
 export class AiRelayProbeError extends Error {
+  public readonly stage?: AiRelayProbeStage;
+  public readonly model?: string;
+  public readonly availableModels?: string[];
+
   constructor(
     public readonly kind: AiRelayFailureKind,
     public readonly httpStatus?: number,
-    public readonly requestId?: string
+    public readonly requestId?: string,
+    diagnostic: AiRelayProbeDiagnostic = {}
   ) {
     super(`AI relay preflight failed: ${kind}`);
     this.name = 'AiRelayProbeError';
+    this.stage = diagnostic.stage;
+    this.model = diagnostic.model;
+    this.availableModels = diagnostic.availableModels;
   }
+}
+
+const MAX_DIAGNOSTIC_MODELS = 8;
+const MAX_DIAGNOSTIC_ID_LENGTH = 160;
+
+function safeDiagnosticId(value: string | undefined) {
+  const safe = value
+    ?.replace(/[^a-zA-Z0-9._:/@+\-]/g, '')
+    .slice(0, MAX_DIAGNOSTIC_ID_LENGTH);
+  return safe || undefined;
+}
+
+export function aiRelayPreflightFailureReport(error: unknown) {
+  if (!(error instanceof AiRelayProbeError)) {
+    return { status: 'error' as const, kind: 'invalid_configuration' as const };
+  }
+  const model = safeDiagnosticId(error.model);
+  const requestIdValue = safeDiagnosticId(error.requestId);
+  const availableModels = Array.from(
+    new Set(
+      (error.availableModels ?? [])
+        .map((candidate) => safeDiagnosticId(candidate))
+        .filter((candidate): candidate is string => Boolean(candidate))
+    )
+  ).slice(0, MAX_DIAGNOSTIC_MODELS);
+  return {
+    status: 'error' as const,
+    kind: error.kind,
+    ...(error.httpStatus ? { httpStatus: error.httpStatus } : {}),
+    ...(error.stage ? { stage: error.stage } : {}),
+    ...(model ? { model } : {}),
+    ...(requestIdValue ? { requestId: requestIdValue } : {}),
+    ...(error.availableModels ? { availableModels } : {}),
+  };
+}
+
+async function withProbeDiagnostic<T>(
+  diagnostic: Pick<AiRelayProbeDiagnostic, 'stage' | 'model'>,
+  probe: () => Promise<T>
+) {
+  try {
+    return await probe();
+  } catch (error) {
+    if (!(error instanceof AiRelayProbeError)) throw error;
+    throw new AiRelayProbeError(error.kind, error.httpStatus, error.requestId, {
+      ...diagnostic,
+      availableModels: error.availableModels,
+    });
+  }
+}
+
+function relatedAvailableModels(
+  listed: Set<string>,
+  configuredModels: string[]
+) {
+  const exact = configuredModels.filter((model) => listed.has(model));
+  const familyTokens = new Set(
+    configuredModels.flatMap((model) =>
+      model
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((token) => token.length >= 3)
+    )
+  );
+  const related = Array.from(listed).filter((model) => {
+    if (exact.includes(model)) return false;
+    const candidate = model.toLowerCase();
+    return Array.from(familyTokens).some((token) => candidate.includes(token));
+  });
+  return Array.from(new Set([...exact, ...related])).slice(
+    0,
+    MAX_DIAGNOSTIC_MODELS
+  );
 }
 
 const structuredProbeSchema = z.object({ ok: z.boolean() }).strict();
@@ -72,6 +166,13 @@ function classifyFailure(
     /invalid (?:api )?(?:key|token)|unauthori[sz]ed/i.test(message)
   ) {
     return 'credential_invalid';
+  }
+  if (
+    /insufficient_user_quota|insufficient[ _-]?(?:user[ _-]?)?quota|quota[ _-]?(?:exhausted|insufficient)|余额不足|额度不足/i.test(
+      message
+    )
+  ) {
+    return 'quota_exhausted';
   }
   if (
     status === 403 ||
@@ -472,10 +573,18 @@ export async function runAiRelayPreflight(
     throw new AiRelayProbeError('credential_invalid');
   }
   const origin = relayUrl.origin;
-  const modelsResponse = await relayFetch(config, 'models', { method: 'GET' });
-  if (!modelsResponse.ok) throw await responseError(modelsResponse);
-  const rawModelsPayload = await responseJson(modelsResponse);
-  throwIfRelayErrorPayload(rawModelsPayload, modelsResponse);
+  const { modelsResponse, rawModelsPayload } = await withProbeDiagnostic(
+    { stage: 'models_list', model: config.primaryModel },
+    async () => {
+      const modelsResponse = await relayFetch(config, 'models', {
+        method: 'GET',
+      });
+      if (!modelsResponse.ok) throw await responseError(modelsResponse);
+      const rawModelsPayload = await responseJson(modelsResponse);
+      throwIfRelayErrorPayload(rawModelsPayload, modelsResponse);
+      return { modelsResponse, rawModelsPayload };
+    }
+  );
   const modelsPayload = z
     .object({ data: z.array(z.object({ id: z.string() }).passthrough()) })
     .passthrough()
@@ -483,19 +592,35 @@ export async function runAiRelayPreflight(
   const listed = new Set(
     modelsPayload.success ? modelsPayload.data.data.map((item) => item.id) : []
   );
-  if (
-    !modelsPayload.success ||
-    !listed.has(config.primaryModel) ||
-    !listed.has(config.fallbackModel)
-  ) {
-    throw new AiRelayProbeError('group_access_denied');
+  const configuredModels = [config.primaryModel, config.fallbackModel];
+  const missingModel = configuredModels.find((model) => !listed.has(model));
+  if (!modelsPayload.success || missingModel) {
+    throw new AiRelayProbeError(
+      'group_access_denied',
+      modelsResponse.status,
+      requestId(modelsResponse),
+      {
+        stage: 'models_list',
+        model: missingModel ?? config.primaryModel,
+        availableModels: modelsPayload.success
+          ? relatedAvailableModels(listed, configuredModels)
+          : undefined,
+      }
+    );
   }
 
   const models: AiRelayModelCapabilities[] = [];
-  for (const model of [config.primaryModel, config.fallbackModel]) {
-    await probeAiRelayChat(config, model);
-    await streamingCompletion(config, model);
-    const structured = await structuredCompletion(config, model);
+  for (const model of configuredModels) {
+    await withProbeDiagnostic({ stage: 'ordinary_completion', model }, () =>
+      probeAiRelayChat(config, model)
+    );
+    await withProbeDiagnostic({ stage: 'streaming_completion', model }, () =>
+      streamingCompletion(config, model)
+    );
+    const structured = await withProbeDiagnostic(
+      { stage: 'structured_output', model },
+      () => structuredCompletion(config, model)
+    );
     if (
       config.structuredOutputMode === 'json-schema' &&
       structured !== 'json-schema'

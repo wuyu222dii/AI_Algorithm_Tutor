@@ -1049,6 +1049,7 @@ export function assertDiscoveryDraftBoundary(
       [
         'credential_invalid',
         'group_access_denied',
+        'quota_exhausted',
         'rate_limited',
         'channel_unavailable',
         'timeout',
