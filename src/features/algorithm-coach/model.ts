@@ -139,6 +139,16 @@ function statusCodeFromError(error: unknown): number | undefined {
   return undefined;
 }
 
+export function isCoachProviderAccessFailure(error: unknown): boolean {
+  const status = statusCodeFromError(error);
+  if (status === 401 || status === 403) return true;
+  const message =
+    error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  return /invalid (?:api )?(?:key|token)|unauthori[sz]ed|forbidden|access denied|无权访问|权限不足|没有权限/i.test(
+    message
+  );
+}
+
 export function classifyCoachProviderError(
   error: unknown
 ): CoachProviderFailureKind {

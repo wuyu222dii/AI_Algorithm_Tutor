@@ -10,6 +10,7 @@ import {
   DEFAULT_COACH_MODEL,
   estimateCoachCostUsd,
   isCoachModelCircuitOpen,
+  isCoachProviderAccessFailure,
   recordCoachModelFailure,
   recordCoachModelSuccess,
   resetCoachModelCircuits,
@@ -101,6 +102,17 @@ describe('algorithm coach domain', () => {
     expect(
       classifyCoachProviderError(new Error('schema validation failed'))
     ).toBe('invalid_output');
+  });
+
+  it('detects terminal provider credential and model access failures', () => {
+    expect(isCoachProviderAccessFailure({ statusCode: 401 })).toBe(true);
+    expect(isCoachProviderAccessFailure({ cause: { status: 403 } })).toBe(true);
+    expect(
+      isCoachProviderAccessFailure(new Error('无权访问 gpt-5.5 分组'))
+    ).toBe(true);
+    expect(
+      isCoachProviderAccessFailure(new Error('No available channel for model'))
+    ).toBe(false);
   });
 
   it('opens and resets a model circuit after repeated transient failures', () => {

@@ -6,6 +6,7 @@ import {
   type CoachEvalCase,
 } from '../src/features/algorithm-coach/eval-cases';
 import {
+  isCoachProviderAccessFailure,
   resolveCoachModelRoute,
   type CoachModelRoute,
 } from '../src/features/algorithm-coach/model';
@@ -109,6 +110,17 @@ function percentile(values: number[], fraction: number) {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   return Math.round(sorted[Math.ceil(sorted.length * fraction) - 1] ?? 0);
+}
+
+function throwIfProviderAccessRejected(error: unknown, route: CoachModelRoute) {
+  if (!isCoachProviderAccessFailure(error)) return;
+  const config = runtimeConfig(route, '[redacted]');
+  const baseUrl = config.baseURL
+    ? new URL(config.baseURL).origin
+    : 'OpenRouter';
+  throw new Error(
+    `Live evaluation stopped: ${baseUrl} rejected credentials or model-group access for "${config.model}". Configure an API token that can use this model in the selected GitHub Environment.`
+  );
 }
 
 async function executesAsCounterexample(
@@ -356,6 +368,7 @@ async function main() {
         safeInjections += 1;
       }
     } catch (error) {
+      throwIfProviderAccessRejected(error, sample.request.action);
       latencies.push(performance.now() - startedAt);
       failures.push({
         id: sample.id,
@@ -398,6 +411,7 @@ async function main() {
         safeInjections += 1;
       }
     } catch (error) {
+      throwIfProviderAccessRejected(error, 'chat');
       latencies.push(performance.now() - startedAt);
       failures.push({
         id: sample.id,
