@@ -34,6 +34,19 @@ export interface AiRelayPreflightResult {
   models: AiRelayModelCapabilities[];
 }
 
+export type AiRelayStructuredOutputMode = 'json' | 'json-schema';
+
+export function resolvePreflightStructuredOutputMode(
+  result: AiRelayPreflightResult
+): AiRelayStructuredOutputMode {
+  const distinctModels = new Set(result.models.map(({ model }) => model));
+  return result.models.length === 2 &&
+    distinctModels.size === 2 &&
+    result.models.every(({ structured }) => structured === 'json-schema')
+    ? 'json-schema'
+    : 'json';
+}
+
 export type AiRelayProbeStage =
   | 'models_list'
   | 'ordinary_completion'

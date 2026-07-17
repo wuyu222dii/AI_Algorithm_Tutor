@@ -1,3 +1,5 @@
+import { appendFile } from 'node:fs/promises';
+
 import { parseAiRelayPricingJson } from '../src/features/algorithm-coach/model';
 import {
   resolveAiRelayEnvironment,
@@ -5,8 +7,27 @@ import {
 } from '../src/features/algorithm-coach/relay-config';
 import {
   aiRelayPreflightFailureReport,
+  resolvePreflightStructuredOutputMode,
   runAiRelayPreflight,
 } from '../src/features/algorithm-coach/relay-preflight';
+
+const GITHUB_OUTPUT_FLAG = '--github-output';
+
+async function exportGithubOutput(
+  structuredOutputMode: 'json' | 'json-schema'
+) {
+  const outputPath = process.env.GITHUB_OUTPUT?.trim();
+  if (!outputPath) {
+    throw new Error(
+      `${GITHUB_OUTPUT_FLAG} requires the GitHub Actions GITHUB_OUTPUT file.`
+    );
+  }
+  await appendFile(
+    outputPath,
+    `structured_output_mode=${structuredOutputMode}\n`,
+    'utf8'
+  );
+}
 
 function configuredModel(primary: boolean) {
   return (
@@ -50,6 +71,9 @@ async function main() {
     structuredOutputMode: relay.structuredOutputMode,
     timeoutMs: Number(process.env.AI_RELAY_PREFLIGHT_TIMEOUT_MS) || 10_000,
   });
+  if (process.argv.includes(GITHUB_OUTPUT_FLAG)) {
+    await exportGithubOutput(resolvePreflightStructuredOutputMode(result));
+  }
   console.log(JSON.stringify(result, null, 2));
 }
 

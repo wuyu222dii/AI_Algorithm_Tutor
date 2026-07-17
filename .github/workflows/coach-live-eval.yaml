@@ -88,10 +88,12 @@ jobs:
             exit 1
           fi
       - name: Verify relay protocol and both configured models
-        run: pnpm ai:preflight
+        id: relay_preflight
+        run: pnpm ai:preflight -- --github-output
         env:
           NODE_ENV: production
       - name: Run live evaluation quality gate
         run: pnpm eval:coach:live
         env:
           NODE_ENV: production
+          AI_RELAY_STRUCTURED_OUTPUT_MODE: ${{ steps.relay_preflight.outputs.structured_output_mode }}

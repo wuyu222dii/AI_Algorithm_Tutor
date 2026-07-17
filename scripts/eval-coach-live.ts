@@ -112,7 +112,8 @@ function independentArtifactCases(): CoachEvalCase[] {
 
 function runtimeConfig(
   route: CoachModelRoute,
-  apiKey: string
+  apiKey: string,
+  circuitScope?: string
 ): CoachRuntimeConfig {
   const models = resolveCoachModelRoute(route);
   const relay = resolveAiRelayEnvironment();
@@ -123,6 +124,7 @@ function runtimeConfig(
     fallbackModel: models.fallback,
     structuredOutputMode: relay.structuredOutputMode,
     timeoutMs: Number(process.env.COACH_PROVIDER_TIMEOUT_MS) || 10_000,
+    circuitScope,
   };
 }
 
@@ -281,6 +283,7 @@ async function main() {
 
   const apiKey = resolveAiRelayEnvironment().apiKey;
   if (!apiKey) throw new Error('AI_RELAY_API_KEY is required for live eval');
+  const circuitRunScope = `live-eval:${crypto.randomUUID()}`;
 
   const failures: Array<{ id: string; reason: string }> = [];
   const latencies: number[] = [];
@@ -314,7 +317,11 @@ async function main() {
     try {
       const generation = await generateLiveArtifact(
         sample.request,
-        runtimeConfig(sample.request.action, apiKey)
+        runtimeConfig(
+          sample.request.action,
+          apiKey,
+          `${circuitRunScope}:${sample.id}`
+        )
       );
       const artifact = generation.artifact;
       successfulRequests += 1;
@@ -502,7 +509,7 @@ async function main() {
     try {
       const generation = await streamLiveCoachChat(
         sample.request,
-        runtimeConfig('chat', apiKey)
+        runtimeConfig('chat', apiKey, `${circuitRunScope}:${sample.id}`)
       );
       models.add(generation.selectedModel);
       const text = await new Response(generation.stream).text();

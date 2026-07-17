@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   aiRelayPreflightFailureReport,
+  resolvePreflightStructuredOutputMode,
   runAiRelayPreflight,
 } from './relay-preflight';
 
@@ -31,6 +32,42 @@ const structuredProbeContent = JSON.stringify({
 });
 
 describe('AI relay preflight', () => {
+  it('enables JSON Schema only when both distinct models passed that probe', () => {
+    const result = {
+      status: 'ok' as const,
+      origin: 'https://relay.example',
+      modelsListed: true,
+      models: [
+        {
+          model: 'relay-primary',
+          ordinary: true,
+          streaming: true,
+          structured: 'json-schema' as const,
+        },
+        {
+          model: 'relay-fallback',
+          ordinary: true,
+          streaming: true,
+          structured: 'json-schema' as const,
+        },
+      ],
+    };
+
+    expect(resolvePreflightStructuredOutputMode(result)).toBe('json-schema');
+    expect(
+      resolvePreflightStructuredOutputMode({
+        ...result,
+        models: [result.models[0], { ...result.models[1], structured: 'json' }],
+      })
+    ).toBe('json');
+    expect(
+      resolvePreflightStructuredOutputMode({
+        ...result,
+        models: [result.models[0], { ...result.models[0] }],
+      })
+    ).toBe('json');
+  });
+
   it('checks both relay models without exposing credentials', async () => {
     const fetcher = vi.fn(
       async (_input: RequestInfo | URL, init?: RequestInit) => {

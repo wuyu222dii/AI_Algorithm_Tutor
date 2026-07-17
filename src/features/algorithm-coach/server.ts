@@ -202,6 +202,8 @@ export interface CoachRuntimeConfig {
   fallbackModel?: CoachModel;
   timeoutMs?: number;
   structuredOutputMode?: 'json' | 'json-schema';
+  /** Server-only namespace used to isolate synthetic evaluation circuits. */
+  circuitScope?: string;
 }
 
 export const COACH_ARTIFACT_MAX_OUTPUT_TOKENS = 500;
@@ -635,6 +637,33 @@ function normalizeLiveArtifact(
           : 'Locate the code behind this evidence, make the smallest change, and run it again.';
       return artifact;
     }
+    if (
+      request.action === 'counterexample' &&
+      artifact.counterexample &&
+      'counterexample' in output &&
+      !containsSolutionShapedCode({
+        input: output.counterexample.input,
+        expected: output.counterexample.expected,
+        actual: output.counterexample.actual,
+      })
+    ) {
+      artifact.title =
+        locale === 'zh' ? '反例候选' : 'Counterexample candidate';
+      artifact.summary =
+        locale === 'zh'
+          ? '已保留可验证的输入与期望值，并移除了可能泄露答案的说明。'
+          : 'The verifiable input and expected value were kept, and potentially solution-revealing prose was removed.';
+      artifact.details = [];
+      artifact.nextAction =
+        locale === 'zh'
+          ? '使用该输入运行当前代码，对比实际结果与期望值。'
+          : 'Run the current code with this input and compare the actual result with the expected value.';
+      artifact.counterexample.explanation =
+        locale === 'zh'
+          ? '该用例需要通过真实代码执行进一步确认。'
+          : 'This case still needs to be confirmed by executing the learner code.';
+      return artifact;
+    }
     throw new CoachModelError(
       'The provider response contained a complete solution.',
       'provider_failed',
@@ -694,11 +723,14 @@ function createRelayProvider(config: CoachRuntimeConfig) {
 }
 
 function relayCircuitKey(config: CoachRuntimeConfig, model: CoachModel) {
+  let baseKey: string;
   try {
-    return `${new URL(config.baseURL ?? '').origin}:${model}`;
+    baseKey = `${new URL(config.baseURL ?? '').origin}:${model}`;
   } catch {
-    return `unconfigured:${model}`;
+    baseKey = `unconfigured:${model}`;
   }
+  const scope = config.circuitScope?.trim();
+  return scope ? `${scope.slice(0, 200)}:${baseKey}` : baseKey;
 }
 
 function providerFailure(

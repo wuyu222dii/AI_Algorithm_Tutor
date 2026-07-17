@@ -137,6 +137,19 @@ describe('live coach model routing', () => {
     expect(generation.estimatedCostUsd).toBe(0.0006);
   });
 
+  it('counts a primary timeout and a single fallback attempt independently', async () => {
+    mocks.generateObject
+      .mockRejectedValueOnce({ statusCode: 504, message: 'upstream timeout' })
+      .mockResolvedValueOnce(generatedHint());
+
+    const generation = await generateLiveArtifact(hintRequest, config);
+
+    expect(mocks.generateObject).toHaveBeenCalledTimes(2);
+    expect(generation.selectedModel).toBe(config.fallbackModel);
+    expect(generation.fallbackFrom).toBe(config.model);
+    expect(generation.attempts).toBe(2);
+  });
+
   it('preserves fallback context when both relay models fail', async () => {
     mocks.generateObject.mockRejectedValue({
       statusCode: 503,
@@ -166,6 +179,33 @@ describe('live coach model routing', () => {
       generateLiveArtifact(hintRequest, config)
     ).rejects.toMatchObject({ attempts: 0, reason: 'channel_unavailable' });
     expect(mocks.generateObject).not.toHaveBeenCalled();
+  });
+
+  it('isolates synthetic evaluation circuits while preserving default keys', async () => {
+    const now = Date.now();
+    const blockedScope = 'live-eval:run-a:case-a';
+    for (const model of [config.model, config.fallbackModel!]) {
+      const scopedKey = `${blockedScope}:https://relay.example:${model}`;
+      recordCoachModelFailure(scopedKey, 'timeout', now);
+      recordCoachModelFailure(scopedKey, 'timeout', now);
+      recordCoachModelFailure(scopedKey, 'timeout', now);
+    }
+    mocks.generateObject.mockResolvedValueOnce(generatedHint());
+
+    const generation = await generateLiveArtifact(hintRequest, {
+      ...config,
+      circuitScope: 'live-eval:run-a:case-b',
+    });
+
+    expect(generation.selectedModel).toBe(config.model);
+    expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+    await expect(
+      generateLiveArtifact(hintRequest, {
+        ...config,
+        circuitScope: blockedScope,
+      })
+    ).rejects.toMatchObject({ attempts: 0, reason: 'channel_unavailable' });
+    expect(mocks.generateObject).toHaveBeenCalledTimes(1);
   });
 
   it('builds the compatible provider for a custom relay URL', async () => {
@@ -748,6 +788,74 @@ describe('live coach model routing', () => {
       'Run evidence: SyntaxError: Unexpected token } at line 4',
     ]);
     expect(JSON.stringify(generation.artifact)).not.toContain('function solve');
+  });
+
+  it('keeps only a safe unverified payload from a solution-shaped counterexample', async () => {
+    mocks.generateObject.mockResolvedValueOnce({
+      object: {
+        title: 'Complete solution',
+        summary: 'function hasTargetPair(values, target) { return true; }',
+        details: ['Copy the function.'],
+        nextAction: 'Submit it.',
+        counterexample: {
+          input: '[[1,2],3]',
+          expected: 'true',
+          actual: 'false',
+          explanation: 'Use this complete function to solve the problem.',
+        },
+      },
+      finishReason: 'stop',
+      usage: { inputTokens: 80, outputTokens: 30, totalTokens: 110 },
+    });
+
+    const generation = await generateLiveArtifact(
+      {
+        action: 'counterexample',
+        locale: 'en',
+        problemSlug: 'sorted-pair-target',
+      },
+      config
+    );
+
+    expect(generation.attempts).toBe(1);
+    expect(generation.artifact.counterexample).toMatchObject({
+      input: [[1, 2], 3],
+      expected: true,
+      verification: 'unverified',
+    });
+    expect(JSON.stringify(generation.artifact)).not.toContain(
+      'function hasTargetPair'
+    );
+  });
+
+  it('rejects solution code hidden inside counterexample data fields', async () => {
+    mocks.generateObject.mockResolvedValue({
+      object: {
+        title: 'Counterexample',
+        summary: 'A candidate input.',
+        details: [],
+        nextAction: 'Run it.',
+        counterexample: {
+          input: '["function solve(values) { return values[0]; }"]',
+          expected: 'true',
+          actual: null,
+          explanation: 'Try this input.',
+        },
+      },
+      finishReason: 'stop',
+      usage: { inputTokens: 80, outputTokens: 30, totalTokens: 110 },
+    });
+
+    await expect(
+      generateLiveArtifact(
+        {
+          action: 'counterexample',
+          locale: 'en',
+          problemSlug: 'sorted-pair-target',
+        },
+        config
+      )
+    ).rejects.toMatchObject({ reason: 'invalid_output', attempts: 2 });
   });
 
   it('grades active recall with sanitized untrusted input and rating caps', async () => {
