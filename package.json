@@ -37,6 +37,7 @@
     "eval:coach:live": "tsx scripts/with-env.ts --mode=production tsx --tsconfig scripts/tsconfig.live-eval.json scripts/eval-coach-live.ts",
     "eval:coach:smoke": "tsx scripts/with-env.ts --mode=production tsx --tsconfig scripts/tsconfig.live-eval.json scripts/eval-coach-live.ts --smoke",
     "ai:preflight": "tsx scripts/with-env.ts --mode=production tsx scripts/ai-relay-preflight.ts",
+    "health:deployment": "tsx scripts/with-env.ts --mode=production tsx scripts/check-deployment-health.ts",
     "budget:editor": "node scripts/check-editor-assets.mjs",
     "catalog:generate": "tsx scripts/generate-coach-catalog-migration.ts",
     "catalog:generate:hard": "tsx scripts/generate-coach-catalog-migration.ts --hard",

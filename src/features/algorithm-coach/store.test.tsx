@@ -530,6 +530,143 @@ describe('CoachProvider persistence', () => {
     expect(loadCoachState(storage).profile?.goal).toBe('contest');
   });
 
+  it('hydrates signed-in learning data before an initial cloud request settles', async () => {
+    const scope = createCoachStorageScope('slow-cloud-account');
+    const local = createInitialCoachState();
+    local.artifacts = [{ ...reviewCard, id: 'local-cached-card' }];
+    saveCoachState(local, undefined, scope);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise<Response>(() => undefined))
+    );
+
+    const { result, unmount } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems} storageScope={scope}>
+          {children}
+        </CoachProvider>
+      ),
+    });
+
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    expect(result.current.syncStatus).toBe('syncing');
+    expect(result.current.state.artifacts).toContainEqual(
+      expect.objectContaining({ id: 'local-cached-card' })
+    );
+
+    unmount();
+  });
+
+  it('classifies an initial cloud timeout without discarding cached data', async () => {
+    vi.useFakeTimers();
+    const scope = createCoachStorageScope('timed-out-cloud-account');
+    const local = createInitialCoachState();
+    local.artifacts = [{ ...reviewCard, id: 'cached-through-timeout' }];
+    saveCoachState(local, undefined, scope);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise<Response>(() => undefined))
+    );
+
+    const { result, unmount } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems} storageScope={scope}>
+          {children}
+        </CoachProvider>
+      ),
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.hydrated).toBe(true);
+    expect(result.current.syncStatus).toBe('syncing');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(result.current.syncStatus).toBe('error');
+    expect(result.current.syncError).toBe('network');
+    expect(result.current.state.artifacts).toContainEqual(
+      expect.objectContaining({ id: 'cached-through-timeout' })
+    );
+    unmount();
+  });
+
+  it('replays edits made while the initial cloud state is still loading', async () => {
+    const scope = createCoachStorageScope('cloud-load-race-account');
+    const remote = createInitialCoachState();
+    remote.artifacts = [{ ...reviewCard, id: 'remote-card' }];
+    let resolveInitialLoad: ((response: Response) => void) | undefined;
+    const initialLoad = new Promise<Response>((resolve) => {
+      resolveInitialLoad = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'PATCH') {
+          const body = JSON.parse(String(init.body)) as {
+            mutations: Array<{ id: string }>;
+          };
+          return Promise.resolve(
+            Response.json({
+              data: {
+                revision: 2,
+                appliedMutationIds: body.mutations.map((item) => item.id),
+                replayedMutationIds: [],
+              },
+            })
+          );
+        }
+        return initialLoad;
+      })
+    );
+
+    const { result, unmount } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems} storageScope={scope}>
+          {children}
+        </CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+
+    act(() => {
+      result.current.addArtifact({ ...reviewCard, id: 'local-during-load' });
+    });
+    await waitFor(() => {
+      const queued = JSON.parse(
+        window.localStorage.getItem(
+          getScopedStorageKey(COACH_SYNC_QUEUE_KEY, scope)
+        ) ?? '[]'
+      ) as unknown[];
+      expect(queued.length).toBeGreaterThan(0);
+    });
+
+    await act(async () => {
+      resolveInitialLoad?.(
+        Response.json({
+          data: {
+            state: remote,
+            importedProblem: null,
+            importedDrafts: [],
+            reviewProgress: { version: 1, items: {} },
+            hasData: true,
+            revision: 1,
+          },
+        })
+      );
+      await initialLoad;
+    });
+
+    await waitFor(() => {
+      expect(result.current.state.artifacts.map((item) => item.id)).toEqual(
+        expect.arrayContaining(['remote-card', 'local-during-load'])
+      );
+    });
+    unmount();
+  });
+
   it('recovers a revision conflict and replays the persisted mutation queue', async () => {
     const scope = createCoachStorageScope('conflict-account');
     const firstRemote = createInitialCoachState();

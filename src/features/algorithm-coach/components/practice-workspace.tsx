@@ -79,6 +79,10 @@ import {
   runError,
   runPassed,
 } from './domain-adapter';
+import {
+  ReviewCardGenerationNotice,
+  type ReviewCardGenerationStatus,
+} from './review-card-generation-notice';
 
 const copy = {
   zh: {
@@ -130,6 +134,7 @@ const copy = {
     invalidRequest: 'AI 请求参数无效，请刷新页面后重试。',
     error: '代码运行失败，请检查语法或稍后重试。',
     completed: '本题已完成。',
+    reviewCardFailedToast: '复习卡未生成，可在 AI 教练中重试。',
     imported: '导入题',
     importedNotice:
       '该导入草稿当前没有可验证测试；你可以编辑代码，但运行与提交会保持关闭。',
@@ -210,6 +215,8 @@ const copy = {
     invalidRequest: 'The AI request is invalid. Refresh the page and retry.',
     error: 'Code execution failed. Check the syntax or try again.',
     completed: 'Problem completed.',
+    reviewCardFailedToast:
+      'The review card was not generated. Retry it from the AI Coach.',
     imported: 'Imported',
     importedNotice:
       'This imported draft has no verified tests yet. You can edit code, but run and submit stay disabled.',
@@ -389,12 +396,17 @@ export function PracticeWorkspace({
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [chatRetry, setChatRetry] = useState<ChatRetryState | null>(null);
+  const [reviewCardStatus, setReviewCardStatus] =
+    useState<ReviewCardGenerationStatus>('idle');
   const codeInitializedFor = useRef('');
   const contextInitializedFor = useRef('');
   const chatAbortRef = useRef<AbortController | null>(null);
   const hintLevelRef = useRef<0 | 1 | 2 | 3>(0);
   const hintRefinementRef = useRef<ActiveHintRefinement | null>(null);
   const hintRefinementQueueRef = useRef<Array<() => Promise<void>>>([]);
+  const reviewCardRunRef = useRef<CodeRunResult | null>(null);
+  const reviewCardInFlightRef = useRef(false);
+  const reviewCardGenerationRef = useRef(0);
   const problemContentVersion = problem ? getProblemContentVersion(problem) : 1;
   const sessionKey = problem
     ? getPracticeSessionKey(problem.slug, problemContentVersion)
@@ -552,12 +564,40 @@ export function PracticeWorkspace({
     if (!loaded || !problem || !coach.storageScope) return;
     const contextKey = `${coach.storageScope}:${sessionKey}:${locale}`;
     if (contextInitializedFor.current === contextKey) return;
+    reviewCardGenerationRef.current += 1;
+    reviewCardInFlightRef.current = false;
 
     const session = state.sessions[sessionKey];
     const restoredHintLevel = session?.hintLevel ?? 0;
     hintLevelRef.current = restoredHintLevel;
     setHintLevel(restoredHintLevel);
-    setResult(session?.runs.at(-1) ?? null);
+    const restoredResult = session?.runs.at(-1) ?? null;
+    setResult(restoredResult);
+    const restoredReviewCard =
+      restoredResult &&
+      runPassed(restoredResult) &&
+      restoredResult.testScope === 'full'
+        ? state.artifacts.find(
+            (artifact) =>
+              artifact.type === 'review_card' &&
+              artifact.problemSlug === problem.slug &&
+              (artifact.problemContentVersion ?? 1) === problemContentVersion &&
+              (!artifact.runId || artifact.runId === restoredResult.id)
+          )
+        : undefined;
+    reviewCardRunRef.current =
+      restoredResult &&
+      runPassed(restoredResult) &&
+      restoredResult.testScope === 'full'
+        ? restoredResult
+        : null;
+    setReviewCardStatus(
+      reviewCardRunRef.current
+        ? restoredReviewCard
+          ? 'ready'
+          : 'failed'
+        : 'idle'
+    );
     const saved = loadPracticeContext(
       sessionKey,
       undefined,
@@ -579,7 +619,9 @@ export function PracticeWorkspace({
     loaded,
     locale,
     problem,
+    problemContentVersion,
     sessionKey,
+    state.artifacts,
     state.sessions,
     t.aiWelcome,
   ]);
@@ -602,6 +644,7 @@ export function PracticeWorkspace({
   useEffect(
     () => () => {
       chatAbortRef.current?.abort();
+      reviewCardGenerationRef.current += 1;
     },
     []
   );
@@ -655,7 +698,7 @@ export function PracticeWorkspace({
 
       if (scope === 'all' && runPassed(nextResult)) {
         toast.success(t.completed);
-        await requestArtifact('review_card', nextResult, true);
+        void generateReviewCard(nextResult);
       }
     } catch (error) {
       const fallback: CodeRunResult = {
@@ -690,29 +733,29 @@ export function PracticeWorkspace({
     requestedHintLevel?: 1 | 2 | 3,
     refinementOnly = false
   ) {
-    if (!problem) return;
+    if (!problem) return false;
     if (action !== 'hint' && (aiLoading || hintRefinementRef.current !== null))
-      return;
+      return false;
     if (
       action === 'hint' &&
       !refinementOnly &&
       aiLoading &&
       aiLoading !== 'hint'
     )
-      return;
+      return false;
     if (action === 'diagnose' && !runResult) {
       toast.info(t.needRun);
-      return;
+      return false;
     }
     let effectiveHintLevel: 1 | 2 | 3 | undefined;
     if (action === 'hint') {
-      if (!requestedHintLevel) return;
+      if (!requestedHintLevel) return false;
       effectiveHintLevel = requestedHintLevel;
 
       if (!refinementOnly) {
         const currentLevel = hintLevelRef.current;
         if (currentLevel >= 3 || requestedHintLevel !== currentLevel + 1) {
-          return;
+          return false;
         }
         hintLevelRef.current = requestedHintLevel;
         setHintLevel(requestedHintLevel);
@@ -733,11 +776,17 @@ export function PracticeWorkspace({
 
       if (hintRefinementRef.current) {
         if (!refinementOnly) {
-          hintRefinementQueueRef.current.push(() =>
-            requestArtifact('hint', runResult, silent, requestedHintLevel, true)
-          );
+          hintRefinementQueueRef.current.push(async () => {
+            await requestArtifact(
+              'hint',
+              runResult,
+              silent,
+              requestedHintLevel,
+              true
+            );
+          });
         }
-        return;
+        return false;
       }
 
       const refinement = {
@@ -750,7 +799,8 @@ export function PracticeWorkspace({
       setActiveMobileTab('coach');
     }
 
-    if (action === 'hint' && effectiveHintLevel === undefined) return;
+    if (action === 'hint' && effectiveHintLevel === undefined) return false;
+    let succeeded = false;
     setAiLoading(action);
     try {
       const response = await fetch('/api/coach', {
@@ -825,6 +875,7 @@ export function PracticeWorkspace({
           problemSlug: problem.slug,
         });
       }
+      succeeded = true;
     } catch (error) {
       if (!silent) {
         if (action === 'hint' && effectiveHintLevel) {
@@ -854,6 +905,35 @@ export function PracticeWorkspace({
       }
       setAiLoading(null);
     }
+    return succeeded;
+  }
+
+  async function generateReviewCard(runResult?: CodeRunResult | null) {
+    const target = runResult ?? reviewCardRunRef.current;
+    if (
+      !target ||
+      !runPassed(target) ||
+      target.testScope !== 'full' ||
+      reviewCardInFlightRef.current
+    ) {
+      return;
+    }
+    reviewCardRunRef.current = target;
+    reviewCardInFlightRef.current = true;
+    const generation = ++reviewCardGenerationRef.current;
+    setReviewCardStatus('pending');
+    const generated = await requestArtifact('review_card', target, true);
+    if (generation !== reviewCardGenerationRef.current) return;
+    reviewCardInFlightRef.current = false;
+    setReviewCardStatus(generated ? 'ready' : 'failed');
+    if (!generated) toast.info(t.reviewCardFailedToast);
+  }
+
+  function resetReviewCardGeneration() {
+    reviewCardGenerationRef.current += 1;
+    reviewCardInFlightRef.current = false;
+    reviewCardRunRef.current = null;
+    setReviewCardStatus('idle');
   }
 
   async function requestChat(prompt: string, retry = false) {
@@ -1072,6 +1152,7 @@ export function PracticeWorkspace({
       onReset={() => {
         setCode(getProblemTemplate(problem, language));
         setResult(null);
+        resetReviewCardGeneration();
       }}
     />
   );
@@ -1087,6 +1168,8 @@ export function PracticeWorkspace({
       chatInput={chatInput}
       chatLoading={chatLoading}
       chatRetry={chatRetry}
+      locale={locale}
+      reviewCardStatus={reviewCardStatus}
       hasResult={Boolean(result)}
       onArtifact={requestArtifact}
       onHint={(level) => requestArtifact('hint', result, false, level)}
@@ -1094,6 +1177,7 @@ export function PracticeWorkspace({
       onChatSubmit={sendChat}
       onChatStop={stopChat}
       onChatRetry={retryChat}
+      onReviewCardRetry={() => void generateReviewCard()}
     />
   );
 
@@ -1150,6 +1234,17 @@ export function PracticeWorkspace({
           <TabsTrigger value="coach" className="rounded-md">
             <Bot />
             {t.coach}
+            {reviewCardStatus === 'pending' ? (
+              <LoaderCircle
+                aria-hidden="true"
+                className="ml-1 size-3 animate-spin"
+              />
+            ) : reviewCardStatus === 'failed' ? (
+              <CircleAlert
+                aria-hidden="true"
+                className="ml-1 size-3 text-amber-600 dark:text-amber-300"
+              />
+            ) : null}
           </TabsTrigger>
         </TabsList>
         <TabsContent
@@ -1426,6 +1521,8 @@ function CoachPanel({
   chatInput,
   chatLoading,
   chatRetry,
+  locale,
+  reviewCardStatus,
   hasResult,
   onArtifact,
   onHint,
@@ -1433,6 +1530,7 @@ function CoachPanel({
   onChatSubmit,
   onChatStop,
   onChatRetry,
+  onReviewCardRetry,
 }: {
   copy: (typeof copy)['zh'] | (typeof copy)['en'];
   artifacts: ArtifactView[];
@@ -1444,6 +1542,8 @@ function CoachPanel({
   chatInput: string;
   chatLoading: boolean;
   chatRetry: ChatRetryState | null;
+  locale: 'zh' | 'en';
+  reviewCardStatus: ReviewCardGenerationStatus;
   hasResult: boolean;
   onArtifact: (
     action: 'diagnose' | 'hint' | 'counterexample' | 'review_card'
@@ -1453,6 +1553,7 @@ function CoachPanel({
   onChatSubmit: (event: FormEvent) => void;
   onChatStop: () => void;
   onChatRetry: () => void;
+  onReviewCardRetry: () => void;
 }) {
   const hintLabels = [t.hintConcept, t.hintDirection, t.hintPseudo];
 
@@ -1506,6 +1607,11 @@ function CoachPanel({
               {t.needRun}
             </p>
           ) : null}
+          <ReviewCardGenerationNotice
+            locale={locale}
+            status={reviewCardStatus}
+            onRetry={onReviewCardRetry}
+          />
         </div>
 
         <div className="border-b p-4">

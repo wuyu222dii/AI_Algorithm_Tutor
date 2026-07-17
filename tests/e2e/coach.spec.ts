@@ -328,7 +328,7 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
       runResult?: unknown;
     };
     if (request.action !== 'hint' || !request.hintLevel) {
-      await route.continue();
+      await route.fallback();
       return;
     }
     hintRequestCount += 1;
@@ -533,6 +533,102 @@ test('runs JavaScript, submits, reveals a hint, and creates review data', async 
   await expect(page.getByRole('heading', { name: '学习进度' })).toBeVisible();
   await expect(page.getByText('100%', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('1 共 1 已开始', { exact: true })).toBeVisible();
+});
+
+test('finishes local submission while review-card generation recovers independently', async ({
+  page,
+}, testInfo) => {
+  const mobile = testInfo.project.name.startsWith('mobile');
+  test.setTimeout(process.env.CI ? 90_000 : 60_000);
+
+  let releaseFirstReviewRequest = () => {};
+  const firstReviewRequest = new Promise<void>((resolve) => {
+    releaseFirstReviewRequest = resolve;
+  });
+  let reviewRequestCount = 0;
+  await page.route(/\/api\/coach$/, async (route) => {
+    const request = route.request().postDataJSON() as { action?: string };
+    if (request.action !== 'review_card') {
+      await route.fallback();
+      return;
+    }
+
+    reviewRequestCount += 1;
+    if (reviewRequestCount === 1) {
+      await firstReviewRequest;
+      await route.fulfill({
+        status: 504,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'provider_timeout' } }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await completeOnboarding(page);
+  await page.goto('/practice/first-unique-position');
+  if (mobile) await page.getByRole('tab', { name: '代码' }).click();
+  await setEditorCode(
+    page,
+    `function firstUniquePosition(values) {
+  const counts = new Map();
+  for (const value of values) counts.set(value, (counts.get(value) || 0) + 1);
+  return values.findIndex((value) => counts.get(value) === 1);
+}`
+  );
+
+  const submit = page.getByRole('button', { name: '提交本地测试' });
+  await submit.click();
+  await expect(
+    page.getByText('全部通过', { exact: true }).filter({ visible: true })
+  ).toBeVisible({ timeout: 20_000 });
+  if (mobile) {
+    await expect(
+      page
+        .getByRole('tab', { name: 'AI 教练' })
+        .locator('.lucide-loader-circle')
+    ).toBeVisible();
+  } else {
+    await expect(
+      page.getByText('正在生成复习卡', { exact: true })
+    ).toBeVisible();
+  }
+  await expect(submit).toBeEnabled();
+  await expect.poll(() => reviewRequestCount).toBe(1);
+
+  releaseFirstReviewRequest();
+  if (mobile) {
+    await expect(
+      page.getByText('复习卡未生成，可在 AI 教练中重试。', {
+        exact: true,
+      })
+    ).toBeVisible();
+    await page.getByRole('tab', { name: 'AI 教练' }).click();
+  }
+  await expect(
+    page.getByText('复习卡尚未生成', { exact: true }).filter({ visible: true })
+  ).toBeVisible();
+  await page
+    .getByRole('button', { name: '重试生成' })
+    .filter({ visible: true })
+    .click();
+  await expect(
+    page.getByText('复习卡已保存', { exact: true }).filter({ visible: true })
+  ).toBeVisible();
+  await expect.poll(() => reviewRequestCount).toBe(2);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = window.localStorage.getItem('algocoach:state:v4');
+        return raw
+          ? (JSON.parse(raw).artifacts ?? []).filter(
+              (artifact: { type?: string }) => artifact.type === 'review_card'
+            ).length
+          : 0;
+      })
+    )
+    .toBe(1);
 });
 
 test('retries the last chat question after stop and classified failures', async ({

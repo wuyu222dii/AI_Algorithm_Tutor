@@ -311,6 +311,20 @@ jobs:
       OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
       ALGO_COACH_MODEL: ${{ vars.ALGO_COACH_MODEL }}
       ALGO_COACH_FALLBACK_MODEL: ${{ vars.ALGO_COACH_FALLBACK_MODEL }}
+      ALGO_COACH_PARSE_MODEL: ${{ vars.ALGO_COACH_PARSE_MODEL }}
+      ALGO_COACH_PARSE_FALLBACK_MODEL: ${{ vars.ALGO_COACH_PARSE_FALLBACK_MODEL }}
+      ALGO_COACH_DIAGNOSE_MODEL: ${{ vars.ALGO_COACH_DIAGNOSE_MODEL }}
+      ALGO_COACH_DIAGNOSE_FALLBACK_MODEL: ${{ vars.ALGO_COACH_DIAGNOSE_FALLBACK_MODEL }}
+      ALGO_COACH_HINT_MODEL: ${{ vars.ALGO_COACH_HINT_MODEL }}
+      ALGO_COACH_HINT_FALLBACK_MODEL: ${{ vars.ALGO_COACH_HINT_FALLBACK_MODEL }}
+      ALGO_COACH_COUNTEREXAMPLE_MODEL: ${{ vars.ALGO_COACH_COUNTEREXAMPLE_MODEL }}
+      ALGO_COACH_COUNTEREXAMPLE_FALLBACK_MODEL: ${{ vars.ALGO_COACH_COUNTEREXAMPLE_FALLBACK_MODEL }}
+      ALGO_COACH_REVIEW_CARD_MODEL: ${{ vars.ALGO_COACH_REVIEW_CARD_MODEL }}
+      ALGO_COACH_REVIEW_CARD_FALLBACK_MODEL: ${{ vars.ALGO_COACH_REVIEW_CARD_FALLBACK_MODEL }}
+      ALGO_COACH_REVIEW_GRADE_MODEL: ${{ vars.ALGO_COACH_REVIEW_GRADE_MODEL }}
+      ALGO_COACH_REVIEW_GRADE_FALLBACK_MODEL: ${{ vars.ALGO_COACH_REVIEW_GRADE_FALLBACK_MODEL }}
+      ALGO_COACH_CHAT_MODEL: ${{ vars.ALGO_COACH_CHAT_MODEL }}
+      ALGO_COACH_CHAT_FALLBACK_MODEL: ${{ vars.ALGO_COACH_CHAT_FALLBACK_MODEL }}
     steps:
       - name: Restrict production releases to main
         if: inputs.environment == 'production' && github.ref_name != 'main'
@@ -362,13 +376,15 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify relay protocol and both configured models
-        run: pnpm ai:preflight
+        id: relay_preflight
+        run: pnpm ai:preflight -- --github-output
         env:
           NODE_ENV: production
       - name: Run the 10-case release smoke suite
         run: pnpm eval:coach:smoke
         env:
           NODE_ENV: production
+          AI_RELAY_STRUCTURED_OUTPUT_MODE: ${{ steps.relay_preflight.outputs.structured_output_mode }}
 
   publish:
     name: Publish immutable image
