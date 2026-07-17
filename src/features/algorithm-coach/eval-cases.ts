@@ -1,5 +1,9 @@
 import { problems } from './data/problems';
-import { getProblemEntryPoint, getProblemTemplate } from './languages';
+import {
+  getProblemContentVersion,
+  getProblemEntryPoint,
+  getProblemTemplate,
+} from './languages';
 import { CoachRequest, DiagnosisCategory, ReviewRating } from './types';
 
 export interface CoachEvalCase {
@@ -52,7 +56,7 @@ const run = (
   executedAt: '2026-01-15T00:00:00.000Z',
 });
 
-const curatedCoachEvalCases: CoachEvalCase[] = [
+const curatedCoachEvalCasesRaw: CoachEvalCase[] = [
   {
     id: 'diagnose-syntax',
     request: {
@@ -457,6 +461,44 @@ const curatedCoachEvalCases: CoachEvalCase[] = [
   },
 ];
 
+function withTrustedProblemContext(sample: CoachEvalCase): CoachEvalCase {
+  const request = sample.request;
+  if (request.action === 'parse' || !request.problemSlug) return sample;
+  const problem = problems.find((item) => item.slug === request.problemSlug);
+  if (!problem) {
+    throw new Error(
+      `Live evaluation problem ${request.problemSlug} is missing from the trusted fixture catalog.`
+    );
+  }
+  const locale = request.locale ?? 'zh';
+  const language =
+    request.language ?? request.runResult?.language ?? 'javascript';
+  const problemContentVersion = getProblemContentVersion(problem);
+  return {
+    ...sample,
+    request: {
+      ...request,
+      problemContentVersion,
+      problem: {
+        slug: problem.slug,
+        title: problem.title[locale],
+        description: problem.description[locale],
+        difficulty: problem.difficulty,
+        topics: problem.topics,
+        constraints: problem.constraints.map((item) => item[locale]),
+        entryPoint: getProblemEntryPoint(problem, language),
+      },
+      runResult: request.runResult
+        ? { ...request.runResult, problemContentVersion }
+        : undefined,
+    },
+  };
+}
+
+const curatedCoachEvalCases = curatedCoachEvalCasesRaw.map(
+  withTrustedProblemContext
+);
+
 function catalogEvalCases(): CoachEvalCase[] {
   const hintCases: CoachEvalCase[] = problems.map((problem, index) => {
     const locale = index % 2 === 0 ? ('zh' as const) : ('en' as const);
@@ -512,7 +554,9 @@ function catalogEvalCases(): CoachEvalCase[] {
 }
 
 const targetArtifactSampleCount = 100;
-const generatedCoachEvalCases = catalogEvalCases();
+const generatedCoachEvalCases = catalogEvalCases().map(
+  withTrustedProblemContext
+);
 if (
   curatedCoachEvalCases.length + generatedCoachEvalCases.length <
   targetArtifactSampleCount

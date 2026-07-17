@@ -275,12 +275,23 @@ export function normalizeReviewGrade(
   const evidenceCount = hitConcepts.length + missedConcepts.length;
   const coverage = evidenceCount ? hitConcepts.length / evidenceCount : 0;
   const maximumRating = suggestedRatingForCoverage(coverage);
+  const deterministic = createDeterministicReviewGrade(
+    reviewResponse,
+    reviewCard,
+    locale
+  );
+  const hasTrustedLexicalEvidence = deterministic.hitConcepts.length > 0;
+  const providerConfidence = Math.min(1, Math.max(0, grade.confidence));
 
   return {
     hitConcepts,
     missedConcepts,
     feedback: grade.feedback.trim(),
-    suggestedRating: ratingAtMost(grade.suggestedRating, maximumRating),
-    confidence: Math.min(1, Math.max(0, grade.confidence)),
+    suggestedRating: hasTrustedLexicalEvidence
+      ? deterministic.suggestedRating
+      : ratingAtMost(grade.suggestedRating, maximumRating),
+    confidence: hasTrustedLexicalEvidence
+      ? Math.max(deterministic.confidence, providerConfidence)
+      : providerConfidence,
   };
 }

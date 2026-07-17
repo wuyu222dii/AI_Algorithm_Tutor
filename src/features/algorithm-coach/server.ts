@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { generateObject, streamText } from 'ai';
+import { generateObject, generateText, streamText } from 'ai';
 import { z } from 'zod';
 
 import { getAllConfigs } from '@/shared/models/config';
@@ -102,8 +102,9 @@ const counterexampleOutputSchema = z.object({
     expected: z
       .string()
       .max(4000)
-      .nullable()
-      .describe('The JSON-encoded expected result, when known.'),
+      .describe(
+        'The known correct result encoded as JSON. Use the JSON string "null" when null itself is the correct result; never omit this value.'
+      ),
     actual: z
       .string()
       .max(4000)
@@ -153,6 +154,45 @@ function outputSchemaForAction(action: CoachAction) {
   if (action === 'counterexample') return counterexampleOutputSchema;
   if (action === 'review_card') return reviewCardOutputSchema;
   return reviewGradeOutputSchema;
+}
+
+const COACH_RELAY_PROVIDER_NAME = 'algocoach-relay';
+
+function jsonOutputContract(action: CoachAction): string {
+  return [
+    'JSON compatibility mode is active.',
+    'Return exactly one JSON object. Do not use Markdown fences or add prose before or after it.',
+    'The object must match this JSON Schema:',
+    JSON.stringify(z.toJSONSchema(outputSchemaForAction(action))),
+  ].join('\n');
+}
+
+function parseJsonModeOutput(
+  action: CoachAction,
+  text: string
+): LiveArtifactOutput {
+  const trimmed = text.trim();
+  const fenced = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i.exec(trimmed);
+  const jsonText = fenced?.[1].trim() ?? trimmed;
+  let value: unknown;
+  try {
+    value = JSON.parse(jsonText);
+  } catch {
+    throw new CoachModelError(
+      'The AI relay returned invalid JSON.',
+      'provider_failed',
+      'invalid_output'
+    );
+  }
+  const parsed = outputSchemaForAction(action).safeParse(value);
+  if (!parsed.success) {
+    throw new CoachModelError(
+      'The AI relay response did not match the requested schema.',
+      'provider_failed',
+      'invalid_output'
+    );
+  }
+  return parsed.data as LiveArtifactOutput;
 }
 
 export interface CoachRuntimeConfig {
@@ -271,7 +311,7 @@ function systemPrompt(action: CoachAction, locale: string): string {
     'Do not provide a complete executable solution. A level-3 hint may include concise pseudocode only.',
     'For diagnosis, explain only the supplied compiler error, runtime error, or failed test. Never invent execution evidence.',
     'For imported problems, do not invent hidden tests. Ask the learner to verify the signature and add tests.',
-    'For a counterexample, report actual only when it is present in the supplied run result; otherwise use null.',
+    'For a counterexample, always provide the known correct expected result as JSON text. Report actual only when it is present in the supplied run result; otherwise use null.',
     ...actionInstructions,
     'Keep feedback specific, calm, and actionable. Return only the requested structured object.',
   ].join('\n');
@@ -583,6 +623,18 @@ function normalizeLiveArtifact(
         }
       : output;
   if (containsSolutionShapedCode(solutionLeakTarget)) {
+    if (request.action === 'diagnose') {
+      artifact.title =
+        locale === 'zh' ? '基于运行证据的诊断' : 'Evidence-based diagnosis';
+      artifact.details = artifact.evidence.map((item) =>
+        evidenceDetail(item, locale)
+      );
+      artifact.nextAction =
+        locale === 'zh'
+          ? '先定位证据对应的代码位置，做最小修改后重新运行。'
+          : 'Locate the code behind this evidence, make the smallest change, and run it again.';
+      return artifact;
+    }
     throw new CoachModelError(
       'The provider response contained a complete solution.',
       'provider_failed',
@@ -633,7 +685,7 @@ function createRelayProvider(config: CoachRuntimeConfig) {
     );
   }
   return createOpenAICompatible({
-    name: 'algocoach-relay',
+    name: COACH_RELAY_PROVIDER_NAME,
     apiKey: config.apiKey,
     baseURL: config.baseURL.replace(/\/+$/, ''),
     includeUsage: true,
@@ -760,37 +812,74 @@ export async function generateLiveArtifact(
         const repairInstruction = repairAttempted
           ? '\nA previous response failed schema or safety validation. Repair it by returning exactly the requested structure with no extra fields or executable solution.'
           : '';
-        const system = `${systemPrompt(request.action, request.locale ?? 'zh')}${repairInstruction}`;
+        const jsonMode = config.structuredOutputMode !== 'json-schema';
+        const system = [
+          `${systemPrompt(request.action, request.locale ?? 'zh')}${repairInstruction}`,
+          ...(jsonMode ? [jsonOutputContract(request.action)] : []),
+        ].join('\n');
         const prompt = userPrompt(request);
-        const result = await generateObject({
+        const reasoningOptions: Record<
+          string,
+          Record<string, JsonValue>
+        > = /(?:^|\/)gpt-5(?:[./-]|$)/i.test(model)
+          ? { 'openai-compatible': { reasoningEffort: 'low' } }
+          : {};
+        const commonOptions = {
           model: relay.chatModel(model),
-          schema: outputSchemaForAction(request.action),
-          schemaName: `${request.action}_learning_artifact`,
-          schemaDescription:
-            request.action === 'hint'
-              ? 'A brief, progressive hint that does not reveal a complete solution.'
-              : 'A grounded learning artifact for an algorithm learner.',
           system,
           prompt,
           maxOutputTokens,
           temperature: 0.2,
           maxRetries: 0,
-          providerOptions:
-            request.action === 'hint' && /(?:^|\/)gpt-5(?:[./-]|$)/i.test(model)
-              ? { 'openai-compatible': { reasoningEffort: 'low' } }
-              : undefined,
           abortSignal: AbortSignal.timeout(config.timeoutMs ?? 10_000),
-        });
-        const artifact = normalizeLiveArtifact(
-          request,
-          result.object as LiveArtifactOutput
-        );
+        };
+        let output: LiveArtifactOutput;
+        let finishReason: string;
+        let rawUsage:
+          | {
+              inputTokens?: number;
+              outputTokens?: number;
+              totalTokens?: number;
+            }
+          | undefined;
+        if (jsonMode) {
+          const result = await generateText({
+            ...commonOptions,
+            providerOptions: {
+              ...reasoningOptions,
+              [COACH_RELAY_PROVIDER_NAME]: {
+                response_format: { type: 'json_object' },
+              },
+            },
+          });
+          output = parseJsonModeOutput(request.action, result.text);
+          finishReason = result.finishReason;
+          rawUsage = result.usage;
+        } else {
+          const result = await generateObject({
+            ...commonOptions,
+            schema: outputSchemaForAction(request.action),
+            schemaName: `${request.action}_learning_artifact`,
+            schemaDescription:
+              request.action === 'hint'
+                ? 'A brief, progressive hint that does not reveal a complete solution.'
+                : 'A grounded learning artifact for an algorithm learner.',
+            providerOptions:
+              Object.keys(reasoningOptions).length > 0
+                ? reasoningOptions
+                : undefined,
+          });
+          output = result.object as LiveArtifactOutput;
+          finishReason = result.finishReason;
+          rawUsage = result.usage;
+        }
+        const artifact = normalizeLiveArtifact(request, output);
         const providerDiagnosisCategory =
-          request.action === 'diagnose' && 'diagnosisCategory' in result.object
-            ? result.object.diagnosisCategory
+          request.action === 'diagnose' && 'diagnosisCategory' in output
+            ? output.diagnosisCategory
             : undefined;
         const { usage, usageReported } = usageWithConservativeFallback(
-          result.usage,
+          rawUsage,
           `${system}\n${prompt}`,
           maxOutputTokens
         );
@@ -801,7 +890,7 @@ export async function generateLiveArtifact(
           selectedModel: model,
           attempts,
           fallbackFrom: model === config.model ? undefined : config.model,
-          finishReason: result.finishReason,
+          finishReason,
           usage,
           usageReported,
           estimatedCostUsd: estimateCoachCostUsd(usage, model),

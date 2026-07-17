@@ -17,6 +17,19 @@ const config = {
   structuredOutputMode: 'json-schema' as const,
 };
 
+const structuredProbeContent = JSON.stringify({
+  title: 'Relay check',
+  summary: 'Structured output is available.',
+  details: ['Nested artifact accepted.'],
+  nextAction: null,
+  hint: {
+    level: 1,
+    principle: 'Keep the contract.',
+    direction: null,
+    pseudocode: null,
+  },
+});
+
 describe('AI relay preflight', () => {
   it('checks both relay models without exposing credentials', async () => {
     const fetcher = vi.fn(
@@ -29,7 +42,12 @@ describe('AI relay preflight', () => {
         const body = JSON.parse(String(init?.body)) as {
           stream?: boolean;
           stream_options?: { include_usage?: boolean };
-          response_format?: { type?: string };
+          response_format?: {
+            type?: string;
+            json_schema?: { schema?: Record<string, unknown> };
+          };
+          messages?: Array<{ content?: string }>;
+          max_tokens?: number;
         };
         if (body.stream) {
           expect(body.stream_options).toEqual({ include_usage: true });
@@ -37,11 +55,25 @@ describe('AI relay preflight', () => {
             'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":null,"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{"content":null},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
           );
         }
+        if (body.response_format) {
+          expect(body.max_tokens).toBe(320);
+          expect(body.messages?.[0]?.content).toContain('"hint"');
+          expect(body.response_format.json_schema?.schema).toMatchObject({
+            type: 'object',
+            required: ['title', 'summary', 'details', 'nextAction', 'hint'],
+            properties: {
+              hint: {
+                type: 'object',
+                required: ['level', 'principle', 'direction', 'pseudocode'],
+              },
+            },
+          });
+        }
         return response({
           choices: [
             {
               message: {
-                content: body.response_format ? '{"ok":true}' : 'OK',
+                content: body.response_format ? structuredProbeContent : 'OK',
               },
             },
           ],
@@ -69,6 +101,44 @@ describe('AI relay preflight', () => {
       ],
     });
     expect(JSON.stringify(fetcher.mock.calls)).toContain('Bearer relay-secret');
+  });
+
+  it('rejects a trivial JSON response that does not satisfy an AlgoCoach artifact contract', async () => {
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'GET') {
+          return response({
+            data: [{ id: 'relay-primary' }, { id: 'relay-fallback' }],
+          });
+        }
+        const body = JSON.parse(String(init?.body)) as {
+          stream?: boolean;
+          response_format?: { type?: string };
+        };
+        if (body.stream) {
+          return new Response(
+            'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+          );
+        }
+        return response({
+          choices: [
+            {
+              message: {
+                content: body.response_format ? '{"ok":true}' : 'OK',
+              },
+            },
+          ],
+        });
+      }
+    );
+
+    await expect(
+      runAiRelayPreflight({ ...config, fetcher })
+    ).rejects.toMatchObject({
+      kind: 'invalid_output',
+      stage: 'structured_output',
+      model: 'relay-primary',
+    });
   });
 
   it.each([
@@ -237,7 +307,7 @@ describe('AI relay preflight', () => {
           choices: [
             {
               message: {
-                content: body.response_format ? '{"ok":true}' : 'OK',
+                content: body.response_format ? structuredProbeContent : 'OK',
               },
             },
           ],
@@ -278,7 +348,7 @@ describe('AI relay preflight', () => {
           choices: [
             {
               message: {
-                content: body.response_format ? '{"ok":true}' : 'OK',
+                content: body.response_format ? structuredProbeContent : 'OK',
               },
             },
           ],

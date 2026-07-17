@@ -138,7 +138,60 @@ function relatedAvailableModels(
   );
 }
 
-const structuredProbeSchema = z.object({ ok: z.boolean() }).strict();
+const structuredProbeSchema = z
+  .object({
+    title: z.string().min(1).max(80),
+    summary: z.string().min(1).max(500),
+    details: z.array(z.string().min(1).max(300)).max(3),
+    nextAction: z.string().min(1).max(300).nullable(),
+    hint: z
+      .object({
+        level: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+        principle: z.string().min(1).max(500),
+        direction: z.string().max(500).nullable(),
+        pseudocode: z.string().max(900).nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+
+const structuredProbeJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    title: { type: 'string', minLength: 1, maxLength: 80 },
+    summary: { type: 'string', minLength: 1, maxLength: 500 },
+    details: {
+      type: 'array',
+      items: { type: 'string', minLength: 1, maxLength: 300 },
+      maxItems: 3,
+    },
+    nextAction: {
+      anyOf: [
+        { type: 'string', minLength: 1, maxLength: 300 },
+        { type: 'null' },
+      ],
+    },
+    hint: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        level: { type: 'integer', enum: [1, 2, 3] },
+        principle: { type: 'string', minLength: 1, maxLength: 500 },
+        direction: {
+          anyOf: [{ type: 'string', maxLength: 500 }, { type: 'null' }],
+        },
+        pseudocode: {
+          anyOf: [{ type: 'string', maxLength: 900 }, { type: 'null' }],
+        },
+      },
+      required: ['level', 'principle', 'direction', 'pseudocode'],
+    },
+  },
+  required: ['title', 'summary', 'details', 'nextAction', 'hint'],
+} as const;
+
+const STRUCTURED_PROBE_MAX_TOKENS = 320;
 
 function endpoint(baseURL: string, path: string) {
   return `${baseURL.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
@@ -380,9 +433,9 @@ async function chatCompletion(
   config: AiRelayProbeConfig,
   model: string,
   responseFormat?: Record<string, unknown>,
-  prompt = 'Reply with the single word OK.'
+  prompt = 'Reply with the single word OK.',
+  maxTokens = 32
 ) {
-  const maxTokens = 32;
   const response = await relayFetch(config, 'chat/completions', {
     method: 'POST',
     body: JSON.stringify({
@@ -513,22 +566,28 @@ async function structuredCompletion(
   config: AiRelayProbeConfig,
   model: string
 ): Promise<'json-schema' | 'json'> {
-  const prompt = 'Return only JSON with the exact shape {"ok":true}.';
+  const prompt = [
+    'Return one compact AlgoCoach hint artifact as JSON.',
+    'Use short generic probe text, hint level 1, and null for direction, pseudocode, and nextAction.',
+    'Do not use Markdown or add fields outside this JSON Schema:',
+    JSON.stringify(structuredProbeJsonSchema),
+  ].join('\n');
   const schemaFormat = {
     type: 'json_schema',
     json_schema: {
-      name: 'algocoach_relay_probe',
+      name: 'algocoach_hint_artifact_probe',
       strict: true,
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: { ok: { type: 'boolean' } },
-        required: ['ok'],
-      },
+      schema: structuredProbeJsonSchema,
     },
   };
   try {
-    const result = await chatCompletion(config, model, schemaFormat, prompt);
+    const result = await chatCompletion(
+      config,
+      model,
+      schemaFormat,
+      prompt,
+      STRUCTURED_PROBE_MAX_TOKENS
+    );
     structuredProbeSchema.parse(JSON.parse(result.content));
     return 'json-schema';
   } catch (error) {
@@ -546,7 +605,8 @@ async function structuredCompletion(
     config,
     model,
     { type: 'json_object' },
-    prompt
+    prompt,
+    STRUCTURED_PROBE_MAX_TOKENS
   );
   try {
     structuredProbeSchema.parse(JSON.parse(fallback.content));

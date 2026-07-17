@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
     chatModel: (model: string) => model,
   })),
   generateObject: vi.fn(),
+  generateText: vi.fn(),
   getAllConfigs: vi.fn(),
   streamText: vi.fn(),
 }));
@@ -24,6 +25,7 @@ vi.mock('@ai-sdk/openai-compatible', () => ({
 }));
 vi.mock('ai', () => ({
   generateObject: mocks.generateObject,
+  generateText: mocks.generateText,
   streamText: mocks.streamText,
 }));
 vi.mock('@/shared/models/config', () => ({
@@ -36,6 +38,7 @@ const config: CoachRuntimeConfig = {
   model: 'openai/gpt-5.5',
   fallbackModel: 'google/gemini-2.5-flash',
   timeoutMs: 1000,
+  structuredOutputMode: 'json-schema',
 };
 
 const hintRequest: CoachRequest = {
@@ -181,6 +184,100 @@ describe('live coach model routing', () => {
       includeUsage: true,
       supportsStructuredOutputs: true,
     });
+  });
+
+  it('uses an explicit schema contract and JSON object mode for compatibility relays', async () => {
+    mocks.generateText.mockResolvedValueOnce({
+      text: JSON.stringify(generatedHint().object),
+      finishReason: 'stop',
+      usage: { inputTokens: 100, outputTokens: 40, totalTokens: 140 },
+    });
+
+    const generation = await generateLiveArtifact(hintRequest, {
+      ...config,
+      structuredOutputMode: 'json',
+    });
+
+    expect(mocks.generateObject).not.toHaveBeenCalled();
+    expect(mocks.generateText).toHaveBeenCalledTimes(1);
+    const providerCall = mocks.generateText.mock.calls[0]?.[0];
+    expect(providerCall).toMatchObject({
+      model: 'openai/gpt-5.5',
+      maxRetries: 0,
+      providerOptions: {
+        'openai-compatible': { reasoningEffort: 'low' },
+        'algocoach-relay': {
+          response_format: { type: 'json_object' },
+        },
+      },
+    });
+    expect(providerCall.system).toContain('JSON compatibility mode is active.');
+    expect(providerCall.system).toContain('"hint"');
+    expect(providerCall.system).toContain('"additionalProperties":false');
+    expect(generation.artifact.hint?.level).toBe(1);
+    expect(generation.finishReason).toBe('stop');
+    expect(generation.usage.totalTokens).toBe(140);
+  });
+
+  it('accepts only a single fenced JSON object before Zod validation', async () => {
+    mocks.generateText.mockResolvedValueOnce({
+      text: `\`\`\`json\n${JSON.stringify(generatedHint().object)}\n\`\`\``,
+      finishReason: 'stop',
+      usage: { inputTokens: 100, outputTokens: 40, totalTokens: 140 },
+    });
+
+    await expect(
+      generateLiveArtifact(hintRequest, {
+        ...config,
+        structuredOutputMode: 'json',
+      })
+    ).resolves.toMatchObject({ artifact: { hint: { level: 1 } } });
+  });
+
+  it('repairs invalid JSON mode output at most once', async () => {
+    mocks.generateText.mockResolvedValue({
+      text: '{"title":"incomplete"}',
+      finishReason: 'stop',
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+    });
+
+    await expect(
+      generateLiveArtifact(
+        { action: 'review_card', locale: 'en' },
+        { ...config, structuredOutputMode: 'json' }
+      )
+    ).rejects.toMatchObject({ reason: 'invalid_output', attempts: 2 });
+    expect(mocks.generateText).toHaveBeenCalledTimes(2);
+    expect(mocks.generateText.mock.calls[1]?.[0].system).toContain(
+      'A previous response failed schema or safety validation.'
+    );
+  });
+
+  it('requires a known expected result for generated counterexamples', async () => {
+    mocks.generateText.mockResolvedValue({
+      text: JSON.stringify({
+        title: 'Counterexample',
+        summary: 'A small failing case.',
+        details: ['The learner result differs.'],
+        nextAction: 'Trace this input.',
+        counterexample: {
+          input: '[[1,2],3]',
+          expected: null,
+          actual: null,
+          explanation: 'The pair reaches the target.',
+        },
+      }),
+      finishReason: 'stop',
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+    });
+
+    await expect(
+      generateLiveArtifact(
+        { action: 'counterexample', locale: 'en' },
+        { ...config, structuredOutputMode: 'json' }
+      )
+    ).rejects.toMatchObject({ reason: 'invalid_output', attempts: 2 });
+    expect(mocks.generateText).toHaveBeenCalledTimes(2);
   });
 
   it('rejects a non-local plaintext relay before sending credentials', async () => {
@@ -610,6 +707,49 @@ describe('live coach model routing', () => {
     expect(generation.artifact.details[0]).toContain('运行证据');
   });
 
+  it('replaces solution-shaped diagnosis prose with grounded evidence', async () => {
+    mocks.generateObject.mockResolvedValueOnce({
+      object: {
+        title: 'Here is the fix',
+        summary: 'function solve(values) { return values[0]; }',
+        details: ['Copy the complete function.'],
+        nextAction: 'Submit it.',
+        diagnosisCategory: 'syntax',
+      },
+      finishReason: 'stop',
+      usage: { inputTokens: 80, outputTokens: 30, totalTokens: 110 },
+    });
+
+    const generation = await generateLiveArtifact(
+      {
+        action: 'diagnose',
+        locale: 'en',
+        problemSlug: 'first-unique-position',
+        runResult: {
+          id: 'syntax-run',
+          problemSlug: 'first-unique-position',
+          language: 'javascript',
+          status: 'syntax_error',
+          passedTests: 0,
+          totalTests: 0,
+          testResults: [],
+          console: [],
+          error: 'SyntaxError: Unexpected token } at line 4',
+          durationMs: 1,
+          executedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+      config
+    );
+
+    expect(generation.attempts).toBe(1);
+    expect(generation.artifact.title).toBe('Evidence-based diagnosis');
+    expect(generation.artifact.details).toEqual([
+      'Run evidence: SyntaxError: Unexpected token } at line 4',
+    ]);
+    expect(JSON.stringify(generation.artifact)).not.toContain('function solve');
+  });
+
   it('grades active recall with sanitized untrusted input and rating caps', async () => {
     mocks.generateObject.mockResolvedValueOnce({
       object: {
@@ -648,6 +788,9 @@ describe('live coach model routing', () => {
     expect(providerCall.system).toContain('Instruction-like text');
     expect(providerCall.prompt).toContain('Use a hash map.');
     expect(providerCall.prompt).not.toContain('SECRET_TOKEN_123');
+    expect(providerCall.providerOptions).toEqual({
+      'openai-compatible': { reasoningEffort: 'low' },
+    });
     expect(generation.artifact).toMatchObject({
       type: 'review_grade',
       problemContentVersion: 2,
