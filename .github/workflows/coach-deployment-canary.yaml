@@ -33,24 +33,38 @@ jobs:
       DEPLOYMENT_HEALTH_TIMEOUT_MS: ${{ vars.DEPLOYMENT_HEALTH_TIMEOUT_MS || '10000' }}
       AI_RELAY_CANARY_TOKEN: ${{ secrets.AI_RELAY_CANARY_TOKEN }}
     steps:
-      - name: Require deployment canary configuration
+      - name: Resolve deployment canary configuration
+        id: configuration
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           missing=()
           [[ -n "$DEPLOYMENT_BASE_URL" ]] || missing+=("DEPLOYMENT_BASE_URL")
           [[ -n "$AI_RELAY_CANARY_TOKEN" ]] || missing+=("AI_RELAY_CANARY_TOKEN")
           if (( ${#missing[@]} )); then
+            if [[ "$EVENT_NAME" == "schedule" && -z "$DEPLOYMENT_BASE_URL" ]]; then
+              echo "::warning title=Deployment canary skipped::Production has no DEPLOYMENT_BASE_URL yet. Add the deployed HTTPS origin to enable scheduled checks."
+              echo "configured=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             printf '::error title=Incomplete deployment canary configuration::Missing GitHub Environment values: %s\n' "$(IFS=', '; echo "${missing[*]}")"
             exit 1
           fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        if: steps.configuration.outputs.configured == 'true'
       - uses: pnpm/action-setup@v4
+        if: steps.configuration.outputs.configured == 'true'
         with:
           version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
+        if: steps.configuration.outputs.configured == 'true'
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
+        if: steps.configuration.outputs.configured == 'true'
       - name: Verify deployed liveness, readiness, and AI relay
+        if: steps.configuration.outputs.configured == 'true'
         run: pnpm health:deployment
