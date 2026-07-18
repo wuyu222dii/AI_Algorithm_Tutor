@@ -35,6 +35,9 @@ jobs:
       AI_RELAY_FALLBACK_MODEL: ${{ vars.AI_RELAY_FALLBACK_MODEL }}
       AI_RELAY_STRUCTURED_OUTPUT_MODE: ${{ vars.AI_RELAY_STRUCTURED_OUTPUT_MODE || 'json' }}
       AI_RELAY_PRICING_JSON: ${{ vars.AI_RELAY_PRICING_JSON }}
+      # Staging temporarily validates workflow continuity. Set this Environment
+      # variable to "strict" before using the evaluation as a public-beta gate.
+      AI_LIVE_EVAL_GATE_PROFILE: ${{ inputs.environment == 'production' && 'strict' || (vars.AI_LIVE_EVAL_GATE_PROFILE || 'flow') }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
       ALGO_COACH_MODEL: ${{ vars.ALGO_COACH_MODEL }}

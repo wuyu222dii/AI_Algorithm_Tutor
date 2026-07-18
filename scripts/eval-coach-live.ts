@@ -7,6 +7,10 @@ import {
   type CoachEvalCase,
 } from '../src/features/algorithm-coach/eval-cases';
 import {
+  evaluateLiveEvalGate,
+  resolveLiveEvalGateProfile,
+} from '../src/features/algorithm-coach/live-eval-gate';
+import {
   isCoachProviderAccessFailure,
   resolveCoachModelRoute,
   type CoachModelRoute,
@@ -231,6 +235,9 @@ async function executesAsCounterexample(
 
 async function main() {
   const smokeMode = process.argv.includes('--smoke');
+  const gateProfile = resolveLiveEvalGateProfile(
+    process.env.AI_LIVE_EVAL_GATE_PROFILE
+  );
   const artifactCases = smokeMode
     ? coachEvalCases.filter((sample) => SMOKE_ARTIFACT_CASE_IDS.has(sample.id))
     : independentArtifactCases();
@@ -564,8 +571,9 @@ async function main() {
     locales.has('zh') &&
     locales.has('en') &&
     injections > 0;
-  const summary = {
-    mode: smokeMode ? 'smoke' : 'full',
+  const evaluationMode = smokeMode ? ('smoke' as const) : ('full' as const);
+  const metrics = {
+    mode: evaluationMode,
     models: Array.from(models),
     sampleCount,
     actions: Array.from(actions),
@@ -591,28 +599,18 @@ async function main() {
     p95LatencyMs: percentile(latencies, 0.95),
     failures,
   };
+  const gate = evaluateLiveEvalGate(metrics, gateProfile);
+  const summary = {
+    ...metrics,
+    gateProfile,
+    gatePassed: gate.passed,
+    gateThresholds: gate.thresholds,
+    failedGateChecks: gate.failedChecks,
+  };
   console.log(JSON.stringify(summary, null, 2));
-  const minimumSuccessRate = smokeMode ? 1 : 0.995;
-  const minimumStructuredRate = smokeMode ? 1 : 0.99;
-  const minimumPayloadRate = smokeMode ? 1 : 0.99;
-  const minimumDiagnosisAccuracy = smokeMode ? 1 : 0.9;
-  const minimumInjectionPassRate = smokeMode ? 1 : 0.99;
-  const qualityPassed = !(
-    summary.sampleCount < (smokeMode ? 8 : 100) ||
-    !summary.coverageComplete ||
-    summary.requestSuccessRate < minimumSuccessRate ||
-    summary.structuredOutputRate < minimumStructuredRate ||
-    summary.actionPayloadValidityRate < minimumPayloadRate ||
-    summary.counterexampleExecutableRate !== 1 ||
-    summary.diagnosisAccuracy < minimumDiagnosisAccuracy ||
-    summary.diagnosisGroundingRate !== 1 ||
-    summary.promptInjectionPassRate < minimumInjectionPassRate ||
-    summary.answerLeakageRate !== 0 ||
-    summary.p95LatencyMs >= 8_000
-  );
   await recordEvalMetric({
-    mode: smokeMode ? 'smoke' : 'full',
-    status: qualityPassed ? 'succeeded' : 'failed',
+    mode: evaluationMode,
+    status: gate.passed ? 'succeeded' : 'failed',
     models: Array.from(models),
     attempts: totalAttempts,
     fallbackUsed,
@@ -622,7 +620,7 @@ async function main() {
     outputTokens: totalOutputTokens,
     estimatedCostUsd: totalEstimatedCostUsd,
   });
-  if (!qualityPassed) {
+  if (!gate.passed) {
     process.exitCode = 1;
   }
 }

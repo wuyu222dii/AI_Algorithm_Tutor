@@ -84,6 +84,7 @@ AI_RELAY_API_KEY=...
 AI_RELAY_PRIMARY_MODEL=...
 AI_RELAY_FALLBACK_MODEL=...
 AI_RELAY_STRUCTURED_OUTPUT_MODE=json
+AI_LIVE_EVAL_GATE_PROFILE=strict
 AI_RELAY_CANARY_TOKEN=...
 AI_RELAY_PRICING_JSON='{"relay-model-id":{"inputPerMillionUsd":3,"outputPerMillionUsd":15}}'
 ```
@@ -91,6 +92,8 @@ AI_RELAY_PRICING_JSON='{"relay-model-id":{"inputPerMillionUsd":3,"outputPerMilli
 先运行 `pnpm ai:preflight` 验证模型列表、普通生成、流式生成和结构化 JSON。命令只输出 Origin、模型、能力与错误分类，不输出 Key、题面或代码。`OPENROUTER_*` 和原全局模型变量仅保留一个版本兼容并输出弃用警告；新的部署 Secret 必须使用 `AI_RELAY_*`。客户端请求中的未知字段会被剥离，不能指定模型。
 
 若配置动作级 `ALGO_COACH_<ACTION>_MODEL`，生产值只能选择上述已预检的主模型或备用模型。`AI_RELAY_STRUCTURED_OUTPUT_MODE=json-schema` 只有在两个模型都通过 JSON Schema 预检时才允许发布；否则使用 `json`，由服务端执行严格结构校验与一次修复。
+
+实时评测提供两档门禁：`strict` 保留公测目标（请求成功率至少 99.5%、反例可执行率 100%、P95 小于 8 秒）；`flow` 仅用于 Staging 暂时验证完整 Workflow，可接受成功率至少 95%、反例可执行率至少 75% 和 P95 不超过 25 秒。两档都要求完整的 100 条双语样本、诊断事实可追溯、提示注入通过且答案泄漏率为 0。Staging Workflow 在未设置 GitHub Environment 变量时暂时使用 `flow`，也可显式设置 `AI_LIVE_EVAL_GATE_PROFILE=flow`；Production Workflow 始终使用 `strict`。中转站稳定后将 Staging 变量切回 `strict`。
 
 主模型在分组拒绝、无可用渠道、`429`、`5xx` 或超时时仅切换一次已预检的备用模型；`401` 立即失败。结构化输出无效时只在原模型修复一次，连续 3 次瞬态故障通过 Redis 熔断 60 秒。Redis 容量租约同时按用户或访客及可信代理 IP 限制并发、每日 token 和估算金额，默认每位学习者每日上限为 `US$0.05`。中转站缺失 usage 时保留请求前的最大成本预留，实际价格只读取 `AI_RELAY_PRICING_JSON`。Chat 只会在首个内容块发送前切换模型，流开始后的故障单独记录。生产环境不会在中转站失败时静默切换为确定性演示结果。
 
