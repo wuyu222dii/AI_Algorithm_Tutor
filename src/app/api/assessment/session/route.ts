@@ -1,12 +1,15 @@
 import {
   completeSignedAssessment,
   createSignedAssessmentSession,
+  inspectSignedAssessmentSession,
   readSignedAssessmentSession,
 } from '@/features/algorithm-coach/assessment.server';
 import {
   getRuntimeProblem,
   listRuntimeProblems,
+  runtimeEnabledLanguages,
 } from '@/features/algorithm-coach/catalog-runtime.server';
+import { toAssessmentProblemDetail } from '@/features/algorithm-coach/problem-contracts';
 import { z } from 'zod';
 
 import { enforceDistributedWindowRateLimit } from '@/shared/lib/rate-limit';
@@ -31,6 +34,14 @@ const requestSchema = z.discriminatedUnion('action', [
       )
       .length(2)
       .optional(),
+  }),
+  z.object({
+    action: z.literal('resume'),
+    token: z.string().min(32).max(4096),
+  }),
+  z.object({
+    action: z.literal('abandon'),
+    token: z.string().min(32).max(4096),
   }),
   z.object({
     action: z.literal('complete'),
@@ -66,6 +77,42 @@ const requestSchema = z.discriminatedUnion('action', [
   }),
 ]);
 
+function assessmentErrorResponse(error: unknown): Response {
+  const message = error instanceof Error ? error.message : 'Assessment failed';
+  if (message === 'Assessment has expired') {
+    return Response.json(
+      { error: 'assessment_expired', message },
+      { status: 410, headers: { 'cache-control': 'no-store' } }
+    );
+  }
+  if (message === 'Assessment problem version is unavailable') {
+    return Response.json(
+      {
+        error: 'assessment_catalog_unavailable',
+        message: 'The pinned assessment revision is temporarily unavailable.',
+      },
+      { status: 503, headers: { 'cache-control': 'no-store' } }
+    );
+  }
+  if (
+    /Assessment (token|version|problem set|timestamps|start time|result)/.test(
+      message
+    )
+  ) {
+    return Response.json(
+      { error: 'assessment_rejected', message },
+      { status: 400, headers: { 'cache-control': 'no-store' } }
+    );
+  }
+  return Response.json(
+    {
+      error: 'assessment_unavailable',
+      message: 'The assessment service is temporarily unavailable.',
+    },
+    { status: 503, headers: { 'cache-control': 'no-store' } }
+  );
+}
+
 export async function POST(request: Request) {
   const limited = await enforceDistributedWindowRateLimit(request, {
     windowMs: 60_000,
@@ -90,7 +137,7 @@ export async function POST(request: Request) {
     let data;
     if (parsed.data.action === 'start') {
       const problems = await listRuntimeProblems();
-      data = createSignedAssessmentSession({
+      const session = createSignedAssessmentSession({
         id: `${parsed.data.kind}_${crypto.randomUUID()}`,
         problems,
         kind: parsed.data.kind,
@@ -99,7 +146,28 @@ export async function POST(request: Request) {
         baselineAssessmentId: parsed.data.baselineAssessmentId,
         baselineProblemVersions: parsed.data.baselineProblemVersions,
       });
-    } else {
+      const selectedProblems = session.problemVersions.map((reference) =>
+        problems.find(
+          (problem) =>
+            problem.slug === reference.slug &&
+            (problem.version?.contentVersion ?? 1) === reference.contentVersion
+        )
+      );
+      if (selectedProblems.some((problem) => !problem)) {
+        throw new Error('Assessment problem version is unavailable');
+      }
+      data = {
+        ...session,
+        problems: selectedProblems
+          .filter((problem): problem is NonNullable<typeof problem> =>
+            Boolean(problem)
+          )
+          .map((problem) =>
+            toAssessmentProblemDetail(problem, runtimeEnabledLanguages())
+          ),
+        serverNow: new Date().toISOString(),
+      };
+    } else if (parsed.data.action === 'complete') {
       const session = readSignedAssessmentSession(parsed.data.token);
       const historicalProblems = await Promise.all(
         session.problemVersions.map((reference) =>
@@ -116,18 +184,42 @@ export async function POST(request: Request) {
           (problem): problem is NonNullable<typeof problem> => Boolean(problem)
         ),
       });
+    } else if (parsed.data.action === 'resume') {
+      const session = readSignedAssessmentSession(parsed.data.token);
+      const historicalProblems = await Promise.all(
+        session.problemVersions.map((reference) =>
+          getRuntimeProblem(reference.slug, reference.contentVersion)
+        )
+      );
+      if (historicalProblems.some((problem) => !problem)) {
+        throw new Error('Assessment problem version is unavailable');
+      }
+      data = {
+        ...session,
+        problems: historicalProblems
+          .filter((problem): problem is NonNullable<typeof problem> =>
+            Boolean(problem)
+          )
+          .map((problem) =>
+            toAssessmentProblemDetail(problem, runtimeEnabledLanguages())
+          ),
+        status:
+          Date.now() >= Date.parse(session.expiresAt) ? 'grace' : 'active',
+        serverNow: new Date().toISOString(),
+      };
+    } else {
+      const session = inspectSignedAssessmentSession(parsed.data.token);
+      data = {
+        id: session.id,
+        status: 'abandoned',
+        abandonedAt: new Date().toISOString(),
+      };
     }
     return Response.json(
       { data },
       { headers: { 'cache-control': 'private, no-store, max-age=0' } }
     );
   } catch (error) {
-    return Response.json(
-      {
-        error: 'assessment_rejected',
-        message: error instanceof Error ? error.message : 'Assessment failed',
-      },
-      { status: 400, headers: { 'cache-control': 'no-store' } }
-    );
+    return assessmentErrorResponse(error);
   }
 }

@@ -7,6 +7,8 @@ async function main() {
   const result = await checkDeploymentHealth({
     baseUrl: process.env.DEPLOYMENT_BASE_URL ?? '',
     canaryToken: process.env.AI_RELAY_CANARY_TOKEN ?? '',
+    vercelProtectionBypass:
+      process.env.VERCEL_AUTOMATION_BYPASS_SECRET ?? undefined,
     timeoutMs: process.env.DEPLOYMENT_HEALTH_TIMEOUT_MS
       ? Number(process.env.DEPLOYMENT_HEALTH_TIMEOUT_MS)
       : undefined,

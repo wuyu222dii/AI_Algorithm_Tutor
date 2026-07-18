@@ -1255,6 +1255,7 @@ export const coachLearningProfile = table(
     preferredLanguage: text('preferred_language').notNull(),
     weeklyTarget: smallint('weekly_target').notNull().default(5),
     dailyMinutes: smallint('daily_minutes').notNull().default(30),
+    timeZone: text('time_zone').notNull().default('UTC'),
     onboardingCompleted: boolean('onboarding_completed')
       .notNull()
       .default(false),
@@ -1284,6 +1285,10 @@ export const coachLearningProfile = table(
     check(
       'chk_coach_learning_profile_daily_minutes',
       sql`${table.dailyMinutes} between 10 and 180`
+    ),
+    check(
+      'chk_coach_learning_profile_time_zone',
+      sql`length(${table.timeZone}) between 1 and 100`
     ),
     check(
       'chk_coach_learning_profile_experiment',
@@ -1333,6 +1338,87 @@ export const coachSyncMutation = table(
     check(
       'chk_coach_sync_mutation_result_revision',
       sql`${table.resultRevision} >= 0`
+    ),
+  ]
+);
+
+export const coachGuestClaim = table(
+  'coach_guest_claim',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    claimId: text('claim_id').notNull(),
+    guestSubject: text('guest_subject').notNull(),
+    snapshotHash: text('snapshot_hash').notNull(),
+    status: text('status').notNull().default('acknowledged'),
+    mergedRevision: integer('merged_revision').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_coach_guest_claim_user_claim').on(
+      table.userId,
+      table.claimId
+    ),
+    uniqueIndex('uq_coach_guest_claim_subject').on(table.guestSubject),
+    index('idx_coach_guest_claim_subject_created').on(
+      table.guestSubject,
+      table.createdAt.desc()
+    ),
+    check(
+      'chk_coach_guest_claim_status',
+      sql`${table.status} = 'acknowledged'`
+    ),
+    check('chk_coach_guest_claim_revision', sql`${table.mergedRevision} >= 0`),
+  ]
+);
+
+export const coachAnonymousProductEvent = table(
+  'coach_anonymous_product_event',
+  {
+    id: text('id').primaryKey(),
+    guestSubject: text('guest_subject').notNull(),
+    eventId: text('event_id').notNull(),
+    name: text('name').notNull(),
+    problemSlugSnapshot: text('problem_slug_snapshot'),
+    clientSequence: integer('client_sequence').notNull().default(0),
+    clientGeneratedTotal: integer('client_generated_total')
+      .notNull()
+      .default(0),
+    clientDeliveredTotal: integer('client_delivered_total')
+      .notNull()
+      .default(0),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_coach_anonymous_event_subject_event').on(
+      table.guestSubject,
+      table.eventId
+    ),
+    index('idx_coach_anonymous_event_subject_occurred').on(
+      table.guestSubject,
+      table.occurredAt.desc()
+    ),
+    index('idx_coach_anonymous_event_name_occurred').on(
+      table.name,
+      table.occurredAt.desc()
+    ),
+    check(
+      'chk_coach_anonymous_event_name',
+      sql`${table.name} in ('visitor_started', 'onboarding_started', 'activated', 'practice_started', 'first_code_run', 'first_problem_passed', 'code_run', 'code_submitted', 'corrected_after_diagnosis', 'assessment_completed', 'baseline_completed', 'checkpoint_completed', 'daily_plan_task_completed', 'review_completed', 'language_selected', 'typescript_transpile_failed', 'experiment_exposed')`
+    ),
+    check(
+      'chk_coach_anonymous_event_checkpoint',
+      sql`${table.clientSequence} >= 0 and ${table.clientGeneratedTotal} >= 0 and ${table.clientDeliveredTotal} >= 0 and ${table.clientDeliveredTotal} <= ${table.clientGeneratedTotal}`
     ),
   ]
 );
@@ -1494,6 +1580,8 @@ export const coachReviewAttempt = table(
       .default(1),
     answer: text('answer').notNull(),
     grade: jsonb('grade'),
+    gradeMode: text('grade_mode').notNull().default('ai'),
+    gradeErrorCode: text('grade_error_code'),
     selectedRating: text('selected_rating'),
     ratingOverride: text('rating_override'),
     gradedArtifactId: text('graded_artifact_id'),
@@ -1528,6 +1616,14 @@ export const coachReviewAttempt = table(
     check(
       'chk_coach_review_attempt_override',
       sql`${table.ratingOverride} is null or ${table.ratingOverride} in ('again', 'hard', 'good', 'easy')`
+    ),
+    check(
+      'chk_coach_review_attempt_grade_mode',
+      sql`${table.gradeMode} in ('ai', 'manual_fallback')`
+    ),
+    check(
+      'chk_coach_review_attempt_grade_error',
+      sql`${table.gradeErrorCode} is null or ${table.gradeErrorCode} in ('configuration', 'access_denied', 'quota', 'rate_limited', 'timeout', 'unavailable', 'invalid_output', 'unknown')`
     ),
   ]
 );
@@ -1910,6 +2006,7 @@ export const coachAssessment = table(
     comparison: jsonb('comparison'),
     assessmentVersion: text('assessment_version'),
     verificationToken: text('verification_token'),
+    evidenceMode: text('evidence_mode').notNull().default('browser_local'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -1956,6 +2053,10 @@ export const coachAssessment = table(
       sql`${table.averageDurationMs} is null or ${table.averageDurationMs} >= 0`
     ),
     check('chk_coach_assessment_hint_count', sql`${table.hintCount} >= 0`),
+    check(
+      'chk_coach_assessment_evidence_mode',
+      sql`${table.evidenceMode} in ('browser_local', 'remote_verified')`
+    ),
   ]
 );
 

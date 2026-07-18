@@ -33,14 +33,14 @@ import { cn } from '@/shared/lib/utils';
 
 import type { DailyLearningPlan, DailyPlanTask } from '../daily-plan';
 import { TOPIC_LABELS } from '../learning-progress';
-import type { CoachLocale, Problem } from '../types';
+import type { CoachLocale, ProblemCatalogItem } from '../types';
 import { EmptyState, Panel, PanelHeading } from './coach-ui';
 
 type PlanAction = 'skip' | 'swap';
 
 export interface DailyPlanPanelProps {
   plan: DailyLearningPlan;
-  problems: readonly Problem[];
+  problems: readonly ProblemCatalogItem[];
   locale: CoachLocale;
   onSkip: (taskId: string, reason: string) => void | Promise<void>;
   onSwap: (taskId: string, reason: string) => void | Promise<void>;
@@ -146,8 +146,8 @@ const copy = {
 
 function taskProblem(
   task: DailyPlanTask,
-  problems: readonly Problem[]
-): Problem | undefined {
+  problems: readonly ProblemCatalogItem[]
+): ProblemCatalogItem | undefined {
   return problems.find(
     (problem) =>
       (problem.slug === task.problemSlug || problem.id === task.problemId) &&

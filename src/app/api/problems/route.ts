@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
-  listRuntimeProblems,
+  listRuntimeProblemSummaries,
   runtimeEnabledLanguages,
 } from '@/features/algorithm-coach/catalog-runtime.server';
 import { isLanguage } from '@/features/algorithm-coach/languages';
@@ -61,7 +61,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const rows = await listRuntimeProblems({
+    const rows = await listRuntimeProblemSummaries({
       difficulty: difficultyValue as Difficulty | undefined,
       language: (languageValue || undefined) as Language | undefined,
       topic,
@@ -70,22 +70,8 @@ export async function GET(request: Request) {
     });
     const hasMore = rows.length > requestedLimit;
     const visible = rows.slice(0, requestedLimit);
-    const items = visible.map((problem) => ({
-      id: problem.id,
-      slug: problem.slug,
-      title: problem.title,
-      difficulty: problem.difficulty,
-      topics: problem.topics,
-      estimatedMinutes: problem.estimatedMinutes,
-      contentVersion: problem.version?.contentVersion ?? 1,
-      catalogVersion: problem.version?.catalogVersion,
-      supportedLanguages: enabledLanguages.filter((language) =>
-        Object.hasOwn(problem.languageConfigs ?? {}, language)
-      ),
-      origin: problem.origin,
-    }));
     const data = {
-      items,
+      items: visible,
       nextCursor:
         hasMore && visible.length
           ? encodeCursor(visible[visible.length - 1].slug)
@@ -114,7 +100,13 @@ export async function GET(request: Request) {
     );
   } catch (error) {
     const traceId = crypto.randomUUID();
-    console.error(`[problem-catalog:${traceId}] list failed`, error);
+    console.error(
+      JSON.stringify({
+        event: 'problem_catalog_list_failed',
+        traceId,
+        errorName: error instanceof Error ? error.name : 'Error',
+      })
+    );
     return Response.json(
       {
         error: {

@@ -34,29 +34,42 @@ async function completeOnboarding(page: Page) {
   await expect(learningHub).toBeVisible();
 }
 
-async function setEditorCode(page: Page, solution: string) {
+async function setEditorCode(
+  page: Page,
+  solution: string,
+  flushOnSameTick = false
+) {
   const editor = page.locator('.monaco-editor:visible');
   await expect(editor).toBeVisible({ timeout: 20_000 });
-  const modelUpdated = await page.evaluate((value) => {
-    const monaco = (
-      window as typeof window & {
-        monaco?: {
-          editor?: {
-            getModels: () => Array<{ setValue: (code: string) => void }>;
+  const modelUpdated = await page.evaluate(
+    ({ value, flush }) => {
+      const monaco = (
+        window as typeof window & {
+          monaco?: {
+            editor?: {
+              getModels: () => Array<{ setValue: (code: string) => void }>;
+            };
           };
-        };
-      }
-    ).monaco;
-    const model = monaco?.editor?.getModels()[0];
-    if (!model) return false;
-    model.setValue(value);
-    return true;
-  }, solution);
+        }
+      ).monaco;
+      const model = monaco?.editor?.getModels()[0];
+      if (!model) return false;
+      model.setValue(value);
+      if (flush) window.dispatchEvent(new PageTransitionEvent('pagehide'));
+      return true;
+    },
+    { value: solution, flush: flushOnSameTick }
+  );
   if (!modelUpdated) {
     const input = page.locator('.monaco-editor:visible textarea');
     await input.click({ force: true });
     await page.keyboard.press('ControlOrMeta+A');
     await page.keyboard.insertText(solution);
+    if (flushOnSameTick) {
+      await page.evaluate(() =>
+        window.dispatchEvent(new PageTransitionEvent('pagehide'))
+      );
+    }
   }
 }
 
@@ -256,6 +269,40 @@ test('keeps the daily plan stable and unlocks the two-week checkpoint', async ({
   await expect(
     page.getByText('为保证结果可比较，测评中 AI 教练已关闭。')
   ).toBeVisible();
+  await page.getByRole('button', { name: /题目 2/ }).click();
+  await setEditorCode(
+    page,
+    `function restoredAssessmentDraft() {
+  return 'assessment-refresh-marker';
+}`,
+    true
+  );
+  expect(
+    await page.evaluate(() =>
+      window.localStorage.getItem('algocoach:assessment-draft:v1')
+    )
+  ).toContain('assessment-refresh-marker');
+  await page.reload();
+  await expect(
+    page.getByText('为保证结果可比较，测评中 AI 教练已关闭。')
+  ).toBeVisible();
+  await expect(page.getByText('题目 2 / 2', { exact: true })).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const monaco = (
+          window as typeof window & {
+            monaco?: {
+              editor?: {
+                getModels: () => Array<{ getValue: () => string }>;
+              };
+            };
+          }
+        ).monaco;
+        return monaco?.editor?.getModels()[0]?.getValue() ?? '';
+      })
+    )
+    .toContain('assessment-refresh-marker');
   await page.getByRole('button', { name: '提交测评' }).click();
   await expect(page.getByRole('heading', { name: '测评完成' })).toBeVisible({
     timeout: 30_000,
@@ -828,7 +875,17 @@ test('runs and restores TypeScript in the isolated QuickJS worker', async ({
   }
   return values.findIndex((value) => counts.get(value) === 1);
 }`;
-  await setEditorCode(page, solution);
+  await setEditorCode(page, solution, true);
+  expect(
+    await page.evaluate(() => {
+      const raw = window.localStorage.getItem('algocoach:state:v4');
+      if (!raw) return '';
+      return (
+        JSON.parse(raw).sessions?.['first-unique-position']?.code?.typescript ??
+        ''
+      );
+    })
+  ).toContain('Map<number, number>');
   await page.getByRole('button', { name: '运行样例' }).click();
   await expect(page.getByText('全部通过', { exact: true }).first()).toBeVisible(
     { timeout: 30_000 }

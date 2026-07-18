@@ -7,6 +7,7 @@ import NextTopLoader from 'nextjs-toploader';
 import { envConfigs } from '@/config';
 import { locales } from '@/config/locale';
 import { UtmCapture } from '@/shared/blocks/common/utm-capture';
+import { WebVitalsReporter } from '@/shared/blocks/common/web-vitals-reporter';
 import { getAllConfigs } from '@/shared/models/config';
 import { getAdsService } from '@/shared/services/ads';
 import { getAffiliateService } from '@/shared/services/affiliate';
@@ -159,6 +160,7 @@ export default async function RootLayout({
         />
 
         <UtmCapture />
+        <WebVitalsReporter />
 
         {children}
 

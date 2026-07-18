@@ -1,7 +1,15 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CoachSyncBadge, pageNames } from './coach-shell';
+import {
+  buildCoachCallbackUrl,
+  CoachSyncBadge,
+  pageNames,
+} from './coach-shell';
+
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 const mocks = vi.hoisted(() => ({
   retrySync: vi.fn(),
@@ -74,5 +82,22 @@ describe('CoachSyncBadge', () => {
     expect(
       screen.getByRole('button', { name: /登录状态已失效/ })
     ).toHaveAttribute('title', pageNames.zh.syncErrors.auth.description);
+  });
+});
+
+describe('buildCoachCallbackUrl', () => {
+  it('keeps the full versioned assessment or practice query', () => {
+    expect(
+      buildCoachCallbackUrl(
+        '/assessment',
+        new URLSearchParams('kind=checkpoint&baseline=baseline-1')
+      )
+    ).toBe('/assessment?kind=checkpoint&baseline=baseline-1');
+    expect(
+      buildCoachCallbackUrl(
+        '/practice/two-sum',
+        new URLSearchParams('version=3')
+      )
+    ).toBe('/practice/two-sum?version=3');
   });
 });

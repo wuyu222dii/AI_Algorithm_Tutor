@@ -6,6 +6,7 @@ overrides:
   '@types/react-dom': 19.2.2
 
 allowBuilds:
+  '@sentry/cli': true
   '@tailwindcss/oxide': true
   esbuild: true
   sharp: true

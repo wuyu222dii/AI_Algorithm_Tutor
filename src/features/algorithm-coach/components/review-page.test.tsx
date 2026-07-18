@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createInitialCoachState } from '../storage';
@@ -30,7 +36,10 @@ vi.mock('@/shared/components/ui/tabs', () => ({
 }));
 vi.mock('../store', () => ({ useCoachStore: () => mocks.coach }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 function problem(version: number, title: string): Problem {
   return {
@@ -162,5 +171,72 @@ describe('ReviewPage revision isolation', () => {
             '/practice/versioned-problem?version=1'
         )
     ).toBe(true);
+  });
+
+  it('preserves the response and offers manual rating when AI grading fails', async () => {
+    const recordReviewAttempt = vi.fn();
+    const state = createInitialCoachState();
+    state.artifacts = [
+      {
+        id: 'structured-card',
+        type: 'review_card',
+        locale: 'zh',
+        problemSlug: 'versioned-problem',
+        problemContentVersion: 1,
+        title: '主动回忆卡',
+        summary: '总结',
+        details: [],
+        evidence: [],
+        reviewCard: {
+          front: '核心思路是什么？',
+          back: '维护单调结构并处理边界条件。',
+          tags: ['stack'],
+        },
+        createdAt: '2026-07-14T12:00:00.000Z',
+      },
+    ];
+    mocks.coach = {
+      ...mocks.coach,
+      state,
+      recordReviewAttempt,
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            JSON.stringify({ error: { code: 'provider_timeout' } }),
+            { status: 504, headers: { 'content-type': 'application/json' } }
+          )
+        )
+    );
+
+    const rendered = render(<ReviewPage />);
+    const rerenderPage = rendered.rerender;
+    recordReviewAttempt.mockImplementation((attempt) => {
+      state.reviewAttempts.push(attempt);
+      rerenderPage(<ReviewPage />);
+    });
+    fireEvent.change(screen.getByPlaceholderText(/使用哈希表记录/), {
+      target: { value: '使用单调栈，时间复杂度 O(n)。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '评分并查看答案' }));
+
+    await waitFor(() =>
+      expect(recordReviewAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          answer: '使用单调栈，时间复杂度 O(n)。',
+          gradeMode: 'manual_fallback',
+          gradeErrorCode: 'timeout',
+        })
+      )
+    );
+    expect(screen.queryByText('维护单调结构并处理边界条件。')).toBeNull();
+    fireEvent.click(
+      screen.getByRole('button', { name: '跳过 AI 评分并查看答案' })
+    );
+    expect(screen.getByText('维护单调结构并处理边界条件。')).toBeVisible();
+    expect(screen.getByRole('button', { name: '掌握' })).toBeVisible();
   });
 });

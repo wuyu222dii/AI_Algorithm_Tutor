@@ -33,6 +33,9 @@ const env = {
   NEXT_PUBLIC_DEFAULT_LOCALE: 'zh',
   NEXT_PUBLIC_LOCALE_DETECT_ENABLED: 'false',
   AUTH_URL: `http://localhost:${port}`,
+  // Production remains Google-only. The disposable E2E database enables
+  // email auth solely to create isolated account and RBAC test fixtures.
+  EMAIL_AUTH_ENABLED: 'true',
   GOOGLE_AUTH_ENABLED: 'true',
   GOOGLE_CLIENT_ID: 'algocoach-e2e-google-client-id',
   GOOGLE_CLIENT_SECRET: 'algocoach-e2e-google-client-secret',
@@ -40,6 +43,9 @@ const env = {
   GOOGLE_OAUTH_MOCK_ENABLED: 'true',
   GOOGLE_OAUTH_MOCK_SECRET: 'algocoach-e2e-google-oauth-mock-secret-2026',
   NEXT_PUBLIC_COACH_CLOUD_SYNC_ENABLED: 'false',
+  NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED: 'false',
+  DURABLE_GUEST_CLAIM_ENABLED: 'false',
+  ANONYMOUS_METRICS_ENABLED: 'false',
   // Browser tests deliberately use the static catalog fixture; production
   // readiness rejects an unavailable PostgreSQL catalog instead of falling back.
   DB_CATALOG_ENABLED: 'false',
@@ -62,6 +68,8 @@ const env = {
   REDIS_URL: '',
   REDIS_TOKEN: '',
   SENTRY_DSN: '',
+  NEXT_PUBLIC_SENTRY_DSN: '',
+  NEXT_PUBLIC_WEB_VITALS_SAMPLE_RATE: '0',
   OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: '',
 };
 

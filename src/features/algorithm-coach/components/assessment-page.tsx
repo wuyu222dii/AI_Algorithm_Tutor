@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   AlarmClock,
@@ -33,6 +33,16 @@ import {
 import { cn } from '@/shared/lib/utils';
 
 import {
+  assessmentNowMs,
+  assessmentSecondsUntil,
+  calculateServerOffsetMs,
+} from '../assessment-clock';
+import {
+  clearAssessmentDraft,
+  loadAssessmentDraft,
+  saveAssessmentDraft,
+} from '../assessment-draft';
+import {
   getProblemContentVersion,
   getProblemTemplate,
   LANGUAGE_REGISTRY,
@@ -42,12 +52,14 @@ import { TOPIC_LABELS } from '../learning-progress';
 import { runCode } from '../runner';
 import { useCoachStore } from '../store';
 import type {
+  AssessmentDraftV1,
   AssessmentKind,
   CodeRunResult,
   DiagnosisCategory,
   Language,
   Problem,
   ProblemTopic,
+  ProblemVersionRef,
 } from '../types';
 import {
   CoachPage,
@@ -70,6 +82,21 @@ import {
 const DURATION_SECONDS = 20 * 60;
 const BASELINE_DURATION_SECONDS = 8 * 60;
 const currentTimeMs = () => Date.now();
+
+function problemsForVersions(
+  problems: readonly Problem[],
+  versions: readonly ProblemVersionRef[]
+): Problem[] {
+  return versions
+    .map((reference) =>
+      problems.find(
+        (problem) =>
+          problem.slug === reference.slug &&
+          getProblemContentVersion(problem) === reference.contentVersion
+      )
+    )
+    .filter((problem): problem is Problem => Boolean(problem));
+}
 
 function createAssessmentCode(
   assessmentProblems: Problem[],
@@ -116,6 +143,11 @@ const copy = {
     start: '开始测评',
     starting: '正在创建测评…',
     startFailed: '暂时无法创建安全测评，请稍后重试。',
+    restoreFailed: '上次测评无法安全恢复，请重新开始。',
+    restoreUnavailable: '暂时无法连接恢复服务，测评草稿仍已保留。',
+    retryRestore: '重试恢复',
+    expired: '测评已超过提交宽限期，本次已标记为中断。',
+    abandon: '放弃测评',
     rules: '测评规则',
     rule1: '两道题可自由切换，代码会自动保留。',
     rule2: '运行样例不计分，最终提交会运行浏览器内的本地完整测试。',
@@ -145,6 +177,7 @@ const copy = {
     review: '查看复习计划',
     retry: '重新测评',
     minutes: '分钟',
+    language: '编程语言',
     javascript: 'JavaScript',
     python: 'Python',
     baselineTitle: '能力基线测评',
@@ -180,6 +213,12 @@ const copy = {
     start: 'Start assessment',
     starting: 'Creating assessment…',
     startFailed: 'A secure assessment could not be created. Please try again.',
+    restoreFailed: 'The previous assessment could not be restored safely.',
+    restoreUnavailable:
+      'The recovery service is unavailable. Your assessment draft is preserved.',
+    retryRestore: 'Retry recovery',
+    expired: 'The submission grace period ended. This attempt was abandoned.',
+    abandon: 'Abandon assessment',
     rules: 'Assessment rules',
     rule1: 'Switch freely between both problems. Code is kept automatically.',
     rule2:
@@ -214,6 +253,7 @@ const copy = {
     review: 'View review plan',
     retry: 'Retake assessment',
     minutes: 'min',
+    language: 'Programming language',
     javascript: 'JavaScript',
     python: 'Python',
     baselineTitle: 'Baseline assessment',
@@ -235,11 +275,25 @@ const copy = {
   },
 } as const;
 
+class AssessmentResumeError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string
+  ) {
+    super(code);
+  }
+}
+
 export function AssessmentPage() {
   const locale = localeKey(useLocale());
   const searchParams = useSearchParams();
   const t = copy[locale];
   const coach = useCoachStore();
+  const abandonAssessment = coach.abandonAssessment;
+  const restoreCoachAssessment = coach.startAssessment;
+  const coachHydrated = coach.hydrated;
+  const activeAssessment = coach.state.activeAssessment;
+  const assessmentStorageScope = coach.storageScope;
   const requestedKind = searchParams.get('kind');
   const requestedBaselineId = searchParams.get('baseline') ?? undefined;
   const baselineResult =
@@ -267,20 +321,7 @@ export function AssessmentPage() {
       : assessmentKind === 'checkpoint'
         ? t.checkpointDescription
         : t.description;
-  const defaultAssessmentProblems = useMemo(
-    () =>
-      [
-        coach.problems.find(
-          (problem) => problem.slug === 'minimum-processing-rate'
-        ) ?? coach.problems[0],
-        coach.problems.find((problem) => problem.slug === 'dependency-cycle') ??
-          coach.problems[1],
-      ].filter(Boolean) as Problem[],
-    [coach.problems]
-  );
-  const [assessmentProblems, setAssessmentProblems] = useState<Problem[]>(
-    defaultAssessmentProblems
-  );
+  const [assessmentProblems, setAssessmentProblems] = useState<Problem[]>([]);
   const [phase, setPhase] = useState<'intro' | 'active' | 'complete'>('intro');
   const [secondsLeft, setSecondsLeft] = useState(DURATION_SECONDS);
   const [durationSeconds, setDurationSeconds] = useState(
@@ -306,7 +347,8 @@ export function AssessmentPage() {
     : (availableLanguages[0] ?? 'javascript');
   const [codes, setCodes] = useState<
     Record<string, Partial<Record<Language, string>>>
-  >(() => createAssessmentCode(assessmentProblems, coach.enabledLanguages));
+  >({});
+  const latestCodesRef = useRef(codes);
   const [sampleResults, setSampleResults] = useState<
     Record<string, CodeRunResult>
   >({});
@@ -318,6 +360,14 @@ export function AssessmentPage() {
   const [submitting, setSubmitting] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [assessmentToken, setAssessmentToken] = useState('');
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
+  const [graceExpiresAt, setGraceExpiresAt] = useState<number | null>(null);
+  const [serverOffsetMs, setServerOffsetMs] = useState(0);
+  const [restoring, setRestoring] = useState(true);
+  const [restoreUnavailable, setRestoreUnavailable] = useState(false);
+  const [restoreRetryVersion, setRestoreRetryVersion] = useState(0);
+  const restoredScopeRef = useRef<string | null>(null);
+  const latestDraftRef = useRef<AssessmentDraftV1 | null>(null);
 
   const currentProblem = assessmentProblems[activeIndex];
   const currentText = currentProblem
@@ -328,17 +378,233 @@ export function AssessmentPage() {
     : '';
 
   useEffect(() => {
-    if (phase !== 'active') return;
-    const timer = window.setInterval(() => {
-      setSecondsLeft((value) => Math.max(0, value - 1));
-    }, 1000);
+    if (phase !== 'active' || !expiresAt) return;
+    const tick = () => {
+      setSecondsLeft(assessmentSecondsUntil(expiresAt, serverOffsetMs));
+    };
+    tick();
+    const timer = window.setInterval(tick, 500);
     return () => window.clearInterval(timer);
-  }, [phase]);
+  }, [expiresAt, phase, serverOffsetMs]);
+
+  useEffect(() => {
+    const scope = assessmentStorageScope;
+    if (!coachHydrated || !scope || restoredScopeRef.current === scope) return;
+    restoredScopeRef.current = scope;
+    const draft = loadAssessmentDraft(scope);
+    const active = activeAssessment;
+
+    if (!draft) {
+      if (active) abandonAssessment(active.id);
+      const timer = window.setTimeout(() => setRestoring(false), 0);
+      return () => window.clearTimeout(timer);
+    }
+
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const requestStartedAtMs = currentTimeMs();
+        const response = await fetch('/api/assessment/session', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'resume', token: draft.token }),
+          signal: controller.signal,
+        });
+        const responseReceivedAtMs = currentTimeMs();
+        if (!response.ok) {
+          const failure = (await response.json().catch(() => null)) as {
+            error?: string;
+          } | null;
+          throw new AssessmentResumeError(
+            response.status,
+            failure?.error ?? 'assessment_resume_rejected'
+          );
+        }
+        const payload = (await response.json()) as {
+          data?: {
+            id: string;
+            problemVersions: ProblemVersionRef[];
+            problems: Problem[];
+            startedAt: string;
+            expiresAt: string;
+            graceExpiresAt: string;
+            serverNow: string;
+            durationMinutes: number;
+          };
+        };
+        const data = payload.data;
+        const selected = data
+          ? problemsForVersions(data.problems, data.problemVersions)
+          : [];
+        const refsMatch =
+          data?.id === draft.assessmentId &&
+          JSON.stringify(data.problemVersions) ===
+            JSON.stringify(draft.problemVersions);
+        if (!data || !refsMatch || selected.length !== 2) {
+          throw new Error('assessment draft does not match signed session');
+        }
+        const nextServerOffsetMs = calculateServerOffsetMs(
+          data.serverNow,
+          requestStartedAtMs,
+          responseReceivedAtMs
+        );
+
+        setAssessmentProblems(selected);
+        latestCodesRef.current = draft.codes;
+        setCodes(draft.codes);
+        setSampleResults(draft.sampleResults);
+        setAssessmentToken(draft.token);
+        setStartedAt(Date.parse(data.startedAt));
+        setExpiresAt(Date.parse(data.expiresAt));
+        setGraceExpiresAt(Date.parse(data.graceExpiresAt));
+        setServerOffsetMs(nextServerOffsetMs);
+        setDurationSeconds(data.durationMinutes * 60);
+        setSecondsLeft(
+          assessmentSecondsUntil(
+            data.expiresAt,
+            nextServerOffsetMs,
+            responseReceivedAtMs
+          )
+        );
+        setLanguage(draft.language);
+        setActiveIndex(Math.min(draft.activeIndex, selected.length - 1));
+        if (!active || active.id !== data.id) {
+          restoreCoachAssessment(
+            data.problemVersions.map((reference) => reference.slug),
+            data.durationMinutes,
+            draft.kind,
+            draft.baselineAssessmentId,
+            {
+              id: data.id,
+              startedAt: data.startedAt,
+              problemVersions: data.problemVersions,
+            }
+          );
+        }
+        setRestoreUnavailable(false);
+        setPhase('active');
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError')
+          return;
+        const expired =
+          assessmentNowMs(draft.serverOffsetMs) >
+            Date.parse(draft.graceExpiresAt) ||
+          (error instanceof AssessmentResumeError && error.status === 410);
+        const rejected =
+          error instanceof AssessmentResumeError &&
+          [400, 410, 422].includes(error.status);
+        if (expired || rejected) {
+          clearAssessmentDraft(scope);
+          abandonAssessment(active?.id);
+          void fetch('/api/assessment/session', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action: 'abandon', token: draft.token }),
+            keepalive: true,
+          }).catch(() => undefined);
+          toast.error(expired ? t.expired : t.restoreFailed);
+        } else {
+          restoredScopeRef.current = null;
+          setRestoreUnavailable(true);
+          toast.error(t.restoreUnavailable);
+        }
+      } finally {
+        if (!controller.signal.aborted) setRestoring(false);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [
+    abandonAssessment,
+    activeAssessment,
+    assessmentStorageScope,
+    coachHydrated,
+    restoreCoachAssessment,
+    restoreRetryVersion,
+    t.expired,
+    t.restoreFailed,
+    t.restoreUnavailable,
+  ]);
+
+  useEffect(() => {
+    const scope = coach.storageScope;
+    const active = coach.state.activeAssessment;
+    if (
+      phase !== 'active' ||
+      !scope ||
+      !active ||
+      !assessmentToken ||
+      !startedAt ||
+      !expiresAt ||
+      !graceExpiresAt
+    ) {
+      latestDraftRef.current = null;
+      return;
+    }
+    const draft: AssessmentDraftV1 = {
+      version: 1,
+      assessmentId: active.id,
+      kind: active.kind ?? assessmentKind,
+      baselineAssessmentId: active.baselineAssessmentId,
+      token: assessmentToken,
+      problemVersions: assessmentProblems.map((problem) => ({
+        slug: problem.slug,
+        contentVersion: getProblemContentVersion(problem),
+      })),
+      startedAt: new Date(startedAt).toISOString(),
+      expiresAt: new Date(expiresAt).toISOString(),
+      graceExpiresAt: new Date(graceExpiresAt).toISOString(),
+      serverOffsetMs,
+      language,
+      codes,
+      activeIndex,
+      sampleResults,
+      updatedAt: new Date().toISOString(),
+    };
+    latestDraftRef.current = draft;
+    saveAssessmentDraft(draft, scope);
+  }, [
+    activeIndex,
+    assessmentKind,
+    assessmentProblems,
+    assessmentToken,
+    coach.state.activeAssessment,
+    coach.storageScope,
+    codes,
+    expiresAt,
+    graceExpiresAt,
+    language,
+    phase,
+    sampleResults,
+    serverOffsetMs,
+    startedAt,
+  ]);
+
+  useEffect(() => {
+    const flush = () => {
+      const scope = coach.storageScope;
+      if (scope && latestDraftRef.current) {
+        saveAssessmentDraft(latestDraftRef.current, scope);
+      }
+    };
+    const flushWhenHidden = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('blur', flush);
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', flushWhenHidden);
+    return () => {
+      window.removeEventListener('blur', flush);
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', flushWhenHidden);
+    };
+  }, [coach.storageScope]);
 
   async function startAssessment() {
     if (starting) return;
     setStarting(true);
     try {
+      const requestStartedAtMs = currentTimeMs();
       const response = await fetch('/api/assessment/session', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -351,58 +617,70 @@ export function AssessmentPage() {
           baselineProblemVersions: baselineResult?.problemVersions,
         }),
       });
+      const responseReceivedAtMs = currentTimeMs();
       if (!response.ok) throw new Error(t.startFailed);
       const payload = (await response.json()) as {
         data?: {
+          id: string;
           token: string;
           problemSlugs: string[];
+          problemVersions: ProblemVersionRef[];
+          problems: Problem[];
           durationMinutes: number;
           startedAt: string;
+          expiresAt: string;
+          graceExpiresAt: string;
+          serverNow: string;
         };
       };
       const data = payload.data;
-      const selected = data?.problemSlugs
-        .map((slug) => coach.problems.find((problem) => problem.slug === slug))
-        .filter(Boolean) as Problem[] | undefined;
+      const selected = data
+        ? problemsForVersions(data.problems, data.problemVersions)
+        : undefined;
       if (!data?.token || selected?.length !== 2)
         throw new Error(t.startFailed);
+      const nextServerOffsetMs = calculateServerOffsetMs(
+        data.serverNow,
+        requestStartedAtMs,
+        responseReceivedAtMs
+      );
 
       setAssessmentProblems(selected);
-      setCodes(createAssessmentCode(selected, coach.enabledLanguages));
+      const initialCodes = createAssessmentCode(
+        selected,
+        coach.enabledLanguages
+      );
+      latestCodesRef.current = initialCodes;
+      setCodes(initialCodes);
       setAssessmentToken(data.token);
       const nextDurationSeconds = data.durationMinutes * 60;
       setDurationSeconds(nextDurationSeconds);
-      setSecondsLeft(nextDurationSeconds);
+      setSecondsLeft(
+        assessmentSecondsUntil(
+          data.expiresAt,
+          nextServerOffsetMs,
+          responseReceivedAtMs
+        )
+      );
       setStartedAt(Date.parse(data.startedAt));
+      setExpiresAt(Date.parse(data.expiresAt));
+      setGraceExpiresAt(Date.parse(data.graceExpiresAt));
+      setServerOffsetMs(nextServerOffsetMs);
       setActiveIndex(0);
       setPhase('active');
       coach.startAssessment(
         data.problemSlugs,
         data.durationMinutes,
         assessmentKind,
-        baselineResult?.id
+        baselineResult?.id,
+        {
+          id: data.id,
+          startedAt: data.startedAt,
+          problemVersions: data.problemVersions,
+        }
       );
     } catch (error) {
-      if (process.env.NODE_ENV !== 'production') {
-        setAssessmentProblems(defaultAssessmentProblems);
-        setAssessmentToken('');
-        const fallbackDuration =
-          assessmentKind === 'practice'
-            ? DURATION_SECONDS
-            : BASELINE_DURATION_SECONDS;
-        setDurationSeconds(fallbackDuration);
-        setSecondsLeft(fallbackDuration);
-        setStartedAt(currentTimeMs());
-        setPhase('active');
-        coach.startAssessment(
-          defaultAssessmentProblems.map((problem) => problem.slug),
-          fallbackDuration / 60,
-          assessmentKind,
-          baselineResult?.id
-        );
-      } else {
-        toast.error(error instanceof Error ? error.message : t.startFailed);
-      }
+      toast.error(error instanceof Error ? error.message : t.startFailed);
     } finally {
       setStarting(false);
     }
@@ -410,13 +688,22 @@ export function AssessmentPage() {
 
   function updateCode(value: string) {
     if (!currentProblem) return;
-    setCodes((current) => ({
-      ...current,
+    const nextCodes = {
+      ...latestCodesRef.current,
       [currentProblem.id]: {
-        ...current[currentProblem.id],
+        ...latestCodesRef.current[currentProblem.id],
         [language]: value,
       },
-    }));
+    };
+    latestCodesRef.current = nextCodes;
+    if (latestDraftRef.current) {
+      latestDraftRef.current = {
+        ...latestDraftRef.current,
+        codes: nextCodes,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    setCodes(nextCodes);
   }
 
   async function runSample() {
@@ -490,7 +777,7 @@ export function AssessmentPage() {
       const elapsedSeconds = startedAt
         ? Math.min(
             durationSeconds,
-            Math.round((currentTimeMs() - startedAt) / 1000)
+            Math.round((assessmentNowMs(serverOffsetMs) - startedAt) / 1000)
           )
         : durationSeconds - secondsLeft;
       const summary = {
@@ -516,7 +803,9 @@ export function AssessmentPage() {
         })),
         startedAt: startedAt
           ? new Date(startedAt).toISOString()
-          : new Date(currentTimeMs() - elapsedSeconds * 1000).toISOString(),
+          : new Date(
+              assessmentNowMs(serverOffsetMs) - elapsedSeconds * 1000
+            ).toISOString(),
         weakTopics: Array.from(
           new Set(
             assessmentProblems
@@ -526,6 +815,7 @@ export function AssessmentPage() {
         ) as ProblemTopic[],
         recommendation:
           passedCount === assessmentProblems.length ? t.nextGood : t.nextWeak,
+        evidenceMode: 'browser_local' as const,
         results,
         completedAt: new Date().toISOString(),
       };
@@ -585,6 +875,8 @@ export function AssessmentPage() {
         verifiedSummary = { ...summary, ...payload.data };
       }
       coach.completeAssessment(verifiedSummary);
+      if (coach.storageScope) clearAssessmentDraft(coach.storageScope);
+      latestDraftRef.current = null;
       setPhase('complete');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t.failed);
@@ -593,13 +885,56 @@ export function AssessmentPage() {
     }
   }
 
+  async function abandonCurrentAssessment(expired = false) {
+    const assessmentId = coach.state.activeAssessment?.id;
+    if (assessmentToken) {
+      await fetch('/api/assessment/session', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'abandon', token: assessmentToken }),
+        keepalive: true,
+      }).catch(() => undefined);
+    }
+    if (coach.storageScope) clearAssessmentDraft(coach.storageScope);
+    latestDraftRef.current = null;
+    coach.abandonAssessment(assessmentId);
+    setAssessmentToken('');
+    setSampleResults({});
+    setFinalResults({});
+    setStartedAt(null);
+    setExpiresAt(null);
+    setGraceExpiresAt(null);
+    setServerOffsetMs(0);
+    setPhase('intro');
+    if (expired) toast.error(t.expired);
+  }
+
   useEffect(() => {
     if (phase !== 'active' || secondsLeft !== 0 || submitting) return;
-    const timer = window.setTimeout(() => void submitAssessment(), 0);
+    const timer = window.setTimeout(() => {
+      if (graceExpiresAt && assessmentNowMs(serverOffsetMs) > graceExpiresAt) {
+        void abandonCurrentAssessment(true);
+      } else {
+        void submitAssessment();
+      }
+    }, 0);
     return () => window.clearTimeout(timer);
     // submitAssessment intentionally uses the latest code snapshot when the timer expires.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secondsLeft, phase]);
+  }, [secondsLeft, phase, graceExpiresAt, serverOffsetMs]);
+
+  if (restoring) {
+    return (
+      <CoachPage title={modeTitle} description={modeDescription}>
+        <div
+          className="text-muted-foreground flex min-h-48 items-center justify-center"
+          role="status"
+        >
+          <LoaderCircle className="size-5 animate-spin" />
+        </div>
+      </CoachPage>
+    );
+  }
 
   if (phase === 'intro') {
     return (
@@ -637,13 +972,32 @@ export function AssessmentPage() {
               <Button
                 size="lg"
                 className="mt-8"
-                disabled={!coach.hydrated || starting}
+                disabled={!coach.hydrated || starting || restoreUnavailable}
                 onClick={() => void startAssessment()}
               >
                 {starting ? <LoaderCircle className="animate-spin" /> : null}
                 {starting ? t.starting : t.start}
                 {!starting ? <ArrowRight /> : null}
               </Button>
+              {restoreUnavailable ? (
+                <div className="mt-4 space-y-3">
+                  <InlineNotice>{t.restoreUnavailable}</InlineNotice>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setRestoreUnavailable(false);
+                      setRestoring(true);
+                      restoredScopeRef.current = null;
+                      setRestoreRetryVersion((value) => value + 1);
+                    }}
+                  >
+                    <RotateCcw />
+                    {t.retryRestore}
+                  </Button>
+                </div>
+              ) : null}
             </div>
           </Panel>
           <Panel>
@@ -874,7 +1228,11 @@ export function AssessmentPage() {
               value={language}
               onValueChange={(value) => setLanguage(value as Language)}
             >
-              <SelectTrigger size="sm" className="w-32 rounded-md">
+              <SelectTrigger
+                size="sm"
+                className="w-32 rounded-md"
+                aria-label={t.language}
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -892,6 +1250,15 @@ export function AssessmentPage() {
                 <CheckCircle2 />
               )}
               {submitting ? t.submitting : t.finish}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={submitting}
+              onClick={() => void abandonCurrentAssessment()}
+            >
+              <XCircle />
+              <span className="hidden sm:inline">{t.abandon}</span>
             </Button>
           </div>
         </div>

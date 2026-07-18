@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getPublishedProblemBySlug,
   listPublishedProblems,
+  listPublishedProblemSummaries,
 } from './catalog-repository.server';
 
 interface MockQueryBuilder {
@@ -167,6 +168,49 @@ describe('PostgreSQL catalog repository', () => {
       'hidden-1',
     ]);
     expect(mocks.builders[0].limit).toHaveBeenCalledWith(20);
+  });
+
+  it('lists summaries without selecting or loading tests and templates', async () => {
+    mocks.queryResults.push([
+      {
+        id: revisionRow.id,
+        slug: revisionRow.slug,
+        title: revisionRow.title,
+        description: revisionRow.description,
+        difficulty: revisionRow.difficulty,
+        topics: revisionRow.topics,
+        estimatedMinutes: revisionRow.estimatedMinutes,
+        contentVersion: revisionRow.version,
+        catalogVersion: revisionRow.catalogVersion,
+        supportedLanguages: ['javascript', 'typescript'],
+      },
+    ]);
+
+    const summaries = await listPublishedProblemSummaries({ limit: 20 });
+
+    expect(summaries).toEqual([
+      expect.objectContaining({
+        slug: 'first-unique-position',
+        contentVersion: 1,
+        supportedLanguages: ['javascript', 'typescript'],
+      }),
+    ]);
+    expect(summaries[0]).not.toHaveProperty('tests');
+    expect(summaries[0]).not.toHaveProperty('languageConfigs');
+    expect(mocks.builders).toHaveLength(1);
+    const selection = mocks.builders[0].select.mock.calls[0][0];
+    expect(Object.keys(selection)).toEqual([
+      'id',
+      'slug',
+      'title',
+      'description',
+      'difficulty',
+      'topics',
+      'estimatedMinutes',
+      'contentVersion',
+      'catalogVersion',
+      'supportedLanguages',
+    ]);
   });
 
   it('does not query tests when a requested version does not exist', async () => {

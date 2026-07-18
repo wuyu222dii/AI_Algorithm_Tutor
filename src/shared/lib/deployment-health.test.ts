@@ -91,6 +91,31 @@ describe('deployment health checker', () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
+  it('sends a Vercel protection bypass only to the fixed deployment origin', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(successResponse('live'))
+      .mockResolvedValueOnce(successResponse('ready'))
+      .mockResolvedValueOnce(successResponse());
+
+    await checkDeploymentHealth({
+      baseUrl: 'https://preview.algocoach.example',
+      canaryToken: TOKEN,
+      vercelProtectionBypass: 'vercel-bypass-secret',
+      fetcher,
+    });
+
+    for (const [input, init] of fetcher.mock.calls) {
+      expect(new URL(input).origin).toBe('https://preview.algocoach.example');
+      expect(init?.headers).toMatchObject({
+        'x-vercel-protection-bypass': 'vercel-bypass-secret',
+      });
+    }
+    expect(fetcher.mock.calls[2]?.[1]?.headers).toMatchObject({
+      authorization: `Bearer ${TOKEN}`,
+    });
+  });
+
   it('classifies timeouts without exposing provider details', async () => {
     const fetcher = vi
       .fn()

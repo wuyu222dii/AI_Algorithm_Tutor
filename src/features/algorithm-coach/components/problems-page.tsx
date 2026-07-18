@@ -74,6 +74,9 @@ const copy = {
     allDifficulty: '全部难度',
     allTopics: '全部知识点',
     allStatus: '全部状态',
+    difficultyFilter: '按难度筛选题目',
+    topicFilter: '按知识点筛选题目',
+    statusFilter: '按完成状态筛选题目',
     todo: '待完成',
     completed: '已完成',
     results: '道题',
@@ -94,6 +97,7 @@ const copy = {
     entryPoint: '函数签名',
     constraints: '约束',
     template: '初始模板',
+    templateLanguage: '模板语言',
     confirm: '确认并练习',
     edit: '继续编辑',
     demoNotice: '导入题只包含题面中明确给出的样例，系统不会伪造隐藏测试。',
@@ -130,6 +134,9 @@ const copy = {
     allDifficulty: 'All difficulties',
     allTopics: 'All topics',
     allStatus: 'All statuses',
+    difficultyFilter: 'Filter problems by difficulty',
+    topicFilter: 'Filter problems by topic',
+    statusFilter: 'Filter problems by completion status',
     todo: 'To do',
     completed: 'Completed',
     results: 'problems',
@@ -150,6 +157,7 @@ const copy = {
     entryPoint: 'Function signature',
     constraints: 'Constraints',
     template: 'Starter template',
+    templateLanguage: 'Template language',
     confirm: 'Confirm and practice',
     edit: 'Keep editing',
     demoNotice:
@@ -462,7 +470,10 @@ export function ProblemsPage() {
                             })
                           }
                         >
-                          <SelectTrigger className="w-full rounded-md">
+                          <SelectTrigger
+                            className="w-full rounded-md"
+                            aria-label={t.difficulty}
+                          >
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -541,7 +552,11 @@ export function ProblemsPage() {
                         setTemplateLanguage(value as Language)
                       }
                     >
-                      <SelectTrigger size="sm" className="rounded-md">
+                      <SelectTrigger
+                        size="sm"
+                        className="rounded-md"
+                        aria-label={t.templateLanguage}
+                      >
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -757,7 +772,10 @@ export function ProblemsPage() {
         </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:flex">
           <Select value={difficulty} onValueChange={setDifficulty}>
-            <SelectTrigger className="w-full rounded-md lg:w-40">
+            <SelectTrigger
+              className="w-full rounded-md lg:w-40"
+              aria-label={t.difficultyFilter}
+            >
               <Filter className="size-4" />
               <SelectValue />
             </SelectTrigger>
@@ -775,7 +793,10 @@ export function ProblemsPage() {
             </SelectContent>
           </Select>
           <Select value={topic} onValueChange={setTopic}>
-            <SelectTrigger className="w-full rounded-md lg:w-44">
+            <SelectTrigger
+              className="w-full rounded-md lg:w-44"
+              aria-label={t.topicFilter}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -789,7 +810,10 @@ export function ProblemsPage() {
             </SelectContent>
           </Select>
           <Select value={status} onValueChange={setStatus}>
-            <SelectTrigger className="col-span-2 w-full rounded-md sm:col-span-1 lg:w-40">
+            <SelectTrigger
+              className="col-span-2 w-full rounded-md sm:col-span-1 lg:w-40"
+              aria-label={t.statusFilter}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

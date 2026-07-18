@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { createHash } from 'node:crypto';
-import { and, asc, desc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import { dbPostgres } from '@/core/db';
 import {
@@ -9,6 +9,7 @@ import {
   coachCodeRun,
   coachCorrectionEpisode,
   coachDailyLearningPlan,
+  coachGuestClaim,
   coachImportedTestCase,
   coachLearningArtifact,
   coachLearningProfile,
@@ -21,12 +22,15 @@ import {
   coachSyncState,
 } from '@/config/db/schema.postgres';
 
+import type { GuestClaimEnvelopeV2, GuestClaimResult } from './guest-claim';
+import { mergeImportedDraftRecords } from './imported-drafts';
 import { normalizeProblemLanguageConfigs } from './languages';
 import {
   createInitialReviewProgress,
   getReviewItemKey,
+  mergeReviewProgress,
 } from './learning-progress';
-import { createInitialCoachState } from './storage';
+import { createInitialCoachState, mergeCoachStates } from './storage';
 import {
   applyCoachSyncMutations,
   filterUnappliedCoachMutations,
@@ -66,6 +70,13 @@ export class CoachPersistenceConflict extends Error {
   ) {
     super('Learning data changed in another request.');
     this.name = 'CoachPersistenceConflict';
+  }
+}
+
+export class CoachGuestAlreadyClaimed extends Error {
+  constructor() {
+    super('This guest learning history has already been claimed.');
+    this.name = 'CoachGuestAlreadyClaimed';
   }
 }
 
@@ -416,6 +427,7 @@ async function persistCoachDataInTransaction(
         preferredLanguage: state.profile.preferredLanguage,
         weeklyTarget: state.profile.weeklyTarget,
         dailyMinutes: state.profile.dailyMinutes ?? 30,
+        timeZone: state.profile.timeZone ?? 'UTC',
         onboardingCompleted:
           state.profile.onboardingCompleted ??
           Boolean(state.profile.onboardedAt),
@@ -432,6 +444,7 @@ async function persistCoachDataInTransaction(
           preferredLanguage: state.profile.preferredLanguage,
           weeklyTarget: state.profile.weeklyTarget,
           dailyMinutes: state.profile.dailyMinutes ?? 30,
+          timeZone: state.profile.timeZone ?? 'UTC',
           onboardingCompleted:
             state.profile.onboardingCompleted ??
             Boolean(state.profile.onboardedAt),
@@ -558,6 +571,8 @@ async function persistCoachDataInTransaction(
         problemContentVersion: attempt.problemContentVersion,
         answer: attempt.answer,
         grade: attempt.grade,
+        gradeMode: attempt.gradeMode ?? 'ai',
+        gradeErrorCode: attempt.gradeErrorCode,
         selectedRating: attempt.selectedRating,
         ratingOverride: attempt.ratingOverride,
         gradedArtifactId: attempt.gradedArtifactId,
@@ -568,6 +583,8 @@ async function persistCoachDataInTransaction(
         target: coachReviewAttempt.id,
         set: {
           grade: attempt.grade,
+          gradeMode: attempt.gradeMode ?? 'ai',
+          gradeErrorCode: attempt.gradeErrorCode,
           selectedRating: attempt.selectedRating,
           ratingOverride: attempt.ratingOverride,
           gradedArtifactId: attempt.gradedArtifactId,
@@ -902,6 +919,7 @@ async function persistCoachDataInTransaction(
         comparison: assessment.comparison,
         assessmentVersion: assessment.version,
         verificationToken: assessment.verificationToken,
+        evidenceMode: 'browser_local',
         createdAt: asDate(assessment.startedAt),
         updatedAt: asDate(assessment.completedAt),
       })
@@ -936,6 +954,7 @@ async function persistCoachDataInTransaction(
           comparison: assessment.comparison,
           assessmentVersion: assessment.version,
           verificationToken: assessment.verificationToken,
+          evidenceMode: 'browser_local',
           updatedAt: asDate(assessment.completedAt),
         },
       });
@@ -1164,6 +1183,103 @@ export async function applyCoachDataMutations(
   });
 }
 
+export async function claimGuestCoachDataOnServer(
+  userId: string,
+  guestSubject: string,
+  envelope: GuestClaimEnvelopeV2
+): Promise<GuestClaimResult> {
+  const database = dbPostgres();
+  return database.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${guestSubject}, 0))`
+    );
+    const currentRevision = await lockSyncState(tx, userId);
+    const claims = await tx
+      .select({
+        userId: coachGuestClaim.userId,
+        claimId: coachGuestClaim.claimId,
+        guestSubject: coachGuestClaim.guestSubject,
+        mergedRevision: coachGuestClaim.mergedRevision,
+      })
+      .from(coachGuestClaim)
+      .where(
+        or(
+          and(
+            eq(coachGuestClaim.userId, userId),
+            eq(coachGuestClaim.claimId, envelope.claimId)
+          ),
+          eq(coachGuestClaim.guestSubject, guestSubject)
+        )
+      )
+      .for('update');
+    const replayed = claims.find(
+      (claim) => claim.userId === userId && claim.claimId === envelope.claimId
+    );
+    if (replayed) {
+      return {
+        claimId: envelope.claimId,
+        status: 'acknowledged',
+        revision: replayed.mergedRevision,
+        replayed: true,
+      };
+    }
+    if (claims.some((claim) => claim.guestSubject === guestSubject)) {
+      throw new CoachGuestAlreadyClaimed();
+    }
+
+    const current = await loadCoachDataFromTransaction(tx, userId);
+    const state = mergeCoachStates(current.state, envelope.snapshot.state);
+    const importedDrafts = mergeImportedDraftRecords(
+      current.importedDrafts,
+      envelope.snapshot.importedDrafts
+    );
+    const activeSlug =
+      current.importedProblem?.slug ??
+      envelope.snapshot.importedProblem?.slug ??
+      importedDrafts[0]?.problem.slug ??
+      null;
+    const reviewProgress = mergeReviewProgress(
+      current.reviewProgress,
+      envelope.snapshot.reviewProgress
+    );
+    const result = await persistCoachDataInTransaction(
+      tx,
+      userId,
+      state,
+      {
+        mode: 'replace',
+        records: importedDrafts,
+        deletedSlugs: [],
+        activeSlug,
+        activeChanged: true,
+      },
+      reviewProgress,
+      currentRevision
+    );
+    const timestamp = new Date();
+    const snapshotHash = createHash('sha256')
+      .update(JSON.stringify(envelope.snapshot))
+      .digest('hex');
+    await tx.insert(coachGuestClaim).values({
+      id: stableId('guest_claim', [userId, envelope.claimId]),
+      userId,
+      claimId: envelope.claimId,
+      guestSubject,
+      snapshotHash,
+      status: 'acknowledged',
+      mergedRevision: result.revision,
+      createdAt: asDate(envelope.createdAt),
+      acknowledgedAt: timestamp,
+    });
+    return {
+      claimId: envelope.claimId,
+      status: 'acknowledged',
+      revision: result.revision,
+      replayed: false,
+    };
+  });
+}
+
 async function loadCoachDataFromTransaction(
   tx: CoachTransaction,
   userId: string
@@ -1312,6 +1428,7 @@ async function loadCoachDataFromTransaction(
         profile.preferredLanguage as LearningProfile['preferredLanguage'],
       weeklyTarget: profile.weeklyTarget,
       dailyMinutes: profile.dailyMinutes,
+      timeZone: profile.timeZone,
       weeklyGoal: profile.weeklyTarget,
       onboardingCompleted: profile.onboardingCompleted,
       createdAt: asIso(profile.createdAt),
@@ -1455,6 +1572,8 @@ async function loadCoachDataFromTransaction(
         undefined,
       version: row.assessmentVersion ?? undefined,
       verificationToken: row.verificationToken ?? undefined,
+      evidenceMode:
+        row.evidenceMode as CoachState['assessments'][number]['evidenceMode'],
     }))
     .slice(0, 20)
     .reverse();
@@ -1485,6 +1604,9 @@ async function loadCoachDataFromTransaction(
       answer: row.answer,
       submittedAt: asIso(row.submittedAt),
       grade: (row.grade as ReviewAttempt['grade']) ?? undefined,
+      gradeMode: row.gradeMode as ReviewAttempt['gradeMode'],
+      gradeErrorCode:
+        (row.gradeErrorCode as ReviewAttempt['gradeErrorCode']) ?? undefined,
       selectedRating:
         (row.selectedRating as ReviewAttempt['selectedRating']) ?? undefined,
       ratingOverride:

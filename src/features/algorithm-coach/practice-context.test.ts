@@ -31,11 +31,20 @@ describe('practice context persistence', () => {
       { id: 'question', role: 'user' as const, content: 'Why a hash map?' },
     ];
 
-    savePracticeContext('pair-sum', messages, storage, 'user:alpha');
+    savePracticeContext(
+      'pair-sum',
+      messages,
+      storage,
+      'user:alpha',
+      'unfinished question'
+    );
 
     expect(
       loadPracticeContext('pair-sum', storage, 'user:alpha')?.messages
     ).toEqual(messages);
+    expect(
+      loadPracticeContext('pair-sum', storage, 'user:alpha')?.draftInput
+    ).toBe('unfinished question');
     expect(loadPracticeContext('pair-sum', storage, 'user:beta')).toBeNull();
     expect(loadPracticeContext('other', storage, 'user:alpha')).toBeNull();
   });

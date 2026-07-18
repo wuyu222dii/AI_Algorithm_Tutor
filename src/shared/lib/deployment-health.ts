@@ -20,6 +20,7 @@ export interface DeploymentHealthReport {
 export interface DeploymentHealthOptions {
   baseUrl: string;
   canaryToken: string;
+  vercelProtectionBypass?: string;
   timeoutMs?: number;
   fetcher?: typeof fetch;
   now?: () => Date;
@@ -132,11 +133,17 @@ async function runCheck(
   origin: URL,
   name: DeploymentHealthCheckName,
   timeoutMs: number,
-  canaryToken: string
+  canaryToken: string,
+  vercelProtectionBypass?: string
 ): Promise<DeploymentHealthCheckResult> {
   const startedAt = performance.now();
   const isCanary = name === 'ai-relay';
   try {
+    const requestHeaders: Record<string, string> = {};
+    if (vercelProtectionBypass) {
+      requestHeaders['x-vercel-protection-bypass'] = vercelProtectionBypass;
+    }
+    if (isCanary) requestHeaders.authorization = `Bearer ${canaryToken}`;
     const response = await fetcher(
       new URL(
         name === 'live'
@@ -148,8 +155,8 @@ async function runCheck(
       ),
       {
         method: isCanary ? 'POST' : 'GET',
-        headers: isCanary
-          ? { authorization: `Bearer ${canaryToken}` }
+        headers: Object.keys(requestHeaders).length
+          ? requestHeaders
           : undefined,
         cache: 'no-store',
         redirect: 'error',
@@ -216,7 +223,8 @@ export async function checkDeploymentHealth(
       origin,
       name,
       timeoutMs,
-      canaryToken
+      canaryToken,
+      options.vercelProtectionBypass?.trim() || undefined
     );
     checks.push(result);
     if (result.status === 'error') {

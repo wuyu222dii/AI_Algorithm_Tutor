@@ -21,6 +21,7 @@ export default defineConfig({
   projects: [
     {
       name: 'desktop-chromium',
+      testIgnore: /a11y\.spec\.ts/,
       use: {
         ...devices['Desktop Chrome'],
         viewport: { width: 1440, height: 900 },
@@ -28,9 +29,37 @@ export default defineConfig({
     },
     {
       name: 'mobile-chromium',
+      testIgnore: [/a11y\.spec\.ts/, /catalog-admin\.spec\.ts/],
       use: {
         ...devices['Pixel 7'],
         browserName: 'chromium',
+        viewport: { width: 390, height: 844 },
+      },
+    },
+    {
+      name: 'desktop-chromium-a11y',
+      testMatch: /a11y\.spec\.ts/,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1440, height: 900 },
+      },
+    },
+    {
+      name: 'mobile-webkit-a11y',
+      testMatch: /a11y\.spec\.ts/,
+      use: {
+        ...devices['iPhone SE'],
+        browserName: 'webkit',
+        viewport: { width: 375, height: 667 },
+      },
+    },
+    {
+      name: 'mobile-webkit-core',
+      testMatch: /coach\.spec\.ts/,
+      grep: /mobile practice tabs and assessment remain usable/,
+      use: {
+        ...devices['iPhone SE'],
+        browserName: 'webkit',
         viewport: { width: 390, height: 844 },
       },
     },

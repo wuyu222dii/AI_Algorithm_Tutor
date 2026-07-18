@@ -4,7 +4,7 @@ import type {
   CoachState,
   CodeRunResult,
   PracticeSession,
-  Problem,
+  ProblemCatalogItem,
   ProblemTopic,
   ReviewItem,
   ReviewProgressState,
@@ -79,7 +79,7 @@ function parseReviewItemKey(key: string): {
 
 export function getReviewItemForProblem(
   reviewItems: Record<string, ReviewItem>,
-  problem: Pick<Problem, 'id' | 'slug' | 'version'>
+  problem: Pick<ProblemCatalogItem, 'id' | 'slug' | 'version'>
 ): ReviewItem | undefined {
   const version = normalizeProblemContentVersion(
     problem.version?.contentVersion
@@ -103,7 +103,7 @@ export interface TopicMasterySnapshot {
 type WeekOptions = {
   now?: Date;
   timeZone?: string;
-  catalog?: readonly Problem[];
+  catalog?: readonly ProblemCatalogItem[];
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -307,7 +307,8 @@ export function hasReviewProgress(
 
 export function claimGuestReviewProgress(
   scope: CoachStorageScope,
-  storage?: Storage
+  storage?: Storage,
+  options: { clearGuest?: boolean } = {}
 ): boolean {
   if (scope === 'guest') return false;
   const target = getStorage(storage);
@@ -317,7 +318,7 @@ export function claimGuestReviewProgress(
     loadReviewProgress(target, 'guest')
   );
   saveReviewProgress(merged, target, scope);
-  clearReviewProgress(target, 'guest');
+  if (options.clearGuest !== false) clearReviewProgress(target, 'guest');
   return true;
 }
 
@@ -392,7 +393,7 @@ export function isPracticeSessionCompleted(
   );
 }
 
-function problemContentVersion(problem: Problem): number {
+function problemContentVersion(problem: ProblemCatalogItem): number {
   return normalizeProblemContentVersion(problem.version?.contentVersion);
 }
 
@@ -402,7 +403,7 @@ function sessionContentVersion(session: PracticeSession): number {
 
 export function getProblemPracticeSession(
   state: CoachState,
-  problem: Problem
+  problem: ProblemCatalogItem
 ): PracticeSession | undefined {
   const version = problemContentVersion(problem);
   const aliases =
@@ -418,7 +419,9 @@ export function getProblemPracticeSession(
   );
 }
 
-function catalogVersions(catalog: readonly Problem[]): Map<string, number> {
+function catalogVersions(
+  catalog: readonly ProblemCatalogItem[]
+): Map<string, number> {
   const versions = new Map<string, number>();
   for (const problem of catalog) {
     const version = problemContentVersion(problem);
@@ -430,7 +433,7 @@ function catalogVersions(catalog: readonly Problem[]): Map<string, number> {
 }
 
 function catalogCanonicalSlugs(
-  catalog: readonly Problem[]
+  catalog: readonly ProblemCatalogItem[]
 ): Map<string, string> {
   const aliases = new Map<string, string>();
   for (const problem of catalog) {
@@ -443,7 +446,7 @@ function catalogCanonicalSlugs(
 /** Select one current (catalog) or highest known session per problem slug. */
 export function selectCurrentPracticeSessions(
   state: CoachState,
-  catalog: readonly Problem[] = []
+  catalog: readonly ProblemCatalogItem[] = []
 ): PracticeSession[] {
   const requestedVersions = catalogVersions(catalog);
   const canonicalSlugs = catalogCanonicalSlugs(catalog);
@@ -473,7 +476,10 @@ function runTimestamp(run: CodeRunResult): number {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-function runsForProblem(state: CoachState, problem: Problem): CodeRunResult[] {
+function runsForProblem(
+  state: CoachState,
+  problem: ProblemCatalogItem
+): CodeRunResult[] {
   const version = problemContentVersion(problem);
   const session = getProblemPracticeSession(state, problem);
   const sessionRuns = (session?.runs ?? []).map((run) => ({
@@ -508,7 +514,10 @@ function runsForProblem(state: CoachState, problem: Problem): CodeRunResult[] {
     .sort((left, right) => runTimestamp(left) - runTimestamp(right));
 }
 
-function firstCompletionAt(state: CoachState, problem: Problem): string | null {
+function firstCompletionAt(
+  state: CoachState,
+  problem: ProblemCatalogItem
+): string | null {
   const runs = runsForProblem(state, problem);
   const fullPass = runs.find(verifiedPass);
   if (fullPass) return fullPass.executedAt;
@@ -605,7 +614,7 @@ function latestIso(values: Array<string | undefined>): string | null {
 
 function problemScore(
   state: CoachState,
-  problem: Problem,
+  problem: ProblemCatalogItem,
   reviewItem?: ReviewItem
 ): {
   score: number;
@@ -671,7 +680,7 @@ function problemScore(
 export function calculateTopicMasterySnapshots(
   state: CoachState,
   reviewItems: Record<string, ReviewItem> = {},
-  catalog: readonly Problem[] = []
+  catalog: readonly ProblemCatalogItem[] = []
 ): Record<ProblemTopic, TopicMasterySnapshot> {
   const snapshots = Object.fromEntries(
     ALL_PROBLEM_TOPICS.map((topic) => [
@@ -728,7 +737,7 @@ export function calculateTopicMasterySnapshots(
 
 function initialReviewIntervalDays(
   state: CoachState,
-  problem: Problem
+  problem: ProblemCatalogItem
 ): number {
   const session = getProblemPracticeSession(state, problem);
   if ((session?.hintLevel ?? 0) >= 2) return 2;
@@ -736,7 +745,7 @@ function initialReviewIntervalDays(
   return 7;
 }
 
-function reviewEvidence(state: CoachState, problem: Problem) {
+function reviewEvidence(state: CoachState, problem: ProblemCatalogItem) {
   const runs = runsForProblem(state, problem);
   const lastFailure = runs.filter((run) => !runPassed(run)).at(-1);
   const candidates = runs.filter((run) => !runPassed(run) || verifiedPass(run));
@@ -761,7 +770,7 @@ function reviewEvidence(state: CoachState, problem: Problem) {
 export function reconcileReviewProgress(
   state: CoachState,
   current: ReviewProgressState,
-  options: { now?: Date; catalog?: readonly Problem[] } = {}
+  options: { now?: Date; catalog?: readonly ProblemCatalogItem[] } = {}
 ): ReviewProgressState {
   const now = options.now ?? new Date();
   const nowIso = now.toISOString();

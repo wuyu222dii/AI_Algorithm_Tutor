@@ -457,6 +457,42 @@ describe('catalog candidate pipeline', () => {
     );
   });
 
+  it('fails closed for empty, unknown, and unavailable release operations', () => {
+    const empty = createCatalogWorkspace();
+    expect(() =>
+      approveCatalogCandidates(empty, [], 'reviewer@example.test')
+    ).toThrow(/at least one candidate/);
+    expect(() =>
+      approveCatalogCandidates(
+        empty,
+        ['missing-candidate'],
+        'reviewer@example.test'
+      )
+    ).toThrow(/Unknown catalog candidate/);
+    expect(() => publishCatalogCandidates(empty, [], '   ')).toThrow(
+      /non-empty reviewer/
+    );
+    expect(() =>
+      publishCatalogCandidates(empty, [], 'publisher@example.test')
+    ).toThrow(/at least one candidate/);
+    expect(() =>
+      publishCatalogCandidates(
+        empty,
+        ['missing-candidate'],
+        'publisher@example.test'
+      )
+    ).toThrow(/Unknown catalog candidate/);
+    expect(() =>
+      rollbackCatalogRelease(empty, 'publisher@example.test')
+    ).toThrow(/no active catalog release/);
+    expect(() =>
+      rollbackCatalogRelease(
+        { ...empty, activeReleaseId: 'missing-active-release' },
+        'publisher@example.test'
+      )
+    ).toThrow(/requested rollback release/);
+  });
+
   it('deduplicates unchanged upstream statements across commits', () => {
     const first = applyExercismSnapshot(
       createCatalogWorkspace(),

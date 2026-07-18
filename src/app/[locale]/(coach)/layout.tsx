@@ -1,6 +1,6 @@
 import { ReactNode } from 'react';
 import {
-  listRuntimeProblems,
+  listCoachShellProblemSummaries,
   runtimeEnabledLanguages,
 } from '@/features/algorithm-coach/catalog-runtime.server';
 import { CoachShell } from '@/features/algorithm-coach/components/coach-shell';
@@ -12,7 +12,7 @@ export default async function AlgorithmCoachLayout({
 }: {
   children: ReactNode;
 }) {
-  const problems = await listRuntimeProblems();
+  const problems = await listCoachShellProblemSummaries();
   const enabledLanguages = runtimeEnabledLanguages();
   return (
     <CoachShell problems={problems} enabledLanguages={enabledLanguages}>

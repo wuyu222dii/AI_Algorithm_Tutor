@@ -26,6 +26,10 @@ export function LocaleSelector({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [mounted, setMounted] = useState(false);
+  const languageLabel =
+    currentLocale === 'zh'
+      ? `切换语言，当前为${localeNames[currentLocale]}`
+      : `Switch language, current language is ${localeNames[currentLocale]}`;
 
   useEffect(() => {
     setMounted(true);
@@ -52,6 +56,7 @@ export function LocaleSelector({
         className={
           type === 'icon' ? 'h-auto w-auto p-0' : 'hover:bg-primary/10'
         }
+        aria-label={languageLabel}
         disabled
       >
         {type === 'icon' ? (
@@ -70,11 +75,21 @@ export function LocaleSelector({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         {type === 'icon' ? (
-          <Button variant="ghost" size="icon" className="h-auto w-auto p-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-auto w-auto p-0"
+            aria-label={languageLabel}
+          >
             <Languages size={18} />
           </Button>
         ) : (
-          <Button variant="outline" size="sm" className="hover:bg-primary/10">
+          <Button
+            variant="outline"
+            size="sm"
+            className="hover:bg-primary/10"
+            aria-label={languageLabel}
+          >
             <Globe size={16} />
             {localeNames[currentLocale]}
           </Button>

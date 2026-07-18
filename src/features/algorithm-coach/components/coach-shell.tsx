@@ -1,6 +1,7 @@
 'use client';
 
 import { ReactNode, useMemo } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { LoaderCircle, RefreshCw } from 'lucide-react';
 import { useLocale } from 'next-intl';
 
@@ -23,7 +24,7 @@ import { Sidebar as SidebarType } from '@/shared/types/blocks/dashboard';
 import type { EnabledLanguage } from '../languages';
 import { createCoachStorageScope } from '../storage';
 import { CoachProvider, useCoachStore } from '../store';
-import type { Problem } from '../types';
+import type { ProblemSummary } from '../types';
 
 export const pageNames = {
   zh: {
@@ -102,6 +103,14 @@ export const pageNames = {
   },
 } as const;
 
+export function buildCoachCallbackUrl(
+  pathname: string,
+  searchParams: Pick<URLSearchParams, 'toString'>
+): string {
+  const query = searchParams.toString();
+  return `${pathname}${query ? `?${query}` : ''}`;
+}
+
 export function CoachShell({
   children,
   enabledLanguages,
@@ -109,10 +118,11 @@ export function CoachShell({
 }: {
   children: ReactNode;
   enabledLanguages: readonly EnabledLanguage[];
-  problems: readonly Problem[];
+  problems: readonly ProblemSummary[];
 }) {
   const locale = useLocale() === 'zh' ? 'zh' : 'en';
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const copy = pageNames[locale];
   const { data: session, isPending: isSessionPending } = useSession();
   const storageScope = isSessionPending
@@ -188,6 +198,7 @@ export function CoachShell({
           : pathname.startsWith('/progress')
             ? copy.progress
             : copy.learn;
+  const callbackUrl = buildCoachCallbackUrl(pathname, searchParams);
 
   return (
     <CoachProvider
@@ -219,7 +230,7 @@ export function CoachShell({
               >
                 <Link href="/progress">{copy.progress}</Link>
               </Button>
-              <SignUser userNav={userNav} callbackUrl={pathname} />
+              <SignUser userNav={userNav} callbackUrl={callbackUrl} />
             </div>
           </header>
           <main className="min-w-0 flex-1">
@@ -295,7 +306,7 @@ export function CoachSyncBadge({
       className={cn(
         'hidden rounded-md sm:inline-flex',
         status === 'local' &&
-          'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+          'border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300',
         status === 'syncing' &&
           'border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300',
         status === 'synced' &&

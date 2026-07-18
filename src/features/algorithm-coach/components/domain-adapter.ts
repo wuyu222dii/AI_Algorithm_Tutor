@@ -6,6 +6,7 @@ import type {
   Language,
   LearningArtifact,
   Problem,
+  ProblemSummary,
   TestCaseResult,
 } from '../types';
 
@@ -29,14 +30,18 @@ export function localized(
   return fallback;
 }
 
-export function localizedProblem(problem: Problem, locale: 'zh' | 'en') {
+export function localizedProblem<T extends Problem | ProblemSummary>(
+  problem: T,
+  locale: 'zh' | 'en'
+) {
+  const constraints = 'constraints' in problem ? problem.constraints : [];
   return {
     ...problem,
     titleText: localized(problem.title, locale, problem.slug),
     descriptionText: localized(problem.description, locale),
-    constraintsText: Array.isArray(problem.constraints)
-      ? problem.constraints.map((item) => localized(item, locale))
-      : [localized(problem.constraints, locale)].filter(Boolean),
+    constraintsText: Array.isArray(constraints)
+      ? constraints.map((item) => localized(item, locale))
+      : [localized(constraints, locale)].filter(Boolean),
   };
 }
 

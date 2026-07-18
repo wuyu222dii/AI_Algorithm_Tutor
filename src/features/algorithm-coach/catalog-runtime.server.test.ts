@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getRuntimeProblem,
+  listCoachShellProblemSummaries,
   listRuntimeProblems,
+  listRuntimeProblemSummaries,
   resetRuntimeProblemCacheForTests,
   runtimeEnabledLanguages,
 } from './catalog-runtime.server';
@@ -83,6 +85,38 @@ describe('runtime problem catalog', () => {
     await expect(
       getRuntimeProblem('dependency-cycle', 2)
     ).resolves.toBeUndefined();
+  });
+
+  it('projects fixture catalog entries to lightweight summaries', async () => {
+    vi.stubEnv('DB_CATALOG_ENABLED', 'false');
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('TYPESCRIPT_ENABLED', 'false');
+
+    const summaries = await listRuntimeProblemSummaries({ limit: 2 });
+
+    expect(summaries).toHaveLength(2);
+    expect(summaries[0].supportedLanguages).toEqual(['javascript', 'python']);
+    expect(summaries[0]).not.toHaveProperty('tests');
+    expect(summaries[0]).not.toHaveProperty('languageConfigs');
+  });
+
+  it('keeps the shell summary-only before and after the query rollout', async () => {
+    vi.stubEnv('DB_CATALOG_ENABLED', 'false');
+    vi.stubEnv('NODE_ENV', 'test');
+
+    for (const enabled of ['false', 'true']) {
+      const summaries = await listCoachShellProblemSummaries(
+        { limit: 1 },
+        {
+          ...process.env,
+          DB_CATALOG_ENABLED: 'false',
+          SUMMARY_CATALOG_ENABLED: enabled,
+        }
+      );
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).not.toHaveProperty('tests');
+      expect(summaries[0]).not.toHaveProperty('languageConfigs');
+    }
   });
 
   it('uses the server TypeScript rollout flag', () => {

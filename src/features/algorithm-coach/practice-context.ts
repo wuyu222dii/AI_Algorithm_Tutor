@@ -18,6 +18,7 @@ export interface StoredPracticeContext {
   version: typeof PRACTICE_CONTEXT_VERSION;
   messages: StoredPracticeMessage[];
   updatedAt: string;
+  draftInput?: string;
 }
 
 function contextKey(problemSlug: string, scope: CoachStorageScope): string {
@@ -64,6 +65,11 @@ export function loadPracticeContext(
         typeof parsed.updatedAt === 'string'
           ? parsed.updatedAt
           : new Date(0).toISOString(),
+      draftInput:
+        typeof parsed.draftInput === 'string' &&
+        parsed.draftInput.length <= MAX_MESSAGE_LENGTH
+          ? parsed.draftInput
+          : undefined,
     };
   } catch {
     return null;
@@ -76,7 +82,8 @@ export function savePracticeContext(
   storage: Storage | undefined = typeof window === 'undefined'
     ? undefined
     : window.localStorage,
-  scope: CoachStorageScope = GUEST_COACH_STORAGE_SCOPE
+  scope: CoachStorageScope = GUEST_COACH_STORAGE_SCOPE,
+  draftInput = ''
 ): void {
   if (!storage) return;
   const safeMessages = messages.filter(validMessage).slice(-MAX_MESSAGES);
@@ -88,6 +95,9 @@ export function savePracticeContext(
         version: PRACTICE_CONTEXT_VERSION,
         messages: safeMessages,
         updatedAt: new Date().toISOString(),
+        ...(draftInput
+          ? { draftInput: draftInput.slice(0, MAX_MESSAGE_LENGTH) }
+          : {}),
       } satisfies StoredPracticeContext)
     );
   } catch {
@@ -117,7 +127,8 @@ export function claimGuestPracticeContexts(
   scope: CoachStorageScope,
   storage: Storage | undefined = typeof window === 'undefined'
     ? undefined
-    : window.localStorage
+    : window.localStorage,
+  options: { clearGuest?: boolean } = {}
 ): number {
   if (!storage || scope === GUEST_COACH_STORAGE_SCOPE) return 0;
   const guestPrefix = contextPrefix(GUEST_COACH_STORAGE_SCOPE);
@@ -135,7 +146,7 @@ export function claimGuestPracticeContexts(
         const value = storage.getItem(key);
         if (value) storage.setItem(destination, value);
       }
-      storage.removeItem(key);
+      if (options.clearGuest !== false) storage.removeItem(key);
       claimed += 1;
     }
   } catch {

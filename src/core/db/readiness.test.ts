@@ -18,8 +18,12 @@ const validProductionEnv: NodeJS.ProcessEnv = {
   DATABASE_PROVIDER: 'postgresql',
   DATABASE_URL: 'postgresql://app:secret@localhost:5432/algocoach',
   DATABASE_APPLICATION_ROLE: 'app',
+  NEXT_PUBLIC_APP_URL: 'https://algocoach.example',
+  NEXT_PUBLIC_SUPPORT_EMAIL: 'support@example.test',
   AUTH_URL: 'https://algocoach.example',
   AUTH_SECRET: 'a-secure-auth-secret-with-at-least-32-characters',
+  EMAIL_AUTH_ENABLED: 'false',
+  GITHUB_AUTH_ENABLED: 'false',
   AI_RELAY_API_KEY: 'test-relay-key',
   AI_RELAY_BASE_URL: 'https://relay.example.test/v1',
   AI_RELAY_PRIMARY_MODEL: 'relay-primary',
@@ -36,6 +40,7 @@ const validProductionEnv: NodeJS.ProcessEnv = {
   }),
   AI_RELAY_CANARY_TOKEN: 'test-canary-token-with-at-least-32-characters',
   SENTRY_DSN: 'https://public@example.test/1',
+  NEXT_PUBLIC_SENTRY_DSN: 'https://public@example.test/1',
   REDIS_URL: 'https://redis.example.test',
   REDIS_TOKEN: 'test-redis-token',
   TRUSTED_PROXY_HEADERS: 'x-forwarded-for',
@@ -43,6 +48,10 @@ const validProductionEnv: NodeJS.ProcessEnv = {
   GOOGLE_ONE_TAP_ENABLED: 'false',
   GOOGLE_CLIENT_ID: 'test-google-client-id',
   GOOGLE_CLIENT_SECRET: 'test-google-client-secret',
+  DURABLE_GUEST_CLAIM_ENABLED: 'false',
+  NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED: 'false',
+  ANONYMOUS_METRICS_ENABLED: 'false',
+  SUMMARY_CATALOG_ENABLED: 'false',
 };
 
 describe('health checks', () => {
@@ -116,6 +125,94 @@ describe('health checks', () => {
     });
   });
 
+  it('requires one trusted proxy header in production', () => {
+    expect(
+      checkRequiredConfiguration({
+        ...validProductionEnv,
+        TRUSTED_PROXY_HEADERS: 'x-forwarded-for,x-real-ip',
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: { invalid: ['TRUSTED_PROXY_HEADERS'] },
+    });
+  });
+
+  it('requires verified delivery when production email auth is enabled', () => {
+    expect(
+      checkRequiredConfiguration({
+        ...validProductionEnv,
+        EMAIL_AUTH_ENABLED: 'true',
+        EMAIL_VERIFICATION_ENABLED: 'false',
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: {
+        missing: expect.arrayContaining(['RESEND_API_KEY']),
+        invalid: expect.arrayContaining([
+          'EMAIL_AUTH_ENABLED',
+          'EMAIL_VERIFICATION_ENABLED',
+        ]),
+      },
+    });
+  });
+
+  it('requires explicit rollout flags and Google-only authentication', () => {
+    const env = { ...validProductionEnv };
+    delete env.SUMMARY_CATALOG_ENABLED;
+    expect(
+      checkRequiredConfiguration({
+        ...env,
+        GITHUB_AUTH_ENABLED: 'true',
+        GOOGLE_ONE_TAP_ENABLED: 'true',
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: {
+        missing: expect.arrayContaining(['SUMMARY_CATALOG_ENABLED']),
+        invalid: expect.arrayContaining([
+          'GOOGLE_ONE_TAP_ENABLED',
+          'GITHUB_AUTH_ENABLED',
+        ]),
+      },
+    });
+  });
+
+  it('requires the public app and authentication URLs to share an origin', () => {
+    expect(
+      checkRequiredConfiguration({
+        ...validProductionEnv,
+        AUTH_URL: 'https://stale-auth.example.test',
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: { invalid: expect.arrayContaining(['AUTH_URL']) },
+    });
+  });
+
+  it('rejects pathful authentication origins', () => {
+    expect(
+      checkRequiredConfiguration({
+        ...validProductionEnv,
+        AUTH_URL: 'https://algocoach.example/auth',
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: { invalid: expect.arrayContaining(['AUTH_URL']) },
+    });
+  });
+
+  it('rejects placeholder support email in production', () => {
+    expect(
+      checkRequiredConfiguration({
+        ...validProductionEnv,
+        NEXT_PUBLIC_SUPPORT_EMAIL: 'support@algocoach.example',
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: { invalid: ['NEXT_PUBLIC_SUPPORT_EMAIL'] },
+    });
+  });
+
   it('validates catalog rollout feature flags', () => {
     expect(
       checkRequiredConfiguration({
@@ -131,6 +228,25 @@ describe('health checks', () => {
           'TYPESCRIPT_ENABLED',
           'CATALOG_SYNC_ENABLED',
           'DB_CATALOG_ENABLED',
+        ],
+      },
+    });
+  });
+
+  it('requires matching durable-claim flags and a strong optional HMAC key', () => {
+    expect(
+      checkRequiredConfiguration({
+        ...validProductionEnv,
+        DURABLE_GUEST_CLAIM_ENABLED: 'true',
+        NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED: 'false',
+        ANONYMOUS_METRICS_HMAC_SECRET: 'short',
+      })
+    ).toMatchObject({
+      status: 'error',
+      details: {
+        invalid: [
+          'NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED',
+          'ANONYMOUS_METRICS_HMAC_SECRET',
         ],
       },
     });

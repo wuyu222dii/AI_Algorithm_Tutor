@@ -1,4 +1,4 @@
-import { problemSupportsLanguage } from './languages';
+import { getProblemContentVersion, problemSupportsLanguage } from './languages';
 import {
   ALL_PROBLEM_TOPICS,
   calculateTopicMasterySnapshots,
@@ -17,7 +17,7 @@ import type {
   Language,
   LearningGoal,
   LearningProfile,
-  Problem,
+  ProblemCatalogItem,
   ProblemTopic,
   ReviewItem,
 } from './types';
@@ -32,7 +32,7 @@ export type {
 export interface DailyPlanInput {
   state: CoachState;
   reviewItems: Record<string, ReviewItem>;
-  catalog: readonly Problem[];
+  catalog: readonly ProblemCatalogItem[];
   date: Date | string;
   timeZone: string;
   profile?: LearningProfile | null;
@@ -40,7 +40,7 @@ export interface DailyPlanInput {
 }
 
 type Candidate = {
-  problem: Problem;
+  problem: ProblemCatalogItem;
   primaryTopic: ProblemTopic;
   reason: DailyPlanTaskReason;
   dueAt?: string;
@@ -52,7 +52,7 @@ type SelectionContext = {
   state: CoachState;
   profile: LearningProfile | null;
   preferredLanguage?: Language;
-  catalog: Problem[];
+  catalog: ProblemCatalogItem[];
   planDate: string;
   timeZone: string;
   estimates: Record<Difficulty, number | undefined>;
@@ -122,18 +122,23 @@ export function getDailyPlanDateKey(
   return `${part('year')}-${part('month')}-${part('day')}`;
 }
 
-function contentVersion(problem: Problem): number {
-  return normalizeProblemContentVersion(problem.version?.contentVersion);
+function contentVersion(problem: ProblemCatalogItem): number {
+  return normalizeProblemContentVersion(getProblemContentVersion(problem));
 }
 
-function primaryTopic(problem: Problem): ProblemTopic | undefined {
+function primaryTopic(problem: ProblemCatalogItem): ProblemTopic | undefined {
   return problem.topics.find((topic): topic is ProblemTopic =>
     KNOWN_TOPICS.has(topic)
   );
 }
 
-function currentCatalog(catalog: readonly Problem[]): Problem[] {
-  const bySlug = new Map<string, { problem: Problem; index: number }>();
+function currentCatalog(
+  catalog: readonly ProblemCatalogItem[]
+): ProblemCatalogItem[] {
+  const bySlug = new Map<
+    string,
+    { problem: ProblemCatalogItem; index: number }
+  >();
   catalog.forEach((problem, index) => {
     const current = bySlug.get(problem.slug);
     if (!current || contentVersion(problem) > contentVersion(current.problem)) {
@@ -146,17 +151,17 @@ function currentCatalog(catalog: readonly Problem[]): Problem[] {
 }
 
 function supportsLanguage(
-  problem: Problem,
+  problem: ProblemCatalogItem,
   language: Language | undefined
 ): boolean {
   return !language || problemSupportsLanguage(problem, language);
 }
 
 function catalogProblemForSession(
-  catalog: readonly Problem[],
+  catalog: readonly ProblemCatalogItem[],
   problemSlug: string,
   problemContentVersion: number
-): Problem | undefined {
+): ProblemCatalogItem | undefined {
   return catalog.find(
     (problem) =>
       (problem.slug === problemSlug || problem.id === problemSlug) &&
@@ -175,7 +180,7 @@ function median(values: number[]): number | undefined {
 
 function historicalDifficultyEstimates(
   state: CoachState,
-  catalog: readonly Problem[]
+  catalog: readonly ProblemCatalogItem[]
 ): Record<Difficulty, number | undefined> {
   const durations: Record<Difficulty, number[]> = {
     easy: [],
@@ -219,9 +224,9 @@ function historicalDifficultyEstimates(
 }
 
 export function estimateDailyPlanProblemMinutes(
-  problem: Problem,
+  problem: ProblemCatalogItem,
   state: CoachState,
-  catalog: readonly Problem[]
+  catalog: readonly ProblemCatalogItem[]
 ): number {
   const historical = historicalDifficultyEstimates(state, catalog)[
     problem.difficulty
@@ -232,7 +237,10 @@ export function estimateDailyPlanProblemMinutes(
   );
 }
 
-function hasAnyPractice(state: CoachState, problem: Problem): boolean {
+function hasAnyPractice(
+  state: CoachState,
+  problem: ProblemCatalogItem
+): boolean {
   if (
     state.completedProblemIds.includes(problem.slug) ||
     state.completedProblemIds.includes(problem.id)

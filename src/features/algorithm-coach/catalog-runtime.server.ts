@@ -4,8 +4,10 @@ import {
   getPublishedCoachProblemBySlug,
   getPublishedProblemBySlug,
   listPublishedProblems,
+  listPublishedProblemSummaries,
   type PublishedProblem,
   type PublishedProblemQuery,
+  type PublishedProblemSummary,
 } from './catalog-repository.server';
 import {
   getEnabledLanguageIds,
@@ -13,6 +15,7 @@ import {
   problemSupportsLanguage,
   type EnabledLanguage,
 } from './languages';
+import { toProblemSummary } from './problem-contracts';
 import type { Problem } from './types';
 
 const MAX_CACHED_REVISIONS = 512;
@@ -203,6 +206,51 @@ export async function listRuntimeProblems(
   }
   catalog.forEach((problem) => rememberRevision('database', problem));
   return catalog;
+}
+
+export async function listRuntimeProblemSummaries(
+  options: PublishedProblemQuery = {}
+): Promise<PublishedProblemSummary[]> {
+  const enabledLanguages = runtimeEnabledLanguages();
+  if (!databaseCatalogEnabled()) {
+    return filterFixtureCatalog(await loadFixtureCatalog(), options).map(
+      (problem) => toProblemSummary(problem, enabledLanguages)
+    );
+  }
+
+  const summaries = await listPublishedProblemSummaries(options);
+  const unfilteredFirstPage =
+    !options.difficulty &&
+    !options.topic &&
+    !options.language &&
+    !options.afterSlug;
+  if (!summaries.length && unfilteredFirstPage) {
+    throw new Error('The published PostgreSQL problem catalog is empty.');
+  }
+  return summaries.map((summary) => ({
+    ...summary,
+    supportedLanguages: enabledLanguages.filter((language) =>
+      summary.supportedLanguages.includes(language)
+    ),
+  }));
+}
+
+/**
+ * Keeps the browser contract summary-only while allowing a staged database
+ * query rollout. The legacy branch may read full rows, but never serializes
+ * templates, tests, hints, or source evidence into the coach layout.
+ */
+export async function listCoachShellProblemSummaries(
+  options: PublishedProblemQuery = {},
+  env: NodeJS.ProcessEnv = process.env
+): Promise<PublishedProblemSummary[]> {
+  if (env.SUMMARY_CATALOG_ENABLED !== 'true') {
+    const enabledLanguages = runtimeEnabledLanguages(env);
+    return (await listRuntimeProblems(options)).map((problem) =>
+      toProblemSummary(problem, enabledLanguages)
+    );
+  }
+  return listRuntimeProblemSummaries(options);
 }
 
 export async function getRuntimeProblem(

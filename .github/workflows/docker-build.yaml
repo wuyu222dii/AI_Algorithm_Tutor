@@ -17,8 +17,8 @@ on:
           - production
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && format('{0}-release-{1}', github.workflow, inputs.environment) || format('{0}-ci-{1}', github.workflow, github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
@@ -47,7 +47,7 @@ jobs:
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm lint:ci
-      - run: pnpm test
+      - run: pnpm test:coverage
       - run: pnpm eval:coach
       - run: pnpm eval:coach:live:corpus
       - run: pnpm budget:editor
@@ -116,6 +116,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - run: pnpm budget:coach
 
   e2e:
     name: Playwright
@@ -132,7 +133,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium webkit
       - name: Run three retry-free browser stability rounds
         run: pnpm test:e2e --repeat-each=3 --retries=0
       - name: Upload Playwright diagnostics
@@ -208,8 +209,16 @@ jobs:
           --env DB_CATALOG_ENABLED=true
           --env CATALOG_SYNC_ENABLED=false
           --env TYPESCRIPT_ENABLED=true
-          --env AUTH_URL=http://localhost:3200
+          --env NEXT_PUBLIC_APP_URL=https://algocoach.test
+          --env NEXT_PUBLIC_SUPPORT_EMAIL=support@algocoach.test
+          --env AUTH_URL=https://algocoach.test
           --env AUTH_SECRET=ci-only-auth-secret-with-at-least-32-characters
+          --env EMAIL_AUTH_ENABLED=false
+          --env GITHUB_AUTH_ENABLED=false
+          --env DURABLE_GUEST_CLAIM_ENABLED=false
+          --env NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED=false
+          --env ANONYMOUS_METRICS_ENABLED=false
+          --env SUMMARY_CATALOG_ENABLED=true
           --env AI_RELAY_API_KEY=ci-only-relay-key
           --env AI_RELAY_BASE_URL=https://relay.invalid/v1
           --env AI_RELAY_PRIMARY_MODEL=relay-primary
@@ -218,6 +227,7 @@ jobs:
           --env 'AI_RELAY_PRICING_JSON={"relay-primary":{"inputPerMillionUsd":1,"outputPerMillionUsd":2},"relay-fallback":{"inputPerMillionUsd":1,"outputPerMillionUsd":2}}'
           --env AI_RELAY_CANARY_TOKEN=ci-only-canary-token-with-at-least-32-characters
           --env SENTRY_DSN=https://public@example.test/1
+          --env NEXT_PUBLIC_SENTRY_DSN=https://public@example.test/1
           --env REDIS_URL=http://host.docker.internal:8079
           --env REDIS_TOKEN=ci-redis-token
           --env REDIS_ALLOW_INSECURE_LOCAL=true
@@ -270,6 +280,8 @@ jobs:
       DATABASE_PROVIDER: postgresql
       DATABASE_APPLICATION_ROLE: ${{ vars.DATABASE_APPLICATION_ROLE }}
       MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+      DATABASE_RELEASE_ID: ${{ github.sha }}
+      DATABASE_RELEASE_CHANNEL: ${{ inputs.environment }}
     steps:
       - name: Restrict production releases to main
         if: inputs.environment == 'production' && github.ref_name != 'main'
@@ -292,11 +304,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm db:migrate:release
+      - run: pnpm db:mark-release
 
   release-ai-smoke:
     name: ${{ inputs.environment }} AI relay gate
     if: github.event_name == 'workflow_dispatch'
-    needs: [quality, postgres-integration, build, e2e, docker-smoke]
+    needs: [release-migration]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
@@ -425,3 +438,132 @@ jobs:
           cache-to: type=gha,scope=release,mode=max,ignore-error=true
           provenance: mode=max
           sbom: true
+
+  deploy-vercel:
+    name: Deploy ${{ inputs.environment }} to Vercel
+    if: github.event_name == 'workflow_dispatch'
+    needs: [release-ai-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+    env:
+      NODE_ENV: production
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      EXPECTED_AI_RELAY_CANARY_TOKEN: ${{ secrets.AI_RELAY_CANARY_TOKEN }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      DEPLOYMENT_HEALTH_TIMEOUT_MS: ${{ vars.DEPLOYMENT_HEALTH_TIMEOUT_MS || '10000' }}
+      SENTRY_RELEASE: ${{ github.sha }}
+      NEXT_PUBLIC_SENTRY_RELEASE: ${{ github.sha }}
+      EXPECTED_DATABASE_RELEASE_ID: ${{ github.sha }}
+      EXPECTED_DATABASE_RELEASE_CHANNEL: ${{ inputs.environment }}
+    steps:
+      - name: Restrict production releases to main
+        if: inputs.environment == 'production' && github.ref_name != 'main'
+        run: |
+          echo "Production releases must run from main."
+          exit 1
+      - name: Require Vercel deployment configuration
+        shell: bash
+        run: |
+          missing=()
+          [[ -n "$VERCEL_TOKEN" ]] || missing+=("VERCEL_TOKEN")
+          [[ -n "$VERCEL_ORG_ID" ]] || missing+=("VERCEL_ORG_ID")
+          [[ -n "$VERCEL_PROJECT_ID" ]] || missing+=("VERCEL_PROJECT_ID")
+          [[ -n "$EXPECTED_AI_RELAY_CANARY_TOKEN" ]] || missing+=("AI_RELAY_CANARY_TOKEN")
+          if (( ${#missing[@]} )); then
+            printf '::error title=Incomplete Vercel configuration::Missing GitHub Environment values: %s\n' "$(IFS=', '; echo "${missing[*]}")"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Pull Vercel environment
+        shell: bash
+        run: |
+          if [[ "${{ inputs.environment }}" == "production" ]]; then
+            pnpm exec vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          else
+            pnpm exec vercel pull --yes --environment=preview --git-branch="$GITHUB_REF_NAME" --token="$VERCEL_TOKEN"
+          fi
+      - name: Pull and validate target runtime environment
+        shell: bash
+        run: |
+          if [[ "${{ inputs.environment }}" == "production" ]]; then
+            target_environment=production
+            branch_args=()
+          else
+            target_environment=preview
+            branch_args=(--git-branch="$GITHUB_REF_NAME")
+          fi
+          pnpm exec vercel env pull .env.vercel-target --yes --environment="$target_environment" "${branch_args[@]}" --token="$VERCEL_TOKEN"
+          pnpm exec dotenv -e .env.vercel-target -- node -e '
+            const required = [
+              "DATABASE_URL",
+              "DATABASE_APPLICATION_ROLE",
+              "AI_RELAY_API_KEY",
+              "AI_RELAY_BASE_URL",
+              "AI_RELAY_PRIMARY_MODEL",
+              "AI_RELAY_FALLBACK_MODEL",
+              "AI_RELAY_CANARY_TOKEN",
+              "SENTRY_DSN",
+              "NEXT_PUBLIC_SENTRY_DSN",
+              "SENTRY_ORG",
+              "SENTRY_PROJECT",
+              "SENTRY_AUTH_TOKEN",
+            ];
+            const missing = required.filter((name) => !process.env[name]?.trim());
+            if (missing.length) throw new Error(`Missing Vercel target values: ${missing.join(", ")}`);
+            if (process.env.AI_RELAY_CANARY_TOKEN !== process.env.EXPECTED_AI_RELAY_CANARY_TOKEN) {
+              throw new Error("Vercel AI_RELAY_CANARY_TOKEN differs from the GitHub Environment secret.");
+            }
+          '
+          pnpm exec dotenv -e .env.vercel-target -- pnpm health:runtime-config
+          pnpm exec dotenv -e .env.vercel-target -- pnpm ai:preflight
+          pnpm exec dotenv -e .env.vercel-target -- pnpm eval:coach:smoke
+      - name: Build Vercel artifact
+        shell: bash
+        run: |
+          if [[ "${{ inputs.environment }}" == "production" ]]; then
+            pnpm exec vercel build --prod --token="$VERCEL_TOKEN"
+          else
+            pnpm exec vercel build --token="$VERCEL_TOKEN"
+          fi
+      - name: Deploy immutable Vercel artifact
+        id: deploy
+        shell: bash
+        run: |
+          if [[ "${{ inputs.environment }}" == "production" ]]; then
+            deployment_url="$(pnpm exec vercel deploy --prebuilt --prod --skip-domain --yes --token="$VERCEL_TOKEN")"
+          else
+            deployment_url="$(pnpm exec vercel deploy --prebuilt --yes --token="$VERCEL_TOKEN")"
+          fi
+          if [[ ! "$deployment_url" =~ ^https:// ]]; then
+            echo "::error title=Invalid Vercel deployment URL::The deploy command did not return an HTTPS URL."
+            exit 1
+          fi
+          echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
+          echo "### Vercel deployment" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Environment: ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL: $deployment_url" >> "$GITHUB_STEP_SUMMARY"
+      - name: Run post-deploy readiness and AI canary
+        run: pnpm health:deployment
+        env:
+          DEPLOYMENT_BASE_URL: ${{ steps.deploy.outputs.deployment_url }}
+          AI_RELAY_CANARY_TOKEN: ${{ secrets.AI_RELAY_CANARY_TOKEN }}
+      - name: Promote verified production deployment
+        if: inputs.environment == 'production'
+        run: >-
+          pnpm exec vercel promote
+          "${{ steps.deploy.outputs.deployment_url }}"
+          --yes
+          --token="$VERCEL_TOKEN"

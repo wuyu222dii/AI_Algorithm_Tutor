@@ -1,42 +1,32 @@
-import type { PublishedProblem } from '@/features/algorithm-coach/catalog-repository.server';
+import type { ProblemSummary } from '@/features/algorithm-coach/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GET } from './route';
 
 const mocks = vi.hoisted(() => ({
-  listRuntimeProblems: vi.fn(),
+  listRuntimeProblemSummaries: vi.fn(),
   runtimeEnabledLanguages: vi.fn(),
 }));
 
 vi.mock('server-only', () => ({}));
 vi.mock('@/features/algorithm-coach/catalog-runtime.server', () => ({
-  listRuntimeProblems: mocks.listRuntimeProblems,
+  listRuntimeProblemSummaries: mocks.listRuntimeProblemSummaries,
   runtimeEnabledLanguages: mocks.runtimeEnabledLanguages,
 }));
 
-function problem(slug: string, version = 1): PublishedProblem {
+function problem(slug: string, version = 1): ProblemSummary {
   return {
     id: `problem-${slug}`,
     slug,
     title: { zh: slug, en: slug },
-    description: { zh: '题面', en: 'Statement' },
+    description: { zh: `${slug} 描述`, en: `${slug} description` },
     difficulty: 'easy',
     topics: ['array-hash'],
-    languageConfigs: {
-      javascript: { entryPoint: 'solve', template: 'function solve() {}' },
-      typescript: {
-        entryPoint: 'solve',
-        template: 'function solve(): unknown {}',
-      },
-      python: { entryPoint: 'solve', template: 'def solve(): pass' },
-    },
-    version: { contentVersion: version, catalogVersion: 'catalog-v1' },
-    tests: [],
-    examples: [],
-    constraints: [],
-    hints: { zh: ['', '', ''], en: ['', '', ''] },
-    reviewPoints: [],
     estimatedMinutes: 10,
+    contentVersion: version,
+    catalogVersion: 'catalog-v1',
+    version: { contentVersion: version, catalogVersion: 'catalog-v1' },
+    supportedLanguages: ['javascript', 'typescript', 'python'],
   };
 }
 
@@ -48,7 +38,7 @@ describe('GET /api/problems', () => {
       'typescript',
       'python',
     ]);
-    mocks.listRuntimeProblems.mockResolvedValue([
+    mocks.listRuntimeProblemSummaries.mockResolvedValue([
       problem('alpha-problem'),
       problem('beta-problem'),
     ]);
@@ -69,8 +59,12 @@ describe('GET /api/problems', () => {
       contentVersion: 1,
       supportedLanguages: ['javascript', 'typescript', 'python'],
     });
+    expect(body.data.items[0].description.en).toBe('alpha-problem description');
+    expect(body.data.items[0]).not.toHaveProperty('languageConfigs');
+    expect(body.data.items[0]).not.toHaveProperty('tests');
+    expect(body.data.items[0]).not.toHaveProperty('hints');
     expect(body.data.nextCursor).toBeTruthy();
-    expect(mocks.listRuntimeProblems).toHaveBeenCalledWith({
+    expect(mocks.listRuntimeProblemSummaries).toHaveBeenCalledWith({
       difficulty: 'easy',
       language: 'typescript',
       topic: 'array-hash',
@@ -85,11 +79,17 @@ describe('GET /api/problems', () => {
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.listRuntimeProblems).not.toHaveBeenCalled();
+    expect(mocks.listRuntimeProblemSummaries).not.toHaveBeenCalled();
   });
 
   it('does not advertise or accept a disabled TypeScript runtime', async () => {
     mocks.runtimeEnabledLanguages.mockReturnValue(['javascript', 'python']);
+    mocks.listRuntimeProblemSummaries.mockResolvedValue([
+      {
+        ...problem('alpha-problem'),
+        supportedLanguages: ['javascript', 'python'],
+      },
+    ]);
 
     const listResponse = await GET(
       new Request('http://localhost/api/problems')
@@ -100,12 +100,12 @@ describe('GET /api/problems', () => {
       'python',
     ]);
 
-    mocks.listRuntimeProblems.mockClear();
+    mocks.listRuntimeProblemSummaries.mockClear();
     const filteredResponse = await GET(
       new Request('http://localhost/api/problems?language=typescript')
     );
     expect(filteredResponse.status).toBe(400);
-    expect(mocks.listRuntimeProblems).not.toHaveBeenCalled();
+    expect(mocks.listRuntimeProblemSummaries).not.toHaveBeenCalled();
   });
 
   it('supports conditional requests with a stable ETag', async () => {
@@ -118,5 +118,18 @@ describe('GET /api/problems', () => {
 
     expect(first.headers.get('etag')).toBeTruthy();
     expect(second.status).toBe(304);
+  });
+
+  it('returns an empty page when valid filters have no matches', async () => {
+    mocks.listRuntimeProblemSummaries.mockResolvedValue([]);
+
+    const response = await GET(
+      new Request('http://localhost/api/problems?topic=dfs')
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      data: { items: [], nextCursor: null },
+    });
   });
 });

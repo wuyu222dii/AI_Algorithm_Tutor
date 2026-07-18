@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   completeSignedAssessment,
   createSignedAssessmentSession,
+  inspectSignedAssessmentSession,
   readSignedAssessmentSession,
   selectAssessmentProblems,
   verifyAssessmentSession,
@@ -125,6 +126,35 @@ describe('signed assessment sessions', () => {
     ).toThrow(/expired/);
   });
 
+  it('separates the answer deadline from the submission grace period', () => {
+    const session = createSignedAssessmentSession({
+      id: 'assessment-grace-test',
+      problems,
+      now: new Date('2026-07-13T00:00:00.000Z'),
+    });
+
+    expect(session.expiresAt).toBe('2026-07-13T00:20:00.000Z');
+    expect(session.graceExpiresAt).toBe('2026-07-13T00:25:00.000Z');
+    expect(() =>
+      readSignedAssessmentSession(
+        session.token,
+        new Date('2026-07-13T00:24:59.000Z')
+      )
+    ).not.toThrow();
+    expect(() =>
+      readSignedAssessmentSession(
+        session.token,
+        new Date('2026-07-13T00:25:01.000Z')
+      )
+    ).toThrow(/expired/);
+    expect(
+      inspectSignedAssessmentSession(
+        session.token,
+        new Date('2026-07-13T01:00:00.000Z')
+      ).id
+    ).toBe(session.id);
+  });
+
   it('computes and signs the result for the signed problem set', () => {
     const session = createSignedAssessmentSession({
       id: 'assessment-test',
@@ -149,6 +179,7 @@ describe('signed assessment sessions', () => {
     expect(result.weakTopics.length).toBeGreaterThan(0);
     expect(result.errorCategories).toEqual(['syntax']);
     expect(result.verificationToken).toContain('.');
+    expect(result.evidenceMode).toBe('browser_local');
   });
 
   it('exposes signed version references before loading historical revisions', () => {

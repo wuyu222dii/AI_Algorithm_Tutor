@@ -12,10 +12,10 @@ import type {
   ProblemVersionRef,
 } from './types';
 
-export const ASSESSMENT_VERSION = '2026-07-v3';
+export const ASSESSMENT_VERSION = '2026-07-v4';
 export const ASSESSMENT_DURATION_MINUTES = 20;
 export const BASELINE_DURATION_MINUTES = 8;
-const ASSESSMENT_GRACE_MINUTES = 5;
+export const ASSESSMENT_GRACE_MINUTES = 5;
 
 const GOAL_TOPICS: Record<LearningGoal, ProblemTopic[]> = {
   foundation: ['array-hash', 'two-pointers', 'stack', 'linked-list'],
@@ -39,6 +39,7 @@ export interface SignedAssessmentSession {
   durationMinutes: number;
   startedAt: string;
   expiresAt: string;
+  graceExpiresAt: string;
   token: string;
 }
 
@@ -67,6 +68,7 @@ export interface VerifiedAssessmentResult {
   averageDurationMs: number;
   hintCount: number;
   errorCategories: DiagnosisCategory[];
+  evidenceMode: 'browser_local';
   verificationToken: string;
 }
 
@@ -208,8 +210,9 @@ export function createSignedAssessmentSession(options: {
     kind === 'practice'
       ? ASSESSMENT_DURATION_MINUTES
       : BASELINE_DURATION_MINUTES;
-  const expiresAt = new Date(
-    now.getTime() + (durationMinutes + ASSESSMENT_GRACE_MINUTES) * 60_000
+  const expiresAt = new Date(now.getTime() + durationMinutes * 60_000);
+  const graceExpiresAt = new Date(
+    expiresAt.getTime() + ASSESSMENT_GRACE_MINUTES * 60_000
   );
   const problemVersions = selectAssessmentProblems(
     options.id,
@@ -231,6 +234,7 @@ export function createSignedAssessmentSession(options: {
     durationMinutes,
     startedAt: now.toISOString(),
     expiresAt: expiresAt.toISOString(),
+    graceExpiresAt: graceExpiresAt.toISOString(),
   };
   return { ...payload, token: sign(payload) };
 }
@@ -256,9 +260,10 @@ export function verifyAssessmentSession(
   return payload;
 }
 
-export function readSignedAssessmentSession(
+function parseSignedAssessmentSession(
   token: string,
-  now = new Date()
+  now: Date,
+  enforceExpiry: boolean
 ): AssessmentTokenPayload {
   const payload = verify<AssessmentTokenPayload>(token);
   if (payload.version !== ASSESSMENT_VERSION) {
@@ -286,14 +291,37 @@ export function readSignedAssessmentSession(
   }
   const startedAt = Date.parse(payload.startedAt);
   const expiresAt = Date.parse(payload.expiresAt);
-  if (!Number.isFinite(startedAt) || !Number.isFinite(expiresAt)) {
+  const graceExpiresAt = Date.parse(payload.graceExpiresAt);
+  if (
+    !Number.isFinite(startedAt) ||
+    !Number.isFinite(expiresAt) ||
+    !Number.isFinite(graceExpiresAt) ||
+    expiresAt <= startedAt ||
+    graceExpiresAt <= expiresAt
+  ) {
     throw new Error('Assessment timestamps are invalid');
   }
   if (startedAt > now.getTime() + 60_000) {
     throw new Error('Assessment start time is invalid');
   }
-  if (now.getTime() > expiresAt) throw new Error('Assessment has expired');
+  if (enforceExpiry && now.getTime() > graceExpiresAt) {
+    throw new Error('Assessment has expired');
+  }
   return payload;
+}
+
+export function readSignedAssessmentSession(
+  token: string,
+  now = new Date()
+): AssessmentTokenPayload {
+  return parseSignedAssessmentSession(token, now, true);
+}
+
+export function inspectSignedAssessmentSession(
+  token: string,
+  now = new Date()
+): AssessmentTokenPayload {
+  return parseSignedAssessmentSession(token, now, false);
 }
 
 export function completeSignedAssessment(options: {
@@ -373,6 +401,7 @@ export function completeSignedAssessment(options: {
     ),
     hintCount: 0,
     errorCategories,
+    evidenceMode: 'browser_local' as const,
     recommendation:
       correctCount === session.problemSlugs.length
         ? 'Raise the difficulty and keep a tighter per-problem time limit.'

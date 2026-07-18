@@ -160,6 +160,7 @@ const copy = {
     removedLines: '删除行',
     repeatedCause: '重复错因',
     testsPassed: '个测试通过',
+    language: '编程语言',
     javascript: 'JavaScript',
     python: 'Python',
   },
@@ -243,6 +244,7 @@ const copy = {
     removedLines: 'removed',
     repeatedCause: 'Repeated cause',
     testsPassed: 'tests passed',
+    language: 'Programming language',
     javascript: 'JavaScript',
     python: 'Python',
   },
@@ -323,6 +325,7 @@ export function PracticeWorkspace({
   const t = copy[locale];
   const coach = useCoachStore();
   const saveCode = coach.saveCode;
+  const flushCodeSnapshot = coach.flushCodeSnapshot;
   const state = coach.state;
   const loaded = coach.hydrated;
   const imported = isImportedDraftSlug(slug);
@@ -335,19 +338,9 @@ export function PracticeWorkspace({
         ) {
           return initialProblem;
         }
-        return (
-          coach.problems.find(
-            (item) =>
-              item.slug === slug &&
-              getProblemContentVersion(item) === requestedContentVersion
-          ) ?? null
-        );
+        return null;
       }
-      return (
-        initialProblem ??
-        coach.problems.find((item) => item.slug === slug) ??
-        null
-      );
+      return initialProblem ?? null;
     }
     if (!coach.storageScope) return null;
     const stored = coach.importedDrafts.find(
@@ -358,7 +351,6 @@ export function PracticeWorkspace({
   }, [
     coach.importedDrafts,
     coach.importedProblem,
-    coach.problems,
     coach.storageScope,
     initialProblem,
     imported,
@@ -407,6 +399,9 @@ export function PracticeWorkspace({
   const reviewCardRunRef = useRef<CodeRunResult | null>(null);
   const reviewCardInFlightRef = useRef(false);
   const reviewCardGenerationRef = useRef(0);
+  const latestCodeRef = useRef('');
+  const latestMessagesRef = useRef<CoachMessage[]>(messages);
+  const latestChatInputRef = useRef('');
   const problemContentVersion = problem ? getProblemContentVersion(problem) : 1;
   const sessionKey = problem
     ? getPracticeSessionKey(problem.slug, problemContentVersion)
@@ -542,12 +537,13 @@ export function PracticeWorkspace({
     if (!problem) return;
     const key = `${sessionKey}:${language}`;
     if (codeInitializedFor.current === key) return;
-    setCode(
+    const restoredCode =
       state.sessions[sessionKey]?.code[language] ||
-        state.code[sessionKey]?.[language] ||
-        getProblemTemplate(problem, language) ||
-        ''
-    );
+      state.code[sessionKey]?.[language] ||
+      getProblemTemplate(problem, language) ||
+      '';
+    latestCodeRef.current = restoredCode;
+    setCode(restoredCode);
     codeInitializedFor.current = key;
   }, [language, problem, sessionKey, state.code, state.sessions]);
 
@@ -607,6 +603,8 @@ export function PracticeWorkspace({
       ? saved.messages
       : [{ id: 'welcome', role: 'assistant' as const, content: t.aiWelcome }];
     setMessages(restoredMessages);
+    latestChatInputRef.current = saved?.draftInput ?? '';
+    setChatInput(latestChatInputRef.current);
     const lastMessage = restoredMessages.at(-1);
     setChatRetry(
       lastMessage?.role === 'user'
@@ -635,11 +633,57 @@ export function PracticeWorkspace({
         sessionKey,
         messages,
         undefined,
-        coach.storageScope ?? undefined
+        coach.storageScope ?? undefined,
+        chatInput
       );
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [coach.storageScope, messages, problem, sessionKey]);
+  }, [chatInput, coach.storageScope, messages, problem, sessionKey]);
+
+  latestCodeRef.current = code;
+  latestMessagesRef.current = messages;
+  latestChatInputRef.current = chatInput;
+
+  useEffect(() => {
+    if (!problem || !coach.storageScope) return;
+    const flush = () => {
+      if (codeInitializedFor.current) {
+        flushCodeSnapshot(
+          problem.slug,
+          language,
+          latestCodeRef.current,
+          problemContentVersion
+        );
+      }
+      if (contextInitializedFor.current) {
+        savePracticeContext(
+          sessionKey,
+          latestMessagesRef.current,
+          undefined,
+          coach.storageScope ?? undefined,
+          latestChatInputRef.current
+        );
+      }
+    };
+    const flushWhenHidden = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('blur', flush);
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', flushWhenHidden);
+    return () => {
+      window.removeEventListener('blur', flush);
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', flushWhenHidden);
+    };
+  }, [
+    coach.storageScope,
+    flushCodeSnapshot,
+    language,
+    problem,
+    problemContentVersion,
+    sessionKey,
+  ]);
 
   useEffect(
     () => () => {
@@ -656,11 +700,26 @@ export function PracticeWorkspace({
 
   function switchLanguage(nextLanguage: Language) {
     if (!problem) return;
-    coach.saveCode(problem.slug, language, code, problemContentVersion);
+    coach.saveCode(
+      problem.slug,
+      language,
+      latestCodeRef.current,
+      problemContentVersion
+    );
     setLanguage(nextLanguage);
     coach.setPreferredLanguage(nextLanguage);
     setResult(null);
     codeInitializedFor.current = '';
+  }
+
+  function updateCode(value: string) {
+    latestCodeRef.current = value;
+    setCode(value);
+  }
+
+  function updateChatInput(value: string) {
+    latestChatInputRef.current = value;
+    setChatInput(value);
   }
 
   async function execute(scope: 'sample' | 'all') {
@@ -1086,6 +1145,7 @@ export function PracticeWorkspace({
     event.preventDefault();
     const prompt = chatInput.trim();
     if (!prompt || chatLoading) return;
+    latestChatInputRef.current = '';
     setChatInput('');
     void requestChat(prompt);
   }
@@ -1146,11 +1206,11 @@ export function PracticeWorkspace({
       result={result}
       running={running}
       onLanguageChange={switchLanguage}
-      onCodeChange={setCode}
+      onCodeChange={updateCode}
       onRun={() => execute('sample')}
       onSubmit={() => execute('all')}
       onReset={() => {
-        setCode(getProblemTemplate(problem, language));
+        updateCode(getProblemTemplate(problem, language));
         setResult(null);
         resetReviewCardGeneration();
       }}
@@ -1173,7 +1233,7 @@ export function PracticeWorkspace({
       hasResult={Boolean(result)}
       onArtifact={requestArtifact}
       onHint={(level) => requestArtifact('hint', result, false, level)}
-      onChatInput={setChatInput}
+      onChatInput={updateChatInput}
       onChatSubmit={sendChat}
       onChatStop={stopChat}
       onChatRetry={retryChat}
@@ -1372,7 +1432,11 @@ function EditorPanel({
           value={language}
           onValueChange={(value) => onLanguageChange(value as Language)}
         >
-          <SelectTrigger size="sm" className="w-32 rounded-md">
+          <SelectTrigger
+            size="sm"
+            className="w-32 rounded-md"
+            aria-label={t.language}
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

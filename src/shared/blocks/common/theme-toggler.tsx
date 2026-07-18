@@ -34,7 +34,12 @@ export function ThemeToggler({
 
   if (type === 'button') {
     return (
-      <Button variant="outline" size="sm" className="hover:bg-primary/10">
+      <Button
+        variant="outline"
+        size="sm"
+        className="hover:bg-primary/10"
+        aria-label="Switch color theme"
+      >
         <SunDim />
       </Button>
     );

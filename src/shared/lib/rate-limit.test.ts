@@ -158,7 +158,8 @@ describe('window rate limiting', () => {
     expect(JSON.parse(String(errorLog.mock.calls[0]?.[0]))).toMatchObject({
       event: 'rate_limit_backend_failed',
       level: 'error',
-      error: { name: 'Error', message: 'offline' },
+      error: { name: 'Error' },
     });
+    expect(String(errorLog.mock.calls[0]?.[0])).not.toContain('offline');
   });
 });

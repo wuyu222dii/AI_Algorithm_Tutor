@@ -2140,6 +2140,188 @@ async function verifyAuthAndLearningIsolation(
   }
 }
 
+async function verifyDurableGuestAndAnonymousMetrics(
+  app: postgres.Sql,
+  applicationSchema: string
+) {
+  const nonce = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const firstUserId = `ci_claim_first_${nonce}`;
+  const secondUserId = `ci_claim_second_${nonce}`;
+  const guestSubject = `guest_subject_${nonce}`;
+  const anonymousEventId = `anonymous_event_${nonce}`;
+  try {
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."user" (id, name, email, email_verified, created_at) VALUES ($1, 'Claim owner', $2, true, now() - interval '8 days'), ($3, 'Other owner', $4, true, now() - interval '8 days')`,
+      [
+        firstUserId,
+        `claim-first-${nonce}@example.test`,
+        secondUserId,
+        `claim-second-${nonce}@example.test`,
+      ]
+    );
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_learning_profile" (user_id, goal, preferred_language, weekly_target, daily_minutes, time_zone, onboarding_completed, onboarded_at) VALUES ($1, 'interview', 'javascript', 5, 30, 'Pacific/Auckland', true, now() - interval '8 days'), ($2, 'foundation', 'python', 3, 20, 'UTC', true, now() - interval '8 days')`,
+      [firstUserId, secondUserId]
+    );
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_anonymous_product_event" (id, guest_subject, event_id, name, occurred_at, received_at) VALUES ($1, $2, $3, 'visitor_started', now(), now())`,
+      [anonymousEventId, guestSubject, `event_${nonce}`]
+    );
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_guest_claim" (id, user_id, claim_id, guest_subject, snapshot_hash, merged_revision) VALUES ($1, $2, $3, $4, $5, 1)`,
+      [
+        `claim_${nonce}`,
+        firstUserId,
+        `claim_id_${nonce}`,
+        guestSubject,
+        'a'.repeat(64),
+      ]
+    );
+    const replay = await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_guest_claim" (id, user_id, claim_id, guest_subject, snapshot_hash, merged_revision) VALUES ($1, $2, $3, $4, $5, 1) ON CONFLICT (user_id, claim_id) DO NOTHING`,
+      [
+        `claim_replay_${nonce}`,
+        firstUserId,
+        `claim_id_${nonce}`,
+        guestSubject,
+        'a'.repeat(64),
+      ]
+    );
+    if (replay.count !== 0) {
+      throw new Error('Guest claim replay was not idempotent');
+    }
+    let crossAccountClaimRejected = false;
+    try {
+      await app.unsafe(
+        `INSERT INTO "${applicationSchema}"."coach_guest_claim" (id, user_id, claim_id, guest_subject, snapshot_hash, merged_revision) VALUES ($1, $2, $3, $4, $5, 1)`,
+        [
+          `claim_cross_${nonce}`,
+          secondUserId,
+          `claim_cross_id_${nonce}`,
+          guestSubject,
+          'b'.repeat(64),
+        ]
+      );
+    } catch (error) {
+      crossAccountClaimRejected =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === '23505';
+    }
+    if (!crossAccountClaimRejected) {
+      throw new Error('A guest subject was claimed by multiple accounts');
+    }
+
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_review_attempt" (id, user_id, client_attempt_id, problem_slug_snapshot, answer, grade_mode, grade_error_code, selected_rating, submitted_at) VALUES ($1, $2, $3, 'two-value-target', 'Use a hash map.', 'manual_fallback', 'timeout', 'good', now())`,
+      [`review_claim_${nonce}`, firstUserId, `review_client_${nonce}`]
+    );
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_assessment" (id, user_id, kind, problem_slugs, status, duration_minutes, started_at, completed_at, score, correct_count, total_count, evidence_mode) VALUES ($1, $2, 'baseline', ARRAY['two-value-target'], 'completed', 8, now() - interval '1 hour', now(), 50, 1, 2, 'browser_local')`,
+      [`assessment_claim_${nonce}`, firstUserId]
+    );
+    const [protocolFields] = await app.unsafe<
+      { grade_mode: string; grade_error_code: string; evidence_mode: string }[]
+    >(
+      `SELECT review.grade_mode, review.grade_error_code, assessment.evidence_mode FROM "${applicationSchema}"."coach_review_attempt" AS review CROSS JOIN "${applicationSchema}"."coach_assessment" AS assessment WHERE review.user_id = $1 AND assessment.user_id = $1 LIMIT 1`,
+      [firstUserId]
+    );
+    if (
+      protocolFields?.grade_mode !== 'manual_fallback' ||
+      protocolFields.grade_error_code !== 'timeout' ||
+      protocolFields.evidence_mode !== 'browser_local'
+    ) {
+      throw new Error('P0 evidence protocol fields were not persisted');
+    }
+
+    const retentionSessionId = `retention_session_${nonce}`;
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_practice_session" (id, user_id, problem_slug_snapshot, status) VALUES ($1, $2, 'two-value-target', 'active')`,
+      [retentionSessionId, firstUserId]
+    );
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_code_run" (id, session_id, problem_slug_snapshot, language, status, passed_tests, total_tests, duration_ms, test_scope, executed_at) SELECT $1, $2, 'two-value-target', 'javascript', 'failed', 1, 2, 20, 'full', ((app_user.created_at AT TIME ZONE 'Pacific/Auckland')::date + 1)::timestamp AT TIME ZONE 'Pacific/Auckland' FROM "${applicationSchema}"."user" AS app_user WHERE app_user.id = $3`,
+      [`retained_d1_${nonce}`, retentionSessionId, firstUserId]
+    );
+    await app.unsafe(
+      `INSERT INTO "${applicationSchema}"."coach_code_run" (id, session_id, problem_slug_snapshot, language, status, passed_tests, total_tests, duration_ms, test_scope, executed_at) SELECT $1, $2, 'two-value-target', 'javascript', 'passed', 2, 2, 20, 'full', ((app_user.created_at AT TIME ZONE 'Pacific/Auckland')::date + 7)::timestamp AT TIME ZONE 'Pacific/Auckland' FROM "${applicationSchema}"."user" AS app_user WHERE app_user.id = $3`,
+      [`retained_d7_${nonce}`, retentionSessionId, firstUserId]
+    );
+    const [cohort] = await app.unsafe<
+      {
+        time_zone: string;
+        eligible_d1: boolean;
+        retained_d1: boolean;
+        eligible_d7: boolean;
+        retained_d7: boolean;
+      }[]
+    >(
+      `SELECT time_zone, eligible_d1, retained_d1, eligible_d7, retained_d7 FROM "${applicationSchema}"."coach_cohort_metric_v" WHERE user_id = $1`,
+      [firstUserId]
+    );
+    if (
+      cohort?.time_zone !== 'Pacific/Auckland' ||
+      cohort.eligible_d1 !== true ||
+      cohort.retained_d1 !== true ||
+      cohort.eligible_d7 !== true ||
+      cohort.retained_d7 !== true
+    ) {
+      throw new Error(
+        'Cohort retention did not use valid learning events and user time zone'
+      );
+    }
+
+    await app.unsafe(
+      `UPDATE "${applicationSchema}"."user" SET created_at = (date_trunc('day', now() AT TIME ZONE 'Pacific/Auckland') - interval '10 minutes') AT TIME ZONE 'Pacific/Auckland' WHERE id = $1`,
+      [secondUserId]
+    );
+    await app.unsafe(
+      `UPDATE "${applicationSchema}"."coach_learning_profile" SET time_zone = 'Pacific/Auckland' WHERE user_id = $1`,
+      [secondUserId]
+    );
+    const [crossMidnightEligibility] = await app.unsafe<
+      { eligible_d1: boolean; retained_d1: boolean }[]
+    >(
+      `SELECT eligible_d1, retained_d1 FROM "${applicationSchema}"."coach_cohort_metric_v" WHERE user_id = $1`,
+      [secondUserId]
+    );
+    if (
+      crossMidnightEligibility?.eligible_d1 !== true ||
+      crossMidnightEligibility.retained_d1 !== false
+    ) {
+      throw new Error(
+        'D1 eligibility did not use the user local-date boundary'
+      );
+    }
+
+    await app.unsafe(
+      `DELETE FROM "${applicationSchema}"."user" WHERE id = $1`,
+      [firstUserId]
+    );
+    const [deletion] = await app.unsafe<
+      { claims: number; anonymous_events: number }[]
+    >(
+      `SELECT (SELECT count(*)::int FROM "${applicationSchema}"."coach_guest_claim" WHERE guest_subject = $1) AS claims, (SELECT count(*)::int FROM "${applicationSchema}"."coach_anonymous_product_event" WHERE guest_subject = $1) AS anonymous_events`,
+      [guestSubject]
+    );
+    if (deletion?.claims !== 0 || deletion.anonymous_events !== 1) {
+      throw new Error(
+        'Account deletion did not remove only the guest-user association'
+      );
+    }
+  } finally {
+    await app.unsafe(
+      `DELETE FROM "${applicationSchema}"."coach_anonymous_product_event" WHERE guest_subject = $1`,
+      [guestSubject]
+    );
+    await app.unsafe(
+      `DELETE FROM "${applicationSchema}"."user" WHERE id = ANY($1::text[])`,
+      [[firstUserId, secondUserId]]
+    );
+  }
+}
+
 export async function runPostgresIntegrationTest(): Promise<void> {
   if (process.env.DB_INTEGRATION_TEST !== 'true') {
     throw new Error('DB_INTEGRATION_TEST=true is required');
@@ -2253,6 +2435,7 @@ export async function runPostgresIntegrationTest(): Promise<void> {
       await verifyAiRequestMetricStorage(app, applicationSchema);
       await verifyApplicationCatalogPermissions(app, applicationSchema);
       await verifyAuthAndLearningIsolation(app, applicationSchema);
+      await verifyDurableGuestAndAnonymousMetrics(app, applicationSchema);
 
       let ddlRejected = false;
       try {
@@ -2278,8 +2461,16 @@ export async function runPostgresIntegrationTest(): Promise<void> {
           DATABASE_APPLICATION_ROLE: applicationRole,
           DB_MIGRATIONS_SCHEMA: migrationSchema,
           DB_MIGRATIONS_TABLE: migrationTable,
+          NEXT_PUBLIC_APP_URL: 'https://algocoach.test',
+          NEXT_PUBLIC_SUPPORT_EMAIL: 'support@algocoach.test',
           AUTH_URL: 'https://algocoach.test',
           AUTH_SECRET: 'ci-only-auth-secret-with-at-least-32-characters',
+          EMAIL_AUTH_ENABLED: 'false',
+          GITHUB_AUTH_ENABLED: 'false',
+          DURABLE_GUEST_CLAIM_ENABLED: 'false',
+          NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED: 'false',
+          ANONYMOUS_METRICS_ENABLED: 'false',
+          SUMMARY_CATALOG_ENABLED: 'true',
           AI_RELAY_API_KEY: 'ci-only-relay-key',
           AI_RELAY_BASE_URL: 'https://relay.example.test/v1',
           AI_RELAY_PRIMARY_MODEL: 'relay-primary',
@@ -2297,6 +2488,7 @@ export async function runPostgresIntegrationTest(): Promise<void> {
           AI_RELAY_CANARY_TOKEN:
             'ci-only-canary-token-with-at-least-32-characters',
           SENTRY_DSN: 'https://public@example.test/1',
+          NEXT_PUBLIC_SENTRY_DSN: 'https://public@example.test/1',
           REDIS_URL: 'https://redis.example.test',
           REDIS_TOKEN: 'ci-only-redis-token',
           TRUSTED_PROXY_HEADERS: 'x-forwarded-for',

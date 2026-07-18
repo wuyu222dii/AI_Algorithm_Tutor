@@ -55,7 +55,13 @@ async function handle(
         traceId
       );
     }
-    console.error(`[coach-state:${traceId}] database operation failed`, error);
+    console.error(
+      JSON.stringify({
+        event: 'coach_state_database_failed',
+        traceId,
+        errorName: error instanceof Error ? error.name : 'Error',
+      })
+    );
     return errorResponse(
       new CoachHttpError(
         500,

@@ -1,6 +1,7 @@
 import type {
   Problem,
   ProblemFunctionSignature,
+  ProblemSummary,
   ResolvedProblemLanguageConfig,
 } from './types';
 
@@ -253,18 +254,24 @@ export function normalizeProblemLanguageConfigs(
 }
 
 export function problemSupportsLanguage(
-  problem: Pick<
-    Problem,
-    'entryPoint' | 'templates' | 'languageConfigs' | 'signature' | 'version'
-  >,
+  problem:
+    | Pick<
+        Problem,
+        'entryPoint' | 'templates' | 'languageConfigs' | 'signature' | 'version'
+      >
+    | Pick<ProblemSummary, 'supportedLanguages'>,
   language: Language
 ): boolean {
+  if ('supportedLanguages' in problem) {
+    return problem.supportedLanguages.includes(language);
+  }
   return Boolean(getProblemLanguageConfig(problem, language));
 }
 
 export function getProblemContentVersion(
-  problem: Pick<Problem, 'version'>
+  problem: Pick<Problem, 'version'> | Pick<ProblemSummary, 'contentVersion'>
 ): number {
+  if ('contentVersion' in problem) return problem.contentVersion;
   return problem.version?.contentVersion ?? 1;
 }
 

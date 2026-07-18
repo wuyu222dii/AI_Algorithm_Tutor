@@ -69,14 +69,24 @@ describe('versioned practice page', () => {
   });
 
   it('leaves the unversioned route on the normal current-catalog path', async () => {
+    const current = {
+      id: 'problem-one',
+      slug: 'problem-one',
+      version: { contentVersion: 3 },
+    };
+    mocks.getRuntimeProblem.mockResolvedValue(current);
     const element = await Page({
       params: Promise.resolve({ slug: 'problem-one' }),
       searchParams: Promise.resolve({}),
     });
 
-    expect(mocks.getRuntimeProblem).not.toHaveBeenCalled();
+    expect(mocks.getRuntimeProblem).toHaveBeenCalledWith(
+      'problem-one',
+      undefined
+    );
     expect(element.props).toMatchObject({
       slug: 'problem-one',
+      initialProblem: current,
       requestedContentVersion: undefined,
       versionUnavailable: false,
     });

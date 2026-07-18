@@ -122,6 +122,31 @@ export interface Problem {
   sourceUrl?: string;
 }
 
+/** Lightweight catalog record safe to render outside the practice workspace. */
+export interface ProblemSummary {
+  id: string;
+  slug: string;
+  title: LocalizedText;
+  description: LocalizedText;
+  difficulty: Difficulty;
+  topics: string[];
+  estimatedMinutes: number;
+  contentVersion: number;
+  catalogVersion?: string;
+  version: ProblemVersionMetadata;
+  supportedLanguages: Language[];
+}
+
+export type ProblemCatalogItem = Problem | ProblemSummary;
+
+/** Version-pinned problem content returned by the public detail endpoint. */
+export interface ProblemDetail
+  extends Omit<Problem, 'languageConfigs' | 'version'> {
+  languageConfigs: Partial<Record<Language, ProblemLanguageConfig>>;
+  version: ProblemVersionMetadata;
+  supportedLanguages: Language[];
+}
+
 export interface ImportedDraftRecord {
   problem: Problem;
   createdAt: string;
@@ -194,6 +219,7 @@ export interface LearningProfile {
   onboardingCompleted?: boolean;
   createdAt?: string;
   onboardedAt: string;
+  timeZone?: string;
 }
 
 export type ReviewStatus = 'due' | 'resolved' | 'mastered';
@@ -348,7 +374,19 @@ export interface ReviewAttempt {
   selectedRating?: ReviewRating;
   ratingOverride?: ReviewRating;
   gradedArtifactId?: string;
+  gradeMode?: 'ai' | 'manual_fallback';
+  gradeErrorCode?: ReviewGradeErrorCode;
 }
+
+export type ReviewGradeErrorCode =
+  | 'configuration'
+  | 'access_denied'
+  | 'quota'
+  | 'rate_limited'
+  | 'timeout'
+  | 'unavailable'
+  | 'invalid_output'
+  | 'unknown';
 
 export interface ReviewGrade {
   suggestedRating: ReviewRating;
@@ -508,6 +546,7 @@ export interface AssessmentResult {
   hintCount?: number;
   errorCategories?: DiagnosisCategory[];
   comparison?: AssessmentComparison;
+  evidenceMode?: 'browser_local' | 'remote_verified';
 }
 
 export interface AssessmentState {
@@ -518,6 +557,24 @@ export interface AssessmentState {
   problemVersions?: ProblemVersionRef[];
   startedAt: string;
   durationMinutes: number;
+}
+
+export interface AssessmentDraftV1 {
+  version: 1;
+  assessmentId: string;
+  kind: AssessmentKind;
+  baselineAssessmentId?: string;
+  token: string;
+  problemVersions: ProblemVersionRef[];
+  startedAt: string;
+  expiresAt: string;
+  graceExpiresAt: string;
+  serverOffsetMs: number;
+  language: Language;
+  codes: Record<string, Partial<Record<Language, string>>>;
+  activeIndex: number;
+  sampleResults: Record<string, CodeRunResult>;
+  updatedAt: string;
 }
 
 export interface CoachState {

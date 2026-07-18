@@ -1,66 +1,20 @@
 import type { OperationalEvent } from '@/shared/types/observability';
 
-const SENSITIVE_KEY =
-  /authorization|cookie|email|password|secret|token|code|prompt|message|content/i;
-const MAX_PROPERTIES = 40;
-const MAX_STRING_LENGTH = 500;
+import {
+  sanitizeTelemetryProperties,
+  sanitizeTelemetryText,
+} from './telemetry-sanitize';
 
-export function sanitizeTelemetryText(value: string): string {
-  return value
-    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]')
-    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
-    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1[redacted]@')
-    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, '[redacted-api-key]')
-    .replace(/\b(code|token|secret|key|password)=[^&\s]+/gi, '$1=[redacted]')
-    .replace(
-      /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,})?\b/g,
-      '[redacted-jwt]'
-    )
-    .slice(0, MAX_STRING_LENGTH);
-}
-
-function safeValue(value: unknown, depth = 0): unknown {
-  if (depth > 3) return '[truncated]';
-  if (
-    value === null ||
-    typeof value === 'boolean' ||
-    typeof value === 'number'
-  ) {
-    return value;
-  }
-  if (typeof value === 'string') return sanitizeTelemetryText(value);
-  if (Array.isArray(value)) {
-    return value.slice(0, 20).map((item) => safeValue(item, depth + 1));
-  }
-  if (typeof value === 'object') {
-    return sanitizeTelemetryProperties(
-      value as Record<string, unknown>,
-      depth + 1
-    );
-  }
-  return sanitizeTelemetryText(String(value));
-}
-
-export function sanitizeTelemetryProperties(
-  properties: Record<string, unknown>,
-  depth = 0
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(properties)
-      .filter(([key]) => !SENSITIVE_KEY.test(key))
-      .slice(0, MAX_PROPERTIES)
-      .map(([key, value]) => [key, safeValue(value, depth)])
-  );
-}
+export { sanitizeTelemetryProperties, sanitizeTelemetryText };
 
 function errorDetails(error: unknown) {
   if (!(error instanceof Error)) return undefined;
+  const code = (error as Error & { code?: unknown }).code;
   return {
     name: error.name,
-    message: sanitizeTelemetryText(error.message),
-    stack: error.stack
-      ? sanitizeTelemetryText(error.stack.split('\n').slice(0, 8).join('\n'))
-      : undefined,
+    ...(typeof code === 'string' && /^[a-z0-9_.:-]{1,80}$/i.test(code)
+      ? { code }
+      : {}),
   };
 }
 
@@ -117,35 +71,15 @@ async function exportOtlp(record: Record<string, unknown>) {
 
 async function exportSentry(record: Record<string, unknown>) {
   if (record.level !== 'error') return;
-  const rawDsn = process.env.SENTRY_DSN?.trim();
-  if (!rawDsn) return;
-  const dsn = new URL(rawDsn);
-  const projectId = dsn.pathname.split('/').filter(Boolean).at(-1);
-  if (!dsn.username || !projectId) return;
-  const eventId = crypto.randomUUID().replaceAll('-', '');
-  const sentAt = new Date().toISOString();
-  const envelopeHeader = { event_id: eventId, dsn: rawDsn, sent_at: sentAt };
-  const itemHeader = { type: 'event', content_type: 'application/json' };
-  const payload = {
-    event_id: eventId,
-    timestamp: sentAt,
-    platform: 'javascript',
-    level: 'error',
-    message: String(record.event),
-    tags: { service: 'algocoach', trace_id: record.traceId },
-    extra: record,
-  };
-  const envelope = [
-    JSON.stringify(envelopeHeader),
-    JSON.stringify(itemHeader),
-    JSON.stringify(payload),
-  ].join('\n');
-  await fetch(`${dsn.protocol}//${dsn.host}/api/${projectId}/envelope/`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-sentry-envelope' },
-    body: envelope,
-    signal: AbortSignal.timeout(2_000),
+  if (!process.env.SENTRY_DSN?.trim()) return;
+  const Sentry = await import('@sentry/nextjs');
+  Sentry.withScope((scope) => {
+    scope.setTag('service', 'algocoach');
+    if (record.traceId) scope.setTag('trace_id', String(record.traceId));
+    scope.setExtras(record);
+    Sentry.captureMessage(String(record.event), 'error');
   });
+  await Sentry.flush(1_500);
 }
 
 export async function recordOperationalEvent(input: OperationalEvent) {

@@ -36,7 +36,13 @@ export async function GET(request: Request) {
     );
   } catch (error) {
     if (error instanceof CoachHttpError) return errorResponse(error, traceId);
-    console.error(`[coach-export:${traceId}] export failed`, error);
+    console.error(
+      JSON.stringify({
+        event: 'coach_export_failed',
+        traceId,
+        errorName: error instanceof Error ? error.name : 'Error',
+      })
+    );
     return errorResponse(
       new CoachHttpError(
         500,

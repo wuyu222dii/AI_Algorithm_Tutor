@@ -1,12 +1,16 @@
+import type { GuestClaimEnvelopeV2, GuestClaimResult } from './guest-claim';
 import {
   claimGuestImportedDrafts,
   clearImportedDrafts,
   hasImportedDrafts,
+  loadImportedDrafts,
 } from './imported-drafts';
 import { isLanguage, LANGUAGE_REGISTRY } from './languages';
 import {
   claimGuestReviewProgress,
+  clearReviewProgress,
   hasReviewProgress,
+  loadReviewProgress,
 } from './learning-progress';
 import {
   compactCoachSyncQueue,
@@ -37,6 +41,8 @@ export const COACH_IMPORTED_PROBLEM_KEY = 'algocoach.imported-problem.v1';
 export const COACH_REVISION_KEY = 'algocoach:revision:v1';
 export const COACH_SYNC_QUEUE_KEY = 'algocoach:sync-queue:v1';
 export const COACH_GUEST_CLAIM_KEY = 'algocoach:guest-claimed-by:v1';
+export const COACH_GUEST_CLAIM_ENVELOPE_KEY =
+  'algocoach:guest-claim-envelope:v2';
 export const GUEST_COACH_STORAGE_SCOPE = 'guest';
 export type CoachStorageScope = 'guest' | `user:${string}`;
 
@@ -624,6 +630,157 @@ function parseStoredEvents(raw: string | null): ProductEvent[] {
     return Array.isArray(parsed) ? (parsed as ProductEvent[]) : [];
   } catch {
     return [];
+  }
+}
+
+function createGuestClaimId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return `guest_claim_${crypto.randomUUID()}`;
+  }
+  return `guest_claim_${Date.now().toString(36)}_${Math.random()
+    .toString(36)
+    .slice(2, 12)}`;
+}
+
+function isGuestClaimEnvelope(value: unknown): value is GuestClaimEnvelopeV2 {
+  if (!isRecord(value) || value.version !== 2) return false;
+  return Boolean(
+    typeof value.claimId === 'string' &&
+      typeof value.targetUserId === 'string' &&
+      value.status === 'pending' &&
+      typeof value.createdAt === 'string' &&
+      isRecord(value.snapshot)
+  );
+}
+
+export function loadPendingGuestCoachClaim(
+  scope: CoachStorageScope,
+  storage?: Storage
+): GuestClaimEnvelopeV2 | null {
+  if (scope === GUEST_COACH_STORAGE_SCOPE) return null;
+  const target = getStorage(storage);
+  if (!target) return null;
+  try {
+    const parsed = JSON.parse(
+      target.getItem(
+        getScopedStorageKey(COACH_GUEST_CLAIM_ENVELOPE_KEY, scope)
+      ) ?? 'null'
+    ) as unknown;
+    return isGuestClaimEnvelope(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persists a replayable guest snapshot without copying it into the account
+ * namespace. Only the server claim ACK is allowed to merge this data.
+ */
+export function prepareGuestCoachClaim(
+  targetUserId: string,
+  scope: CoachStorageScope,
+  storage?: Storage
+): GuestClaimEnvelopeV2 | null {
+  if (scope === GUEST_COACH_STORAGE_SCOPE) return null;
+  const target = getStorage(storage);
+  if (!target) return null;
+  try {
+    const pending = loadPendingGuestCoachClaim(scope, target);
+    if (pending) return pending;
+    const owner = target.getItem(COACH_GUEST_CLAIM_KEY);
+    if (owner && owner !== scope) return null;
+
+    const guestState = loadCoachState(target, GUEST_COACH_STORAGE_SCOPE);
+    const guestAnalytics = parseStoredEvents(
+      target.getItem(COACH_ANALYTICS_KEY)
+    );
+    const guestExperiment = target.getItem(COACH_EXPERIMENT_KEY);
+    const guestImportedProblem = loadImportedProblem(
+      target,
+      GUEST_COACH_STORAGE_SCOPE
+    );
+    const hasGuestData =
+      hasMeaningfulCoachState(guestState) ||
+      guestAnalytics.length > 0 ||
+      guestExperiment === 'A' ||
+      guestExperiment === 'B' ||
+      Boolean(guestImportedProblem) ||
+      hasImportedDrafts(target, GUEST_COACH_STORAGE_SCOPE) ||
+      hasReviewProgress(target, GUEST_COACH_STORAGE_SCOPE);
+    if (!hasGuestData) return null;
+    const state = guestAnalytics.length
+      ? {
+          ...guestState,
+          events: uniqueBy(
+            [...guestState.events, ...guestAnalytics],
+            (event) => event.id
+          ).slice(-300),
+        }
+      : guestState;
+    const importedDrafts = loadImportedDrafts(
+      target,
+      GUEST_COACH_STORAGE_SCOPE
+    );
+    const importedProblem =
+      guestImportedProblem ?? importedDrafts[0]?.problem ?? null;
+    const envelope: GuestClaimEnvelopeV2 = {
+      version: 2,
+      claimId: createGuestClaimId(),
+      targetUserId,
+      snapshot: {
+        state,
+        importedProblem,
+        importedDrafts,
+        reviewProgress: loadReviewProgress(target, GUEST_COACH_STORAGE_SCOPE),
+      },
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    };
+    target.setItem(
+      getScopedStorageKey(COACH_GUEST_CLAIM_ENVELOPE_KEY, scope),
+      JSON.stringify(envelope)
+    );
+    // Claim ownership is reserved immediately, while guest data remains until ACK.
+    target.setItem(COACH_GUEST_CLAIM_KEY, scope);
+    return envelope;
+  } catch {
+    return null;
+  }
+}
+
+export function acknowledgeGuestCoachClaim(
+  scope: CoachStorageScope,
+  result: GuestClaimResult,
+  storage?: Storage
+): boolean {
+  const target = getStorage(storage);
+  if (!target) return false;
+  try {
+    const pending = loadPendingGuestCoachClaim(scope, target);
+    if (
+      !pending ||
+      result.status !== 'acknowledged' ||
+      result.claimId !== pending.claimId
+    ) {
+      return false;
+    }
+    clearCoachState(target, GUEST_COACH_STORAGE_SCOPE);
+    clearImportedDrafts(target, GUEST_COACH_STORAGE_SCOPE);
+    clearReviewProgress(target, GUEST_COACH_STORAGE_SCOPE);
+    target.removeItem(COACH_ANALYTICS_KEY);
+    target.removeItem(COACH_EXPERIMENT_KEY);
+    target.removeItem(COACH_IMPORTED_PROBLEM_KEY);
+    target.removeItem(
+      getScopedStorageKey(COACH_GUEST_CLAIM_ENVELOPE_KEY, scope)
+    );
+    if (typeof document !== 'undefined') {
+      const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+      document.cookie = `algocoach_guest_id=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
+    }
+    saveCoachRevision(result.revision, target, scope);
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -273,6 +273,19 @@ const practiceSessionSchema = z.object({
   completedAt: z.iso.datetime().optional(),
 });
 
+const ianaTimeZoneSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .refine((value) => {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: value }).format();
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'Invalid IANA time zone');
+
 const learningProfileSchema = z.object({
   goal: z.enum(['foundation', 'interview', 'contest']),
   preferredLanguage: languageSchema,
@@ -282,6 +295,7 @@ const learningProfileSchema = z.object({
   onboardingCompleted: z.boolean().optional(),
   createdAt: z.iso.datetime().optional(),
   onboardedAt: z.iso.datetime(),
+  timeZone: ianaTimeZoneSchema.optional().default('UTC'),
 });
 
 const parsedDraftSchema = z.object({
@@ -515,6 +529,7 @@ const assessmentResultSchema = z.object({
         .optional(),
     })
     .optional(),
+  evidenceMode: z.literal('browser_local').optional(),
 });
 
 const activeAssessmentSchema = z.object({
@@ -663,6 +678,19 @@ const reviewAttemptSchema = z.object({
   selectedRating: z.enum(['again', 'hard', 'good', 'easy']).optional(),
   ratingOverride: z.enum(['again', 'hard', 'good', 'easy']).optional(),
   gradedArtifactId: z.string().max(160).optional(),
+  gradeMode: z.enum(['ai', 'manual_fallback']).optional(),
+  gradeErrorCode: z
+    .enum([
+      'configuration',
+      'access_denied',
+      'quota',
+      'rate_limited',
+      'timeout',
+      'unavailable',
+      'invalid_output',
+      'unknown',
+    ])
+    .optional(),
 });
 
 const lineDiffSchema = z.object({

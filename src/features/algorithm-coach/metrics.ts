@@ -5,12 +5,17 @@ import {
   ReviewItem,
   selectCurrentPracticeSessions,
 } from './learning-progress';
-import { CoachState, Problem, ProblemTopic, ProductMetrics } from './types';
+import {
+  CoachState,
+  ProblemCatalogItem,
+  ProblemTopic,
+  ProductMetrics,
+} from './types';
 
 export function calculateTopicMastery(
   state: CoachState,
   reviewItems: Record<string, ReviewItem> = {},
-  catalog: readonly Problem[] = []
+  catalog: readonly ProblemCatalogItem[] = []
 ): Record<ProblemTopic, number> {
   const snapshots = calculateTopicMasterySnapshots(state, reviewItems, catalog);
   return Object.fromEntries(
@@ -27,7 +32,7 @@ export function calculateProductMetrics(
   options: {
     now?: Date;
     timeZone?: string;
-    catalog?: readonly Problem[];
+    catalog?: readonly ProblemCatalogItem[];
   } = {}
 ): ProductMetrics {
   const sessions = selectCurrentPracticeSessions(state, options.catalog);

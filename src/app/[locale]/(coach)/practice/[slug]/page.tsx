@@ -22,7 +22,7 @@ export default async function Page({
       : undefined;
   const invalidVersion = rawVersion !== undefined && !requestedContentVersion;
   const initialProblem =
-    requestedContentVersion !== undefined && !isImportedDraftSlug(slug)
+    !invalidVersion && !isImportedDraftSlug(slug)
       ? await getRuntimeProblem(slug, requestedContentVersion)
       : undefined;
 
@@ -32,10 +32,7 @@ export default async function Page({
       initialProblem={initialProblem}
       requestedContentVersion={requestedContentVersion}
       versionUnavailable={
-        invalidVersion ||
-        (requestedContentVersion !== undefined &&
-          !isImportedDraftSlug(slug) &&
-          !initialProblem)
+        invalidVersion || (!isImportedDraftSlug(slug) && !initialProblem)
       }
     />
   );

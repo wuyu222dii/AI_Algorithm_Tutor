@@ -386,7 +386,8 @@ export function loadImportedDraftClaimDropCount(
 /** Moves private guest drafts into the first authenticated namespace. */
 export function claimGuestImportedDrafts(
   scope: CoachStorageScope,
-  storage?: Storage
+  storage?: Storage,
+  options: { clearGuest?: boolean } = {}
 ): boolean {
   if (scope === 'guest') return false;
   const target = getStorage(storage);
@@ -426,7 +427,7 @@ export function claimGuestImportedDrafts(
     if (droppedCount) {
       target.setItem(scopedDroppedKey(scope), String(droppedCount));
     }
-    clearImportedDrafts(target, 'guest');
+    if (options.clearGuest !== false) clearImportedDrafts(target, 'guest');
     return guest.length > 0;
   } catch {
     return false;

@@ -11,6 +11,12 @@ import { JsonValue, ProductEvent, ProductEventName } from './types';
 
 const MAX_STORED_EVENTS = 300;
 const COACH_GUEST_ID_COOKIE = 'algocoach_guest_id';
+const COACH_ANONYMOUS_EVENT_OUTBOX_KEY = 'algocoach:anonymous-event-outbox:v1';
+const COACH_ANONYMOUS_EVENT_CHECKPOINT_KEY =
+  'algocoach:anonymous-event-checkpoint:v1';
+const ANONYMOUS_EVENT_FLUSH_DELAY_MS = 250;
+const ANONYMOUS_EVENT_MAX_AGE_MS = 23 * 60 * 60 * 1000;
+const ANONYMOUS_EVENT_MAX_FUTURE_MS = 4 * 60 * 1000;
 const ANONYMOUS_FUNNEL_EVENTS = new Set<ProductEventName>([
   'visitor_started',
   'onboarding_started',
@@ -18,11 +24,236 @@ const ANONYMOUS_FUNNEL_EVENTS = new Set<ProductEventName>([
   'practice_started',
   'first_code_run',
   'first_problem_passed',
+  'code_run',
+  'code_submitted',
+  'corrected_after_diagnosis',
   'review_completed',
   'assessment_completed',
+  'baseline_completed',
+  'checkpoint_completed',
+  'daily_plan_task_completed',
+  'language_selected',
+  'typescript_transpile_failed',
   'experiment_exposed',
 ]);
 let activeStorageScope: CoachStorageScope | null = GUEST_COACH_STORAGE_SCOPE;
+let anonymousFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let anonymousFlushInFlight: Promise<boolean> | null = null;
+
+interface AnonymousEventPayload {
+  id: string;
+  name: ProductEventName;
+  timestamp: string;
+  problemSlug?: string;
+}
+
+interface AnonymousEventCheckpoint {
+  sequence: number;
+  generatedTotal: number;
+  deliveredTotal: number;
+}
+
+const EMPTY_ANONYMOUS_CHECKPOINT: AnonymousEventCheckpoint = {
+  sequence: 0,
+  generatedTotal: 0,
+  deliveredTotal: 0,
+};
+
+function loadAnonymousEventCheckpoint(): AnonymousEventCheckpoint {
+  if (typeof window === 'undefined') return EMPTY_ANONYMOUS_CHECKPOINT;
+  try {
+    const value = JSON.parse(
+      window.localStorage.getItem(COACH_ANONYMOUS_EVENT_CHECKPOINT_KEY) ??
+        'null'
+    ) as Partial<AnonymousEventCheckpoint> | null;
+    const sequence = Number(value?.sequence);
+    const generatedTotal = Number(value?.generatedTotal);
+    const deliveredTotal = Number(value?.deliveredTotal);
+    if (
+      !Number.isInteger(sequence) ||
+      sequence < 0 ||
+      !Number.isInteger(generatedTotal) ||
+      generatedTotal < 0 ||
+      !Number.isInteger(deliveredTotal) ||
+      deliveredTotal < 0 ||
+      deliveredTotal > generatedTotal
+    ) {
+      return EMPTY_ANONYMOUS_CHECKPOINT;
+    }
+    return { sequence, generatedTotal, deliveredTotal };
+  } catch {
+    return EMPTY_ANONYMOUS_CHECKPOINT;
+  }
+}
+
+function saveAnonymousEventCheckpoint(
+  checkpoint: AnonymousEventCheckpoint
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      COACH_ANONYMOUS_EVENT_CHECKPOINT_KEY,
+      JSON.stringify(checkpoint)
+    );
+  } catch {
+    // The outbox remains retryable even when checkpoint persistence is blocked.
+  }
+}
+
+function loadAnonymousEventOutbox(): AnonymousEventPayload[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const now = Date.now();
+    const parsed = JSON.parse(
+      window.localStorage.getItem(COACH_ANONYMOUS_EVENT_OUTBOX_KEY) ?? '[]'
+    ) as unknown;
+    const events = Array.isArray(parsed)
+      ? (parsed as AnonymousEventPayload[]).filter((event) => {
+          const timestamp = Date.parse(event?.timestamp);
+          return (
+            Boolean(event) &&
+            typeof event.id === 'string' &&
+            event.id.length >= 8 &&
+            event.id.length <= 160 &&
+            ANONYMOUS_FUNNEL_EVENTS.has(event.name) &&
+            Number.isFinite(timestamp) &&
+            timestamp >= now - ANONYMOUS_EVENT_MAX_AGE_MS &&
+            timestamp <= now + ANONYMOUS_EVENT_MAX_FUTURE_MS &&
+            (event.problemSlug === undefined ||
+              /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(event.problemSlug))
+          );
+        })
+      : [];
+    if (!Array.isArray(parsed) || events.length !== parsed.length) {
+      saveAnonymousEventOutbox(events);
+    }
+    return events;
+  } catch {
+    saveAnonymousEventOutbox([]);
+    return [];
+  }
+}
+
+function saveAnonymousEventOutbox(events: AnonymousEventPayload[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!events.length) {
+      window.localStorage.removeItem(COACH_ANONYMOUS_EVENT_OUTBOX_KEY);
+    } else {
+      window.localStorage.setItem(
+        COACH_ANONYMOUS_EVENT_OUTBOX_KEY,
+        JSON.stringify(events)
+      );
+    }
+  } catch {
+    // Analytics delivery remains best-effort in restricted storage contexts.
+  }
+}
+
+export function clearAnonymousProductEventOutbox(): void {
+  saveAnonymousEventOutbox([]);
+  if (typeof window !== 'undefined') {
+    window.localStorage.removeItem(COACH_ANONYMOUS_EVENT_CHECKPOINT_KEY);
+  }
+}
+
+async function flushOneAnonymousEventBatch(): Promise<boolean> {
+  if (typeof window === 'undefined' || typeof fetch !== 'function')
+    return false;
+  const batch = loadAnonymousEventOutbox().slice(0, 50);
+  if (!batch.length) return true;
+  const currentCheckpoint = loadAnonymousEventCheckpoint();
+  const checkpoint: AnonymousEventCheckpoint = {
+    sequence: currentCheckpoint.sequence + 1,
+    generatedTotal: Math.max(
+      currentCheckpoint.generatedTotal,
+      currentCheckpoint.deliveredTotal + loadAnonymousEventOutbox().length
+    ),
+    deliveredTotal: Math.min(
+      Math.max(
+        currentCheckpoint.generatedTotal,
+        currentCheckpoint.deliveredTotal + loadAnonymousEventOutbox().length
+      ),
+      currentCheckpoint.deliveredTotal + batch.length
+    ),
+  };
+  try {
+    const response = await fetch('/api/coach/events/batch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      keepalive: true,
+      body: JSON.stringify({ events: batch, checkpoint }),
+    });
+    if (!response.ok) return false;
+    const deliveredIds = new Set(batch.map((event) => event.id));
+    const remaining = loadAnonymousEventOutbox().filter(
+      (event) => !deliveredIds.has(event.id)
+    );
+    saveAnonymousEventOutbox(remaining);
+    saveAnonymousEventCheckpoint(checkpoint);
+    return true;
+  } catch {
+    // The durable outbox retries on the next event or page load.
+    return false;
+  }
+}
+
+export async function flushAnonymousProductEventOutbox(
+  options: {
+    drain?: boolean;
+  } = {}
+): Promise<boolean> {
+  if (anonymousFlushTimer) {
+    clearTimeout(anonymousFlushTimer);
+    anonymousFlushTimer = null;
+  }
+  do {
+    if (!anonymousFlushInFlight) {
+      anonymousFlushInFlight = flushOneAnonymousEventBatch().finally(() => {
+        anonymousFlushInFlight = null;
+      });
+    }
+    const flushed = await anonymousFlushInFlight;
+    if (!flushed) return false;
+    if (!options.drain) {
+      if (loadAnonymousEventOutbox().length) scheduleAnonymousEventFlush(0);
+      return true;
+    }
+  } while (loadAnonymousEventOutbox().length);
+  return true;
+}
+
+function scheduleAnonymousEventFlush(
+  delayMs = ANONYMOUS_EVENT_FLUSH_DELAY_MS
+): void {
+  if (typeof window === 'undefined' || anonymousFlushTimer) return;
+  anonymousFlushTimer = setTimeout(() => {
+    anonymousFlushTimer = null;
+    void flushAnonymousProductEventOutbox();
+  }, delayMs);
+}
+
+function enqueueAnonymousProductEvent(event: ProductEvent): void {
+  const payload: AnonymousEventPayload = {
+    id: event.id,
+    name: event.name,
+    timestamp: event.timestamp,
+    problemSlug: event.problemSlug,
+  };
+  const current = loadAnonymousEventOutbox();
+  const existing = current.some((item) => item.id === payload.id);
+  const byId = new Map([...current, payload].map((item) => [item.id, item]));
+  saveAnonymousEventOutbox(Array.from(byId.values()));
+  if (!existing) {
+    const checkpoint = loadAnonymousEventCheckpoint();
+    saveAnonymousEventCheckpoint({
+      ...checkpoint,
+      generatedTotal: checkpoint.generatedTotal + 1,
+    });
+  }
+  scheduleAnonymousEventFlush(byId.size >= 50 ? 0 : undefined);
+}
 
 export function setProductAnalyticsScope(
   scope: CoachStorageScope | null
@@ -46,7 +277,10 @@ export function ensureCoachGuestIdentity(): string {
     .map((part) => part.trim())
     .find((part) => part.startsWith(`${COACH_GUEST_ID_COOKIE}=`))
     ?.slice(COACH_GUEST_ID_COOKIE.length + 1);
-  if (existing && /^[A-Za-z0-9_-]{8,160}$/.test(existing)) return existing;
+  if (existing && /^[A-Za-z0-9_-]{8,160}$/.test(existing)) {
+    if (loadAnonymousEventOutbox().length) scheduleAnonymousEventFlush();
+    return existing;
+  }
 
   const identity = randomId('guest');
   const secure = window.location.protocol === 'https:' ? '; Secure' : '';
@@ -178,18 +412,7 @@ export function trackProductEvent(
       ANONYMOUS_FUNNEL_EVENTS.has(event.name) &&
       typeof fetch === 'function'
     ) {
-      void fetch('/api/coach/events', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        credentials: 'same-origin',
-        keepalive: true,
-        body: JSON.stringify({
-          id: event.id,
-          name: event.name,
-          timestamp: event.timestamp,
-          problemSlug: event.problemSlug,
-        }),
-      }).catch(() => undefined);
+      enqueueAnonymousProductEvent(event);
     }
   } catch {
     // Analytics must never interrupt the learning workflow.
@@ -237,6 +460,9 @@ export function clearProductAnalytics(
     window.sessionStorage.removeItem(
       getScopedStorageKey(COACH_SESSION_KEY, scope)
     );
+    if (scope === GUEST_COACH_STORAGE_SCOPE) {
+      window.localStorage.removeItem(COACH_ANONYMOUS_EVENT_OUTBOX_KEY);
+    }
   } catch {
     // Reset remains best-effort in restricted browser storage contexts.
   }

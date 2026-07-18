@@ -12,14 +12,20 @@ import {
 } from 'react';
 
 import {
+  clearAnonymousProductEventOutbox,
   clearProductAnalytics,
   createProductEvent,
   ensureCoachGuestIdentity,
+  flushAnonymousProductEventOutbox,
   getExperimentVariant,
   loadProductAnalytics,
   setProductAnalyticsScope,
   trackProductEvent,
 } from './analytics';
+import {
+  claimGuestAssessmentDraft,
+  clearAssessmentDraft,
+} from './assessment-draft';
 import {
   createDailyLearningPlan,
   getDailyPlanDateKey,
@@ -58,6 +64,7 @@ import {
   clearPracticeContexts,
 } from './practice-context';
 import {
+  acknowledgeGuestCoachClaim,
   claimGuestCoachData,
   clearCoachState,
   clearCoachSyncQueue,
@@ -72,6 +79,7 @@ import {
   mergeCoachStates,
   normalizeCoachState,
   saveImportedProblem as persistImportedProblem,
+  prepareGuestCoachClaim,
   saveCoachRevision,
   saveCoachState,
   saveCoachSyncQueue,
@@ -94,6 +102,7 @@ import {
 import {
   AssessmentKind,
   AssessmentResult,
+  AssessmentState,
   CoachState,
   CoachSyncMutation,
   CoachSyncResult,
@@ -105,6 +114,7 @@ import {
   LearningGoal,
   LearningProfile,
   Problem,
+  ProblemCatalogItem,
   ProductEventName,
   ProductMetrics,
   ReviewAttempt,
@@ -117,6 +127,8 @@ const DEFAULT_ASSESSMENT_PROBLEMS = [
 
 const cloudSyncEnabled =
   process.env.NEXT_PUBLIC_COACH_CLOUD_SYNC_ENABLED !== 'false';
+const durableGuestClaimEnabled =
+  process.env.NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED === 'true';
 const INITIAL_CLOUD_SYNC_TIMEOUT_MS = 5_000;
 
 async function fetchWithTimeout(
@@ -202,7 +214,7 @@ type AssessmentInput = Partial<AssessmentResult> & {
 
 export interface CoachStoreValue {
   state: CoachState;
-  problems: readonly Problem[];
+  problems: readonly ProblemCatalogItem[];
   enabledLanguages: readonly EnabledLanguage[];
   metrics: ProductMetrics;
   reviewItems: Record<string, ReviewItem>;
@@ -221,6 +233,12 @@ export interface CoachStoreValue {
     code: string,
     problemContentVersion?: number
   ) => void;
+  flushCodeSnapshot: (
+    problemSlug: string,
+    language: Language,
+    code: string,
+    problemContentVersion?: number
+  ) => void;
   recordRun: RecordRun;
   revealHint: (problemSlug: string, problemContentVersion?: number) => void;
   addArtifact: (artifact: LearningArtifact) => void;
@@ -228,8 +246,10 @@ export interface CoachStoreValue {
     problemSlugs?: string[],
     durationMinutes?: number,
     kind?: AssessmentKind,
-    baselineAssessmentId?: string
+    baselineAssessmentId?: string,
+    session?: Pick<AssessmentState, 'id' | 'startedAt' | 'problemVersions'>
   ) => void;
+  abandonAssessment: (assessmentId?: string) => void;
   completeAssessment: (result: AssessmentInput) => void;
   saveImportedProblem: (problem: Problem) => void;
   deleteImportedProblem: (slug: string) => void;
@@ -263,6 +283,17 @@ export interface CoachStoreValue {
 const CoachStoreContext = createContext<CoachStoreValue | null>(null);
 
 const now = () => new Date().toISOString();
+
+export function resolveBrowserTimeZone(): string {
+  try {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone?.trim();
+    if (!timeZone) return 'UTC';
+    new Intl.DateTimeFormat('en', { timeZone }).format(new Date(0));
+    return timeZone;
+  } catch {
+    return 'UTC';
+  }
+}
 
 function createSession(problemSlug: string, problemContentVersion = 1) {
   const timestamp = now();
@@ -323,7 +354,7 @@ export function CoachProvider({
 }: {
   children: ReactNode;
   enabledLanguages?: readonly EnabledLanguage[];
-  problems?: readonly Problem[];
+  problems?: readonly ProblemCatalogItem[];
   storageScope?: CoachStorageScope | null;
 }) {
   const [state, setState] = useState<CoachState>(createInitialCoachState);
@@ -348,6 +379,7 @@ export function CoachProvider({
   const remoteSyncRetryRef = useRef(0);
   const syncSucceededTrackedRef = useRef(false);
   const resettingRef = useRef(false);
+  const guestClaimPendingRef = useRef(false);
   const remoteSyncQueueRef = useRef<CoachSyncMutation[]>([]);
   const observedDocumentRef = useRef<CoachSyncDocument | null>(null);
   const [syncStatus, setSyncStatus] = useState<
@@ -375,7 +407,11 @@ export function CoachProvider({
   );
 
   const flushRemoteSync = useCallback(async function flushRemoteSync() {
-    if (remoteSyncInFlightRef.current || resettingRef.current) {
+    if (
+      remoteSyncInFlightRef.current ||
+      resettingRef.current ||
+      guestClaimPendingRef.current
+    ) {
       return;
     }
     const scope = activeScopeRef.current;
@@ -593,7 +629,7 @@ export function CoachProvider({
     if (resettingRef.current) return;
     setSyncError(null);
     setSyncStatus('syncing');
-    if (!remoteSyncQueueRef.current.length) {
+    if (guestClaimPendingRef.current || !remoteSyncQueueRef.current.length) {
       setSyncReloadVersion((current) => current + 1);
       return;
     }
@@ -622,6 +658,7 @@ export function CoachProvider({
     remoteSyncQueueRef.current = [];
     observedDocumentRef.current = null;
     resettingRef.current = false;
+    guestClaimPendingRef.current = false;
     remoteRevisionRef.current = 0;
     setSyncError(null);
     activeScopeRef.current = null;
@@ -639,11 +676,39 @@ export function CoachProvider({
       }
       void (async () => {
         ensureCoachGuestIdentity();
-        const claimedGuest = claimGuestCoachData(storageScope);
+        const targetUserId = storageScope.startsWith('user:')
+          ? storageScope.slice('user:'.length)
+          : null;
+        const guestClaimEnvelope =
+          durableGuestClaimEnabled && targetUserId
+            ? prepareGuestCoachClaim(targetUserId, storageScope)
+            : null;
+        guestClaimPendingRef.current = Boolean(guestClaimEnvelope);
+        let claimedGuest = durableGuestClaimEnabled
+          ? false
+          : claimGuestCoachData(storageScope);
         const droppedClaimedDrafts =
           loadImportedDraftClaimDropCount(storageScope);
-        if (claimedGuest) claimGuestPracticeContexts(storageScope);
-        let nextState = loadCoachState(undefined, storageScope);
+        if (claimedGuest) {
+          claimGuestPracticeContexts(storageScope, undefined, {
+            clearGuest: !durableGuestClaimEnabled,
+          });
+          claimGuestAssessmentDraft(storageScope, undefined, {
+            clearGuest: !durableGuestClaimEnabled,
+          });
+        }
+        const storedState = loadCoachState(undefined, storageScope);
+        let nextState = storedState;
+        const browserTimeZone = resolveBrowserTimeZone();
+        const profileTimeZoneChanged = Boolean(
+          nextState.profile && nextState.profile.timeZone !== browserTimeZone
+        );
+        if (profileTimeZoneChanged && nextState.profile) {
+          nextState = {
+            ...nextState,
+            profile: { ...nextState.profile, timeZone: browserTimeZone },
+          };
+        }
         const analyticsEvents = loadProductAnalytics(storageScope);
         if (analyticsEvents.length) {
           const eventsById = new Map(
@@ -699,6 +764,24 @@ export function CoachProvider({
           importedDrafts: nextImportedDrafts,
           reviewProgress: nextReviewProgress,
         };
+        if (
+          profileTimeZoneChanged &&
+          cloudSyncEnabled &&
+          storageScope.startsWith('user:')
+        ) {
+          const timeZoneMutation = createCoachSyncMutation(
+            { ...localDocument, state: storedState },
+            localDocument,
+            localRevision
+          );
+          if (timeZoneMutation) {
+            remoteSyncQueueRef.current = saveCoachSyncQueue(
+              [...remoteSyncQueueRef.current, timeZoneMutation],
+              undefined,
+              storageScope
+            );
+          }
+        }
         activeScopeRef.current = storageScope;
         stateRef.current = nextState;
         importedProblemRef.current = nextImportedProblem;
@@ -717,6 +800,74 @@ export function CoachProvider({
           const loadController = new AbortController();
           remoteLoadAbortRef.current = loadController;
           try {
+            if (guestClaimEnvelope) {
+              try {
+                const claimResponse = await fetchWithTimeout(
+                  '/api/coach/state/claim',
+                  {
+                    method: 'POST',
+                    headers: {
+                      accept: 'application/json',
+                      'content-type': 'application/json',
+                    },
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                    signal: loadController.signal,
+                    body: JSON.stringify(guestClaimEnvelope),
+                  },
+                  INITIAL_CLOUD_SYNC_TIMEOUT_MS
+                );
+                if (claimResponse.ok) {
+                  const claimPayload = (await claimResponse.json()) as {
+                    data?: {
+                      claimId?: string;
+                      status?: 'acknowledged';
+                      revision?: number;
+                      replayed?: boolean;
+                    };
+                  };
+                  const revision = Number(claimPayload.data?.revision);
+                  if (
+                    claimPayload.data?.claimId === guestClaimEnvelope.claimId &&
+                    claimPayload.data.status === 'acknowledged' &&
+                    Number.isInteger(revision) &&
+                    revision >= 0
+                  ) {
+                    const eventsDrained =
+                      await flushAnonymousProductEventOutbox({ drain: true });
+                    if (eventsDrained) {
+                      claimGuestPracticeContexts(storageScope, undefined, {
+                        clearGuest: false,
+                      });
+                      claimGuestAssessmentDraft(storageScope, undefined, {
+                        clearGuest: false,
+                      });
+                    }
+                    const acknowledged =
+                      eventsDrained &&
+                      acknowledgeGuestCoachClaim(storageScope, {
+                        claimId: guestClaimEnvelope.claimId,
+                        status: 'acknowledged',
+                        revision,
+                        replayed: Boolean(claimPayload.data.replayed),
+                      });
+                    if (acknowledged) {
+                      claimedGuest = true;
+                      guestClaimPendingRef.current = false;
+                      clearAnonymousProductEventOutbox();
+                      clearPracticeContexts(
+                        undefined,
+                        GUEST_COACH_STORAGE_SCOPE
+                      );
+                      clearAssessmentDraft(GUEST_COACH_STORAGE_SCOPE);
+                      remoteRevisionRef.current = revision;
+                    }
+                  }
+                }
+              } catch {
+                // The pending envelope remains durable and is replayed later.
+              }
+            }
             const response = await fetchWithTimeout(
               '/api/coach/state',
               {
@@ -783,7 +934,9 @@ export function CoachProvider({
               remoteRevisionRef.current = remoteRevision;
               saveCoachRevision(remoteRevision, undefined, storageScope);
               const shouldPreserveLocal =
-                claimedGuest || remoteRevision <= localRevision;
+                claimedGuest ||
+                (!guestClaimPendingRef.current &&
+                  remoteRevision <= localRevision);
               const shouldPreserveLocalReview =
                 shouldPreserveLocal || !payload.data?.reviewProgress;
               if (pendingMutations.length && !claimedGuest) {
@@ -824,6 +977,7 @@ export function CoachProvider({
               }
 
               if (
+                !guestClaimPendingRef.current &&
                 (shouldPreserveLocalReview || claimedGuest) &&
                 (!pendingMutations.length || claimedGuest)
               ) {
@@ -846,6 +1000,31 @@ export function CoachProvider({
                 }
               }
 
+              if (
+                claimedGuest &&
+                !nextState.events.some(
+                  (event) => event.name === 'guest_data_claimed'
+                )
+              ) {
+                nextState = {
+                  ...nextState,
+                  events: [
+                    ...nextState.events,
+                    trackProductEvent(
+                      'guest_data_claimed',
+                      {
+                        properties: {
+                          destination: 'account',
+                          droppedImportedDrafts: droppedClaimedDrafts,
+                        },
+                      },
+                      storageScope
+                    ),
+                  ].slice(-300),
+                };
+                consumeImportedDraftClaimDropCount(storageScope);
+              }
+
               const mergedDocument: CoachSyncDocument = {
                 state: nextState,
                 importedProblem: nextImportedProblem,
@@ -863,9 +1042,14 @@ export function CoachProvider({
               setReviewProgress(nextReviewProgress);
             }
             if (!cancelled) {
-              setSyncStatus(
-                remoteSyncQueueRef.current.length ? 'syncing' : 'synced'
-              );
+              if (guestClaimPendingRef.current) {
+                setSyncStatus('error');
+                setSyncError('conflict');
+              } else {
+                setSyncStatus(
+                  remoteSyncQueueRef.current.length ? 'syncing' : 'synced'
+                );
+              }
             }
           } catch (error) {
             // The local cache keeps the learning workflow usable while offline.
@@ -887,6 +1071,7 @@ export function CoachProvider({
         if (
           cloudSyncEnabled &&
           storageScope.startsWith('user:') &&
+          !guestClaimPendingRef.current &&
           remoteSyncQueueRef.current.length
         ) {
           remoteSyncTimerRef.current = window.setTimeout(() => {
@@ -955,6 +1140,7 @@ export function CoachProvider({
       if (
         cloudSyncEnabled &&
         activeScope.startsWith('user:') &&
+        !guestClaimPendingRef.current &&
         !resettingRef.current &&
         previousDocument
       ) {
@@ -1014,6 +1200,10 @@ export function CoachProvider({
 
   useEffect(() => {
     const retryWhenOnline = () => {
+      if (guestClaimPendingRef.current) {
+        setSyncReloadVersion((current) => current + 1);
+        return;
+      }
       if (!remoteSyncQueueRef.current.length) return;
       remoteSyncRetryRef.current = 0;
       if (remoteSyncTimerRef.current !== null) {
@@ -1049,6 +1239,7 @@ export function CoachProvider({
       onboardingCompleted: true,
       createdAt: input.createdAt ?? now(),
       onboardedAt: now(),
+      timeZone: resolveBrowserTimeZone(),
     };
     const event = trackProductEvent('activated', {
       properties: {
@@ -1122,6 +1313,46 @@ export function CoachProvider({
             : current.events,
         };
       });
+    },
+    [problemContentVersion]
+  );
+
+  const flushCodeSnapshot = useCallback(
+    (
+      problemSlug: string,
+      language: Language,
+      code: string,
+      requestedContentVersion?: number
+    ) => {
+      const current = stateRef.current;
+      const contentVersion = normalizeProblemContentVersion(
+        requestedContentVersion ?? problemContentVersion(problemSlug)
+      );
+      const sessionKey = getPracticeSessionKey(problemSlug, contentVersion);
+      const session =
+        current.sessions[sessionKey] ??
+        createSession(problemSlug, contentVersion);
+      const next: CoachState = {
+        ...current,
+        sessions: {
+          ...current.sessions,
+          [sessionKey]: {
+            ...session,
+            code: { ...session.code, [language]: code },
+            updatedAt: now(),
+          },
+        },
+        code: {
+          ...current.code,
+          [sessionKey]: {
+            ...current.code[sessionKey],
+            [language]: code,
+          },
+        },
+      };
+      stateRef.current = next;
+      const activeScope = activeScopeRef.current;
+      if (activeScope) saveCoachState(next, undefined, activeScope);
     },
     [problemContentVersion]
   );
@@ -1393,10 +1624,11 @@ export function CoachProvider({
       problemSlugs = DEFAULT_ASSESSMENT_PROBLEMS,
       durationMinutes = 20,
       kind: AssessmentKind = 'practice',
-      baselineAssessmentId?: string
+      baselineAssessmentId?: string,
+      session?: Pick<AssessmentState, 'id' | 'startedAt' | 'problemVersions'>
     ) => {
-      const startedAt = now();
-      const id = `assessment_${crypto.randomUUID()}`;
+      const startedAt = session?.startedAt ?? now();
+      const id = session?.id ?? `assessment_${crypto.randomUUID()}`;
       const event = trackProductEvent(
         kind === 'baseline' ? 'baseline_started' : 'assessment_started',
         {
@@ -1414,10 +1646,12 @@ export function CoachProvider({
           kind,
           baselineAssessmentId,
           problemSlugs,
-          problemVersions: problemSlugs.map((slug) => ({
-            slug,
-            contentVersion: problemContentVersion(slug),
-          })),
+          problemVersions:
+            session?.problemVersions ??
+            problemSlugs.map((slug) => ({
+              slug,
+              contentVersion: problemContentVersion(slug),
+            })),
           startedAt,
           durationMinutes,
         },
@@ -1426,6 +1660,18 @@ export function CoachProvider({
     },
     [problemContentVersion]
   );
+
+  const abandonAssessment = useCallback((assessmentId?: string) => {
+    setState((current) => {
+      if (
+        !current.activeAssessment ||
+        (assessmentId && current.activeAssessment.id !== assessmentId)
+      ) {
+        return current;
+      }
+      return { ...current, activeAssessment: null };
+    });
+  }, []);
 
   const completeAssessment = useCallback((input: AssessmentInput) => {
     const completedAt = input.completedAt ?? now();
@@ -1601,6 +1847,10 @@ export function CoachProvider({
           attemptId: attempt.id,
           problemContentVersion: attempt.problemContentVersion,
           answerLength: attempt.answer.trim().length,
+          gradeMode: attempt.gradeMode ?? (attempt.grade ? 'ai' : 'unknown'),
+          ...(attempt.gradeErrorCode
+            ? { gradeErrorCode: attempt.gradeErrorCode }
+            : {}),
           ...(attempt.grade
             ? {
                 suggestedRating: attempt.grade.suggestedRating,
@@ -1843,10 +2093,12 @@ export function CoachProvider({
       completeOnboarding,
       setPreferredLanguage,
       saveCode,
+      flushCodeSnapshot,
       recordRun,
       revealHint,
       addArtifact,
       startAssessment,
+      abandonAssessment,
       completeAssessment,
       saveImportedProblem,
       deleteImportedProblem,
@@ -1874,10 +2126,12 @@ export function CoachProvider({
       completeOnboarding,
       setPreferredLanguage,
       saveCode,
+      flushCodeSnapshot,
       recordRun,
       revealHint,
       addArtifact,
       startAssessment,
+      abandonAssessment,
       completeAssessment,
       saveImportedProblem,
       deleteImportedProblem,

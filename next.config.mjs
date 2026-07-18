@@ -1,4 +1,5 @@
 import bundleAnalyzer from '@next/bundle-analyzer';
+import { withSentryConfig } from '@sentry/nextjs';
 import { createMDX } from 'fumadocs-mdx/next';
 import createNextIntlPlugin from 'next-intl/plugin';
 
@@ -117,4 +118,25 @@ const nextConfig = {
   reactCompiler: true,
 };
 
-export default withBundleAnalyzer(withNextIntl(withMDX(nextConfig)));
+export default withSentryConfig(
+  withBundleAnalyzer(withNextIntl(withMDX(nextConfig))),
+  {
+    org: process.env.SENTRY_ORG,
+    project: process.env.SENTRY_PROJECT,
+    authToken: process.env.SENTRY_AUTH_TOKEN,
+    release: {
+      name:
+        process.env.SENTRY_RELEASE ??
+        process.env.VERCEL_GIT_COMMIT_SHA ??
+        process.env.GITHUB_SHA,
+    },
+    silent: !process.env.CI,
+    telemetry: false,
+    widenClientFileUpload: true,
+    webpack: { treeshake: { removeDebugLogging: true } },
+    sourcemaps: {
+      disable: !process.env.SENTRY_AUTH_TOKEN,
+      deleteSourcemapsAfterUpload: true,
+    },
+  }
+);

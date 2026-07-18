@@ -3,6 +3,7 @@ import {
   getRuntimeProblem,
   runtimeEnabledLanguages,
 } from '@/features/algorithm-coach/catalog-runtime.server';
+import { toPublicProblemDetail } from '@/features/algorithm-coach/problem-contracts';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -38,29 +39,7 @@ export async function GET(
         { status: 404, headers: { 'cache-control': 'no-store' } }
       );
     }
-    const enabledLanguages = new Set(runtimeEnabledLanguages());
-    const data = {
-      ...problem,
-      languageConfigs: Object.fromEntries(
-        Object.entries(problem.languageConfigs ?? {}).filter(([language]) =>
-          enabledLanguages.has(
-            language as ReturnType<typeof runtimeEnabledLanguages>[number]
-          )
-        )
-      ),
-      ...(problem.templates
-        ? {
-            templates: Object.fromEntries(
-              Object.entries(problem.templates).filter(([language]) =>
-                enabledLanguages.has(
-                  language as ReturnType<typeof runtimeEnabledLanguages>[number]
-                )
-              )
-            ),
-          }
-        : {}),
-      tests: problem.tests.filter((test) => test.isSample),
-    };
+    const data = toPublicProblemDetail(problem, runtimeEnabledLanguages());
     const responseEtag = etag(data);
     if (request.headers.get('if-none-match') === responseEtag) {
       return new Response(null, {
@@ -84,7 +63,13 @@ export async function GET(
     );
   } catch (error) {
     const traceId = crypto.randomUUID();
-    console.error(`[problem-catalog:${traceId}] detail failed`, error);
+    console.error(
+      JSON.stringify({
+        event: 'problem_catalog_detail_failed',
+        traceId,
+        errorName: error instanceof Error ? error.name : 'Error',
+      })
+    );
     return Response.json(
       {
         error: {

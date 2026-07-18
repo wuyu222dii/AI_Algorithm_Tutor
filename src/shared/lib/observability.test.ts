@@ -1,11 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  recordOperationalEvent,
   sanitizeTelemetryProperties,
   sanitizeTelemetryText,
 } from './observability';
 
 describe('observability redaction', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
   it('removes credentials, user content, and nested sensitive fields', () => {
     const safe = sanitizeTelemetryProperties({
       provider: 'google',
@@ -13,12 +19,14 @@ describe('observability redaction', () => {
       accessToken: 'token-value',
       sourceCode: 'function solve() {}',
       nested: { authorization: 'Bearer secret', status: 502 },
+      errorCode: 'channel_unavailable',
       latencyMs: 123,
     });
 
     expect(safe).toEqual({
       provider: 'google',
       nested: { status: 502 },
+      errorCode: 'channel_unavailable',
       latencyMs: 123,
     });
   });
@@ -34,5 +42,36 @@ describe('observability redaction', () => {
     expect(safe).not.toContain('eyJ1234567890');
     expect(safe).not.toContain('db-password');
     expect(safe).not.toContain('sk-1234567890abcdefghijklmnop');
+  });
+
+  it('never exports operational error messages or stacks', async () => {
+    vi.stubEnv('OTEL_EXPORTER_OTLP_LOGS_ENDPOINT', 'https://otel.example/logs');
+    vi.stubEnv('SENTRY_DSN', '');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 202 }));
+    const consoleMock = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal('fetch', fetchMock);
+    const error = new Error(
+      'params: return secretSolution(input); full private problem statement'
+    ) as Error & { code: string };
+    error.code = 'database_unavailable';
+
+    await recordOperationalEvent({
+      event: 'coach_persistence_failed',
+      error,
+      properties: { errorCode: 'database_unavailable' },
+    });
+
+    const consolePayload = String(consoleMock.mock.calls[0]?.[0]);
+    const otlpPayload = String(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.body
+    );
+    expect(consolePayload).toContain('database_unavailable');
+    expect(otlpPayload).toContain('database_unavailable');
+    expect(consolePayload).not.toContain('secretSolution');
+    expect(otlpPayload).not.toContain('secretSolution');
+    expect(consolePayload).not.toContain('private problem statement');
+    expect(otlpPayload).not.toContain('private problem statement');
   });
 });

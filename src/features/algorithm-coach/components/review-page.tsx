@@ -44,6 +44,7 @@ import type {
   CodeRunResult,
   LearningArtifact,
   ReviewGrade,
+  ReviewGradeErrorCode,
 } from '../types';
 import { CoachPage, EmptyState, Panel, PanelHeading } from './coach-ui';
 import {
@@ -82,6 +83,9 @@ const copy = {
     gradeRecall: '评分并查看答案',
     grading: '正在评分…',
     gradeFailed: '暂时无法评分，请稍后重试。',
+    manualFallback:
+      'AI 评分暂时不可用。你的回答已保留，可跳过评分后自行对照参考答案。',
+    skipGrade: '跳过 AI 评分并查看答案',
     hits: '已命中',
     misses: '待补充',
     suggested: '建议自评',
@@ -129,6 +133,9 @@ const copy = {
     gradeRecall: 'Grade recall and reveal',
     grading: 'Grading…',
     gradeFailed: 'Recall could not be graded. Try again shortly.',
+    manualFallback:
+      'AI grading is unavailable. Your response is saved, and you can continue with self-assessment.',
+    skipGrade: 'Skip AI grading and reveal',
     hits: 'Covered',
     misses: 'Missing',
     suggested: 'Suggested rating',
@@ -151,6 +158,31 @@ const copy = {
     version: 'Version',
   },
 } as const;
+
+function reviewGradeErrorCode(
+  code: string | undefined,
+  status: number
+): ReviewGradeErrorCode {
+  const normalized = String(code ?? '').toLowerCase();
+  if (normalized === 'ai_configuration_error') return 'configuration';
+  if (normalized === 'provider_access_denied') return 'access_denied';
+  if (normalized === 'provider_quota_exhausted') return 'quota';
+  if (normalized === 'provider_rate_limited' || status === 429) {
+    return 'rate_limited';
+  }
+  if (normalized === 'provider_timeout' || status === 504) return 'timeout';
+  if (normalized === 'provider_invalid_output') return 'invalid_output';
+  if (normalized === 'provider_unavailable' || status >= 500) {
+    return 'unavailable';
+  }
+  return 'unknown';
+}
+
+class ReviewGradeRequestError extends Error {
+  constructor(readonly safeCode: ReviewGradeErrorCode) {
+    super('review grade failed');
+  }
+}
 
 export function ReviewPage() {
   const locale = localeKey(useLocale());
@@ -255,7 +287,18 @@ export function ReviewPage() {
           reviewCard,
         }),
       });
-      if (!response.ok) throw new Error('review grade failed');
+      if (!response.ok) {
+        const errorPayload = (await response.json().catch(() => null)) as {
+          error?: { code?: string } | string;
+        } | null;
+        const code =
+          typeof errorPayload?.error === 'string'
+            ? errorPayload.error
+            : errorPayload?.error?.code;
+        throw new ReviewGradeRequestError(
+          reviewGradeErrorCode(code, response.status)
+        );
+      }
       const payload = (await response.json()) as CoachResponse;
       const gradePayload = payload.artifact.reviewGrade;
       if (!gradePayload) throw new Error('review grade missing');
@@ -289,10 +332,22 @@ export function ReviewPage() {
         answer: responseText,
         submittedAt: new Date().toISOString(),
         grade,
+        gradeMode: 'ai',
         gradedArtifactId: cardId,
       });
       setRevealedCards((current) => new Set(current).add(cardId));
-    } catch {
+    } catch (error) {
+      coach.recordReviewAttempt({
+        id: `review_attempt_${crypto.randomUUID()}`,
+        problemSlug: problem?.slug ?? problemSlug,
+        problemContentVersion,
+        answer: responseText,
+        submittedAt: new Date().toISOString(),
+        gradeMode: 'manual_fallback',
+        gradeErrorCode:
+          error instanceof ReviewGradeRequestError ? error.safeCode : 'unknown',
+        gradedArtifactId: cardId,
+      });
       toast.error(t.gradeFailed);
     } finally {
       setGradingCardId(null);
@@ -494,9 +549,12 @@ export function ReviewPage() {
                     (attempt) => attempt.gradedArtifactId === String(cardId)
                   );
                 const grade = savedAttempt?.grade;
+                const manualFallback =
+                  savedAttempt?.gradeMode === 'manual_fallback' && !grade;
                 const revealed =
                   !structuredCard ||
                   Boolean(grade) ||
+                  Boolean(manualFallback && savedAttempt?.selectedRating) ||
                   revealedCards.has(String(cardId));
                 return (
                   <article
@@ -563,6 +621,27 @@ export function ReviewPage() {
                             ? t.grading
                             : t.gradeRecall}
                         </Button>
+                        {manualFallback ? (
+                          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+                            <p className="text-xs leading-5 text-amber-800 dark:text-amber-200">
+                              {t.manualFallback}
+                            </p>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="mt-3"
+                              onClick={() =>
+                                setRevealedCards((current) =>
+                                  new Set(current).add(String(cardId))
+                                )
+                              }
+                            >
+                              <Eye />
+                              {t.skipGrade}
+                            </Button>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                     {structuredCard && revealed ? (

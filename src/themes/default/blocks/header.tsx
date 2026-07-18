@@ -90,20 +90,22 @@ export function Header({ header }: { header: HeaderType }) {
           {header.nav?.items?.map((item, idx) => {
             if (!item.children || item.children.length === 0) {
               return (
-                <NavigationMenuLink key={idx} asChild>
-                  <Link
-                    href={item.url || ''}
-                    target={item.target || '_self'}
-                    className={`flex flex-row items-center gap-2 px-4 py-1.5 text-sm ${
-                      item.is_active || pathname.endsWith(item.url as string)
-                        ? 'bg-muted/40 text-muted-foreground'
-                        : ''
-                    }`}
-                  >
-                    {item.icon && <SmartIcon name={item.icon as string} />}
-                    {item.title}
-                  </Link>
-                </NavigationMenuLink>
+                <NavigationMenuItem key={idx}>
+                  <NavigationMenuLink asChild>
+                    <Link
+                      href={item.url || ''}
+                      target={item.target || '_self'}
+                      className={`flex flex-row items-center gap-2 px-4 py-1.5 text-sm ${
+                        item.is_active || pathname.endsWith(item.url as string)
+                          ? 'bg-muted/40 text-muted-foreground'
+                          : ''
+                      }`}
+                    >
+                      {item.icon && <SmartIcon name={item.icon as string} />}
+                      {item.title}
+                    </Link>
+                  </NavigationMenuLink>
+                </NavigationMenuItem>
               );
             }
 

@@ -15,10 +15,11 @@ import {
   getScopedStorageKey,
   loadCoachState,
   loadImportedProblem,
+  loadPendingGuestCoachClaim,
   saveCoachState,
   saveImportedProblem,
 } from './storage';
-import { CoachProvider, useCoachStore } from './store';
+import { CoachProvider, resolveBrowserTimeZone, useCoachStore } from './store';
 import { getPracticeSessionKey } from './sync';
 import {
   CodeRunResult,
@@ -120,6 +121,7 @@ describe('CoachProvider persistence', () => {
       configurable: true,
       value: createMemoryStorage(),
     });
+    document.cookie = 'algocoach_guest_id=; Path=/; Max-Age=0; SameSite=Lax';
   });
 
   afterEach(() => {
@@ -305,6 +307,30 @@ describe('CoachProvider persistence', () => {
         })
       );
     });
+  });
+
+  it('flushes the latest code snapshot synchronously before page exit', async () => {
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems}>{children}</CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+
+    act(() => {
+      result.current.flushCodeSnapshot(
+        'dependency-cycle',
+        'javascript',
+        'function dependencyCycle() { return false; }',
+        1
+      );
+    });
+
+    const persisted = loadCoachState();
+    expect(
+      persisted.sessions[getPracticeSessionKey('dependency-cycle', 1)]?.code
+        .javascript
+    ).toContain('return false');
   });
 
   it('clears the active draft when the final private draft is deleted', async () => {
@@ -530,6 +556,263 @@ describe('CoachProvider persistence', () => {
     expect(loadCoachState(storage).profile?.goal).toBe('contest');
   });
 
+  it('clears guest data only after the durable claim ACK', async () => {
+    const guest = createInitialCoachState();
+    guest.profile = {
+      goal: 'interview',
+      preferredLanguage: 'javascript',
+      weeklyTarget: 5,
+      onboardedAt: '2026-07-18T00:00:00.000Z',
+      timeZone: 'Pacific/Auckland',
+    };
+    saveCoachState(guest);
+    const scope = createCoachStorageScope('durable-user');
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          const envelope = JSON.parse(String(init.body)) as { claimId: string };
+          return Response.json({
+            data: {
+              claimId: envelope.claimId,
+              status: 'acknowledged',
+              revision: 1,
+              replayed: false,
+            },
+          });
+        }
+        return Response.json({
+          data: {
+            state: guest,
+            importedProblem: null,
+            importedDrafts: [],
+            reviewProgress: { version: 2, items: {} },
+            revision: 1,
+          },
+        });
+      }
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems} storageScope={scope}>
+          {children}
+        </CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    await waitFor(() => expect(loadPendingGuestCoachClaim(scope)).toBeNull());
+
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe('POST');
+    expect(loadCoachState().profile).toBeNull();
+    expect(loadCoachState(undefined, scope).profile?.goal).toBe('interview');
+  });
+
+  it('does not upload a guest snapshot through normal sync after claim conflict', async () => {
+    const guest = createInitialCoachState();
+    guest.profile = {
+      goal: 'interview',
+      preferredLanguage: 'javascript',
+      weeklyTarget: 5,
+      onboardedAt: '2026-07-18T00:00:00.000Z',
+      timeZone: 'Pacific/Auckland',
+    };
+    saveCoachState(guest);
+    const scope = createCoachStorageScope('conflicting-user');
+    const empty = createInitialCoachState();
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/api/coach/state/claim')) {
+          return Response.json(
+            { error: { code: 'guest_already_claimed' } },
+            { status: 409 }
+          );
+        }
+        if (url.endsWith('/api/coach/state') && !init?.method) {
+          return Response.json({
+            data: {
+              state: empty,
+              importedProblem: null,
+              importedDrafts: [],
+              reviewProgress: { version: 2, items: {} },
+              revision: 0,
+            },
+          });
+        }
+        return Response.json({}, { status: 500 });
+      }
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems} storageScope={scope}>
+          {children}
+        </CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    await waitFor(() => expect(result.current.syncStatus).toBe('error'));
+
+    expect(loadPendingGuestCoachClaim(scope)).not.toBeNull();
+    expect(loadCoachState().profile?.goal).toBe('interview');
+    expect(loadCoachState(undefined, scope).profile).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([input, init]) =>
+          String(input).endsWith('/api/coach/state') &&
+          (init as RequestInit | undefined)?.method === 'PATCH'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('replays the same pending claim when the browser comes back online', async () => {
+    const guest = createInitialCoachState();
+    guest.completedProblemIds = ['two-value-target'];
+    saveCoachState(guest);
+    const scope = createCoachStorageScope('offline-claim-user');
+    const empty = createInitialCoachState();
+    let claimAvailable = false;
+    const claimIds: string[] = [];
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/api/coach/state/claim')) {
+          const envelope = JSON.parse(String(init?.body)) as {
+            claimId: string;
+          };
+          claimIds.push(envelope.claimId);
+          if (!claimAvailable) {
+            return Response.json(
+              { error: { code: 'guest_claim_failed' } },
+              { status: 503 }
+            );
+          }
+          return Response.json({
+            data: {
+              claimId: envelope.claimId,
+              status: 'acknowledged',
+              revision: 1,
+              replayed: false,
+            },
+          });
+        }
+        return Response.json({
+          data: {
+            state: claimAvailable ? guest : empty,
+            importedProblem: null,
+            importedDrafts: [],
+            reviewProgress: { version: 2, items: {} },
+            revision: claimAvailable ? 1 : 0,
+          },
+        });
+      }
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems} storageScope={scope}>
+          {children}
+        </CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.syncStatus).toBe('error'));
+    expect(loadPendingGuestCoachClaim(scope)).not.toBeNull();
+
+    claimAvailable = true;
+    act(() => window.dispatchEvent(new Event('online')));
+    await waitFor(() => expect(loadPendingGuestCoachClaim(scope)).toBeNull());
+    expect(claimIds).toHaveLength(2);
+    expect(new Set(claimIds).size).toBe(1);
+    expect(loadCoachState(undefined, scope).completedProblemIds).toContain(
+      'two-value-target'
+    );
+  });
+
+  it('keeps guest data and queued events until claim ACK delivery is drained', async () => {
+    const guest = createInitialCoachState();
+    guest.completedProblemIds = ['two-value-target'];
+    saveCoachState(guest);
+    window.localStorage.setItem(
+      'algocoach:anonymous-event-outbox:v1',
+      JSON.stringify([
+        {
+          id: 'event_pending_claim_123',
+          name: 'first_problem_passed',
+          timestamp: new Date().toISOString(),
+          problemSlug: 'two-value-target',
+        },
+      ])
+    );
+    document.cookie =
+      'algocoach_guest_id=guest_pending_claim_123; Path=/; SameSite=Lax';
+    const scope = createCoachStorageScope('event-drain-user');
+    let eventEndpointAvailable = false;
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/api/coach/events/batch')) {
+          return new Response(null, {
+            status: eventEndpointAvailable ? 202 : 503,
+          });
+        }
+        if (url.endsWith('/api/coach/state/claim')) {
+          const envelope = JSON.parse(String(init?.body)) as {
+            claimId: string;
+          };
+          return Response.json({
+            data: {
+              claimId: envelope.claimId,
+              status: 'acknowledged',
+              revision: 1,
+              replayed: eventEndpointAvailable,
+            },
+          });
+        }
+        return Response.json({
+          data: {
+            state: guest,
+            importedProblem: null,
+            importedDrafts: [],
+            reviewProgress: { version: 2, items: {} },
+            revision: 1,
+          },
+        });
+      }
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems} storageScope={scope}>
+          {children}
+        </CoachProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    await waitFor(() => expect(result.current.syncStatus).toBe('error'));
+    expect(loadPendingGuestCoachClaim(scope)).not.toBeNull();
+    expect(loadCoachState().completedProblemIds).toContain('two-value-target');
+    expect(
+      window.localStorage.getItem('algocoach:anonymous-event-outbox:v1')
+    ).not.toBeNull();
+
+    eventEndpointAvailable = true;
+    act(() => result.current.retrySync());
+    await waitFor(() => expect(loadPendingGuestCoachClaim(scope)).toBeNull());
+    expect(loadCoachState().completedProblemIds).not.toContain(
+      'two-value-target'
+    );
+    expect(
+      window.localStorage.getItem('algocoach:anonymous-event-outbox:v1')
+    ).toBeNull();
+    expect(
+      window.localStorage.getItem('algocoach:anonymous-event-checkpoint:v1')
+    ).toBeNull();
+  });
+
   it('hydrates signed-in learning data before an initial cloud request settles', async () => {
     const scope = createCoachStorageScope('slow-cloud-account');
     const local = createInitialCoachState();
@@ -555,6 +838,72 @@ describe('CoachProvider persistence', () => {
     );
 
     unmount();
+  });
+
+  it('corrects a migrated UTC profile to the browser IANA time zone', async () => {
+    const resolvedOptions = vi
+      .spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions')
+      .mockReturnValue({
+        locale: 'en',
+        calendar: 'gregory',
+        numberingSystem: 'latn',
+        timeZone: 'Pacific/Auckland',
+      });
+    expect(resolveBrowserTimeZone()).toBe('Pacific/Auckland');
+    const scope = createCoachStorageScope('migrated-zone-user');
+    const stored = createInitialCoachState();
+    stored.profile = {
+      goal: 'foundation',
+      preferredLanguage: 'javascript',
+      weeklyTarget: 3,
+      onboardedAt: '2026-07-01T00:00:00.000Z',
+      timeZone: 'UTC',
+    };
+    saveCoachState(stored, undefined, scope);
+    const patchBodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'PATCH') {
+          patchBodies.push(String(init.body));
+          const request = JSON.parse(String(init.body)) as {
+            mutations?: Array<{ id: string }>;
+          };
+          return Response.json({
+            data: {
+              revision: 2,
+              appliedMutationIds:
+                request.mutations?.map((mutation) => mutation.id) ?? [],
+              replayedMutationIds: [],
+            },
+          });
+        }
+        return Response.json({
+          data: {
+            state: stored,
+            importedProblem: null,
+            importedDrafts: [],
+            reviewProgress: { version: 2, items: {} },
+            revision: 1,
+          },
+        });
+      })
+    );
+
+    const { result } = renderHook(() => useCoachStore(), {
+      wrapper: ({ children }) => (
+        <CoachProvider problems={problems} storageScope={scope}>
+          {children}
+        </CoachProvider>
+      ),
+    });
+    await waitFor(() =>
+      expect(result.current.state.profile?.timeZone).toBe('Pacific/Auckland')
+    );
+    await waitFor(() =>
+      expect(patchBodies.join('\n')).toContain('Pacific/Auckland')
+    );
+    resolvedOptions.mockRestore();
   });
 
   it('classifies an initial cloud timeout without discarding cached data', async () => {

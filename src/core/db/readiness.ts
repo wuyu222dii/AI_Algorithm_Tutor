@@ -41,6 +41,16 @@ const BOOLEAN_FEATURE_FLAGS = [
   'DB_CATALOG_ENABLED',
   'CATALOG_SYNC_ENABLED',
   'TYPESCRIPT_ENABLED',
+  'DURABLE_GUEST_CLAIM_ENABLED',
+  'NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED',
+  'ANONYMOUS_METRICS_ENABLED',
+  'SUMMARY_CATALOG_ENABLED',
+] as const;
+const REQUIRED_PRODUCTION_ROLLOUT_FLAGS = [
+  'DURABLE_GUEST_CLAIM_ENABLED',
+  'NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED',
+  'ANONYMOUS_METRICS_ENABLED',
+  'SUMMARY_CATALOG_ENABLED',
 ] as const;
 
 type ReadinessFetch = (
@@ -88,6 +98,30 @@ function isHttpsUrl(value: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+function isHttpsOrigin(value: string | undefined): boolean {
+  if (!value?.trim()) return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      (url.pathname === '' || url.pathname === '/')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isProductionSupportEmail(value: string | undefined): boolean {
+  const email = value?.trim().toLowerCase();
+  if (!email || email.length > 254) return false;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return false;
+  return !email.endsWith('.example') && email !== 'support@algocoach.example';
 }
 
 function invalidCoachModelSettings(env: NodeJS.ProcessEnv): string[] {
@@ -199,12 +233,42 @@ export function checkRequiredConfiguration(
   ) {
     invalid.push('CATALOG_SYNC_ENABLED');
   }
+  if (
+    env.DURABLE_GUEST_CLAIM_ENABLED !==
+    env.NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED
+  ) {
+    invalid.push('NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED');
+  }
+  if (
+    env.ANONYMOUS_METRICS_HMAC_SECRET?.trim() &&
+    env.ANONYMOUS_METRICS_HMAC_SECRET.trim().length < 32
+  ) {
+    invalid.push('ANONYMOUS_METRICS_HMAC_SECRET');
+  }
   if (production && env.DB_CATALOG_ENABLED === 'false') {
     invalid.push('DB_CATALOG_ENABLED');
   }
 
   if (production) {
+    for (const name of REQUIRED_PRODUCTION_ROLLOUT_FLAGS) {
+      if (!['true', 'false'].includes(env[name] ?? '')) missing.push(name);
+    }
+    if (!env.NEXT_PUBLIC_APP_URL?.trim()) {
+      missing.push('NEXT_PUBLIC_APP_URL');
+    } else if (!isHttpsOrigin(env.NEXT_PUBLIC_APP_URL)) {
+      invalid.push('NEXT_PUBLIC_APP_URL');
+    }
     if (!env.AUTH_URL?.trim()) missing.push('AUTH_URL');
+    if (env.AUTH_URL?.trim() && !isHttpsOrigin(env.AUTH_URL)) {
+      invalid.push('AUTH_URL');
+    }
+    if (
+      isHttpsOrigin(env.NEXT_PUBLIC_APP_URL) &&
+      isHttpsOrigin(env.AUTH_URL) &&
+      new URL(env.NEXT_PUBLIC_APP_URL!).origin !== new URL(env.AUTH_URL!).origin
+    ) {
+      invalid.push('AUTH_URL');
+    }
     if (!env.AUTH_SECRET?.trim() || env.AUTH_SECRET.trim().length < 32) {
       invalid.push('AUTH_SECRET');
     }
@@ -217,15 +281,41 @@ export function checkRequiredConfiguration(
     if (!trustedProxyHeaders.length) {
       missing.push('TRUSTED_PROXY_HEADERS');
     } else if (
-      !trustedProxyHeaders.some((header) =>
-        TRUSTED_PROXY_HEADER_ALLOWLIST.has(header)
-      )
+      trustedProxyHeaders.length !== 1 ||
+      !TRUSTED_PROXY_HEADER_ALLOWLIST.has(trustedProxyHeaders[0])
     ) {
       invalid.push('TRUSTED_PROXY_HEADERS');
     }
     if (env.DB_AUTO_MIGRATE === 'true') invalid.push('DB_AUTO_MIGRATE');
     if (env.GOOGLE_AUTH_ENABLED !== 'true') invalid.push('GOOGLE_AUTH_ENABLED');
+    if (env.GOOGLE_ONE_TAP_ENABLED !== 'false') {
+      invalid.push('GOOGLE_ONE_TAP_ENABLED');
+    }
+    if (env.GITHUB_AUTH_ENABLED !== 'false') {
+      invalid.push('GITHUB_AUTH_ENABLED');
+    }
     if (!env.SENTRY_DSN?.trim()) missing.push('SENTRY_DSN');
+    if (!env.NEXT_PUBLIC_SENTRY_DSN?.trim()) {
+      missing.push('NEXT_PUBLIC_SENTRY_DSN');
+    }
+    if (!isProductionSupportEmail(env.NEXT_PUBLIC_SUPPORT_EMAIL)) {
+      invalid.push('NEXT_PUBLIC_SUPPORT_EMAIL');
+    }
+    if (!['true', 'false'].includes(env.EMAIL_AUTH_ENABLED ?? '')) {
+      invalid.push('EMAIL_AUTH_ENABLED');
+    }
+    if (env.EMAIL_AUTH_ENABLED !== 'false') {
+      invalid.push('EMAIL_AUTH_ENABLED');
+    }
+    if (env.EMAIL_AUTH_ENABLED === 'true') {
+      if (env.EMAIL_VERIFICATION_ENABLED !== 'true') {
+        invalid.push('EMAIL_VERIFICATION_ENABLED');
+      }
+      if (!env.RESEND_API_KEY?.trim()) missing.push('RESEND_API_KEY');
+      if (!env.RESEND_SENDER_EMAIL?.trim()) {
+        missing.push('RESEND_SENDER_EMAIL');
+      }
+    }
     if (!relay.baseURL) missing.push('AI_RELAY_BASE_URL');
     if (!primary) missing.push('AI_RELAY_PRIMARY_MODEL');
     if (!fallback) missing.push('AI_RELAY_FALLBACK_MODEL');
@@ -269,7 +359,11 @@ export function checkRequiredConfiguration(
     }
   }
 
-  if (env.AUTH_URL?.trim() && !isHttpUrl(env.AUTH_URL)) {
+  if (
+    env.AUTH_URL?.trim() &&
+    !isHttpUrl(env.AUTH_URL) &&
+    !invalid.includes('AUTH_URL')
+  ) {
     invalid.push('AUTH_URL');
   }
   if (env.REDIS_URL?.trim() && !isSafeRedisRestUrl(env.REDIS_URL, env)) {
@@ -288,6 +382,12 @@ export function checkRequiredConfiguration(
   }
   if (env.SENTRY_DSN?.trim() && !isHttpUrl(env.SENTRY_DSN)) {
     invalid.push('SENTRY_DSN');
+  }
+  if (
+    env.NEXT_PUBLIC_SENTRY_DSN?.trim() &&
+    !isHttpUrl(env.NEXT_PUBLIC_SENTRY_DSN)
+  ) {
+    invalid.push('NEXT_PUBLIC_SENTRY_DSN');
   }
   if (env.AI_RELAY_PRICING_JSON?.trim() && !relayPricing) {
     invalid.push('AI_RELAY_PRICING_JSON');

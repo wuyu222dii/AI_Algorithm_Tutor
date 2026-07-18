@@ -1,14 +1,122 @@
-import { ComponentType, lazy, Suspense } from 'react';
+import type { SVGProps } from 'react';
+import {
+  Activity,
+  ArrowLeft,
+  ArrowRight,
+  BookOpen,
+  Bot,
+  BrainCircuit,
+  Bug,
+  ChartNoAxesColumn,
+  ChartNoAxesCombined,
+  CircleHelp,
+  ClipboardCheck,
+  Code2,
+  FileText,
+  FlaskConical,
+  Folder,
+  Github,
+  HelpCircle,
+  History,
+  Home,
+  House,
+  Info,
+  Layers3,
+  Library,
+  LibraryBig,
+  Lightbulb,
+  ListChecks,
+  Mail,
+  Menu,
+  MessagesSquare,
+  Newspaper,
+  NotebookTabs,
+  Play,
+  Plus,
+  Route,
+  ScanSearch,
+  Settings,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  Stethoscope,
+  Target,
+  User,
+  UserRound,
+  Users,
+} from 'lucide-react';
+import {
+  RiChat2Line,
+  RiDiscordFill,
+  RiFlashlightFill,
+  RiQuestionLine,
+  RiTaskLine,
+  RiTwitterXFill,
+} from 'react-icons/ri';
 
-const iconCache: { [key: string]: ComponentType<any> } = {};
+const LUCIDE_ICONS = {
+  Activity,
+  ArrowLeft,
+  ArrowRight,
+  BookOpen,
+  Bot,
+  BrainCircuit,
+  Bug,
+  ChartNoAxesColumn,
+  ChartNoAxesCombined,
+  CircleHelp,
+  ClipboardCheck,
+  Code2,
+  FileText,
+  FlaskConical,
+  Folder,
+  Github,
+  HelpCircle,
+  History,
+  Home,
+  House,
+  Info,
+  Layers3,
+  Library,
+  LibraryBig,
+  Lightbulb,
+  ListChecks,
+  Mail,
+  Menu,
+  MessagesSquare,
+  Newspaper,
+  NotebookTabs,
+  Play,
+  Plus,
+  Route,
+  ScanSearch,
+  Settings,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  Stethoscope,
+  Target,
+  User,
+  UserRound,
+  Users,
+} as const;
 
-// Function to automatically detect icon library
-function detectIconLibrary(name: string): 'ri' | 'lucide' {
-  if (name && name.startsWith('Ri')) {
-    return 'ri';
-  }
+const REMIX_ICONS = {
+  RiChat2Line,
+  RiDiscordFill,
+  RiFlashlightFill,
+  RiQuestionLine,
+  RiTaskLine,
+  RiTwitterXFill,
+} as const;
 
-  return 'lucide';
+export type SmartIconName =
+  | keyof typeof LUCIDE_ICONS
+  | keyof typeof REMIX_ICONS;
+
+export interface SmartIconProps extends SVGProps<SVGSVGElement> {
+  name: string;
+  size?: number;
 }
 
 export function SmartIcon({
@@ -16,66 +124,14 @@ export function SmartIcon({
   size = 24,
   className,
   ...props
-}: {
-  name: string;
-  size?: number;
-  className?: string;
-  [key: string]: any;
-}) {
-  const library = detectIconLibrary(name);
-  const cacheKey = `${library}-${name}`;
-
-  if (!iconCache[cacheKey]) {
-    if (library === 'ri') {
-      // React Icons (Remix Icons)
-      iconCache[cacheKey] = lazy(async () => {
-        try {
-          const module = await import('react-icons/ri');
-          const IconComponent = module[name as keyof typeof module];
-          if (IconComponent) {
-            return { default: IconComponent as ComponentType<any> };
-          } else {
-            console.warn(
-              `Icon "${name}" not found in react-icons/ri, using fallback`
-            );
-            return { default: module.RiQuestionLine as ComponentType<any> };
-          }
-        } catch (error) {
-          console.error(`Failed to load react-icons/ri:`, error);
-          const fallbackModule = await import('react-icons/ri');
-          return {
-            default: fallbackModule.RiQuestionLine as ComponentType<any>,
-          };
-        }
-      });
-    } else {
-      // Lucide React (default)
-      iconCache[cacheKey] = lazy(async () => {
-        try {
-          const module = await import('lucide-react');
-          const IconComponent = module[name as keyof typeof module];
-          if (IconComponent) {
-            return { default: IconComponent as ComponentType<any> };
-          } else {
-            console.warn(
-              `Icon "${name}" not found in lucide-react, using fallback`
-            );
-            return { default: module.HelpCircle as ComponentType<any> };
-          }
-        } catch (error) {
-          console.error(`Failed to load lucide-react:`, error);
-          const fallbackModule = await import('lucide-react');
-          return { default: fallbackModule.HelpCircle as ComponentType<any> };
-        }
-      });
-    }
+}: SmartIconProps) {
+  if (name.startsWith('Ri')) {
+    const IconComponent =
+      REMIX_ICONS[name as keyof typeof REMIX_ICONS] ?? RiQuestionLine;
+    return <IconComponent size={size} className={className} {...props} />;
   }
 
-  const IconComponent = iconCache[cacheKey];
-
-  return (
-    <Suspense fallback={<div style={{ width: size, height: size }} />}>
-      <IconComponent size={size} className={className} {...props} />
-    </Suspense>
-  );
+  const IconComponent =
+    LUCIDE_ICONS[name as keyof typeof LUCIDE_ICONS] ?? HelpCircle;
+  return <IconComponent size={size} className={className} {...props} />;
 }

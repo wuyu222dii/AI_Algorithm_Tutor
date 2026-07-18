@@ -73,6 +73,7 @@ describe('GET /api/problems/[slug]', () => {
     expect(body.data.tests).toEqual([
       expect.objectContaining({ id: 'sample-1', isSample: true }),
     ]);
+    expect(body.data.supportedLanguages).toEqual(['javascript', 'typescript']);
     expect(JSON.stringify(body)).not.toContain('hidden-1');
     expect(JSON.stringify(body)).not.toContain('42');
   });

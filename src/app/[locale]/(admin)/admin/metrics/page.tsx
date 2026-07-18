@@ -161,6 +161,63 @@ export default async function BetaMetricsPage({
                 ))}
               </div>
             ) : null}
+            {metrics.ai.byActionModelError.length ? (
+              <div className="divide-y rounded-md border">
+                {metrics.ai.byActionModelError.map((item) => (
+                  <div
+                    key={`${item.action}:${item.model}:${item.errorCode ?? 'ok'}`}
+                    className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 text-xs"
+                  >
+                    <span className="truncate font-medium">{item.action}</span>
+                    <span className="text-muted-foreground truncate">
+                      {item.model}
+                      {item.errorCode ? ` · ${item.errorCode}` : ''}
+                    </span>
+                    <span className="tabular-nums">{item.requests}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </section>
+
+          <section aria-labelledby="visitor-funnel-title" className="space-y-4">
+            <div className="flex items-center gap-2 border-b pb-3">
+              <Users className="text-primary size-4" />
+              <h2 id="visitor-funnel-title" className="text-sm font-semibold">
+                {zh ? '访客漏斗' : 'Visitor funnel'}
+              </h2>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <Metric
+                label={zh ? '匿名访客' : 'Anonymous visitors'}
+                value={compactNumber(metrics.anonymousFunnel.visitors, locale)}
+                detail={`${metrics.anonymousFunnel.persistedEvents} ${zh ? '条安全事件' : 'safe events'}`}
+                icon={<Users className="size-4" />}
+              />
+              <Metric
+                label={zh ? '认领访客' : 'Claimed visitors'}
+                value={compactNumber(
+                  metrics.anonymousFunnel.claimedVisitors,
+                  locale
+                )}
+                icon={<RefreshCw className="size-4" />}
+              />
+              <Metric
+                label={zh ? '访客注册转化' : 'Guest conversion'}
+                value={percent(metrics.anonymousFunnel.guestConversionRate)}
+                icon={<TrendingUp className="size-4" />}
+              />
+              <Metric
+                label={zh ? '事件确认落库率' : 'Confirmed event delivery'}
+                value={percent(metrics.anonymousFunnel.eventLandingRate)}
+                icon={<Activity className="size-4" />}
+                accent={
+                  metrics.anonymousFunnel.eventLandingRate >= 0.99
+                    ? 'success'
+                    : 'amber'
+                }
+              />
+            </div>
           </section>
 
           <section

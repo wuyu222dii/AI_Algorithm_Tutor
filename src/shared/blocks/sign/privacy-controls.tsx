@@ -71,6 +71,12 @@ function clearAccountCache(userId: string) {
       if (key?.includes(marker)) storage.removeItem(key);
     }
   }
+  const ownerKey = 'algocoach:guest-claimed-by:v1';
+  if (window.localStorage.getItem(ownerKey) === `user:${userId}`) {
+    window.localStorage.removeItem(ownerKey);
+  }
+  const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `algocoach_guest_id=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
 }
 
 function collectAccountCache(userId: string) {

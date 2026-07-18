@@ -18,6 +18,7 @@ import type {
   ProblemExample,
   ProblemFunctionSignature,
   ProblemLanguageConfig,
+  ProblemSummary,
   ProblemTemplates,
   TestCase,
 } from './types';
@@ -39,6 +40,8 @@ export interface PublishedProblem extends Problem {
   origin?: ProblemOriginMetadata;
 }
 
+export type PublishedProblemSummary = ProblemSummary;
+
 export interface PublishedProblemQuery {
   difficulty?: Difficulty;
   topic?: string;
@@ -48,6 +51,64 @@ export interface PublishedProblemQuery {
 }
 
 type ProblemRow = Awaited<ReturnType<typeof selectProblemRows>>[number];
+
+function selectProblemSummaryRows(options: PublishedProblemQuery = {}) {
+  const conditions: SQL[] = [
+    isNull(coachProblem.ownerUserId),
+    eq(coachProblem.status, 'published'),
+    eq(coachProblemRevision.id, coachProblem.currentRevisionId),
+    eq(coachProblemRevision.status, 'published'),
+  ];
+  if (options.difficulty) {
+    conditions.push(eq(coachProblemRevision.difficulty, options.difficulty));
+  }
+  if (options.topic) {
+    conditions.push(
+      sql`${options.topic} = any(${coachProblemRevision.topics})`
+    );
+  }
+  if (options.language) {
+    conditions.push(
+      sql`${coachProblemRevision.languageConfigs} ? ${options.language}`
+    );
+  }
+  if (options.afterSlug) {
+    conditions.push(gt(coachProblem.slug, options.afterSlug));
+  }
+
+  let query = dbPostgres()
+    .select({
+      id: coachProblem.id,
+      slug: coachProblem.slug,
+      title: coachProblemRevision.title,
+      description: coachProblemRevision.description,
+      difficulty: coachProblemRevision.difficulty,
+      topics: coachProblemRevision.topics,
+      estimatedMinutes: coachProblemRevision.estimatedMinutes,
+      contentVersion: coachProblemRevision.version,
+      catalogVersion: coachProblemRevision.catalogVersion,
+      supportedLanguages: sql<Language[]>`
+        ARRAY(
+          SELECT jsonb_object_keys(${coachProblemRevision.languageConfigs})
+          ORDER BY 1
+        )
+      `,
+    })
+    .from(coachProblem)
+    .innerJoin(
+      coachProblemRevision,
+      eq(coachProblemRevision.problemId, coachProblem.id)
+    )
+    .where(and(...conditions))
+    .orderBy(asc(coachProblem.slug));
+
+  if (options.limit !== undefined) {
+    query = query.limit(
+      Math.max(1, Math.min(100, options.limit))
+    ) as typeof query;
+  }
+  return query;
+}
 
 function selectProblemRows(
   options: PublishedProblemQuery = {},
@@ -271,6 +332,28 @@ export async function listPublishedProblems(
   options: PublishedProblemQuery = {}
 ): Promise<PublishedProblem[]> {
   return hydrateRows(await selectProblemRows(options));
+}
+
+export async function listPublishedProblemSummaries(
+  options: PublishedProblemQuery = {}
+): Promise<PublishedProblemSummary[]> {
+  const rows = await selectProblemSummaryRows(options);
+  return rows.map((row) => ({
+    id: row.id,
+    slug: row.slug,
+    title: row.title as ProblemSummary['title'],
+    description: row.description as ProblemSummary['description'],
+    difficulty: row.difficulty as Difficulty,
+    topics: row.topics,
+    estimatedMinutes: row.estimatedMinutes,
+    contentVersion: row.contentVersion,
+    catalogVersion: row.catalogVersion ?? undefined,
+    version: {
+      contentVersion: row.contentVersion,
+      catalogVersion: row.catalogVersion ?? undefined,
+    },
+    supportedLanguages: row.supportedLanguages,
+  }));
 }
 
 export async function getPublishedProblemBySlug(

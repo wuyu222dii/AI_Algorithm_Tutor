@@ -612,6 +612,37 @@ describe('coach incremental sync', () => {
     );
   });
 
+  it('retains assessment, plan, review, and correction deltas during compaction', () => {
+    const first = {
+      id: 'rich-delta-1',
+      baseRevision: 3,
+      createdAt: '2026-07-15T00:00:00.000Z',
+      changes: {
+        activeAssessment: null,
+        assessments: [{ id: 'assessment-1' }],
+        dailyPlans: { '2026-07-15': { id: 'plan-1' } },
+        reviewAttempts: [{ id: 'review-1' }],
+        correctionEpisodes: [{ id: 'correction-1' }],
+      },
+    } as unknown as CoachSyncMutation;
+    const second = {
+      id: 'rich-delta-2',
+      baseRevision: 4,
+      createdAt: '2026-07-15T00:01:00.000Z',
+      changes: {},
+    } as CoachSyncMutation;
+
+    const [compacted] = compactCoachSyncQueue([first, second]);
+
+    expect(compacted.changes).toMatchObject({
+      activeAssessment: null,
+      assessments: [{ id: 'assessment-1' }],
+      dailyPlans: { '2026-07-15': { id: 'plan-1' } },
+      reviewAttempts: [{ id: 'review-1' }],
+      correctionEpisodes: [{ id: 'correction-1' }],
+    });
+  });
+
   it('persists the compacted queue when the raw offline history exceeds quota', () => {
     const storage = memoryStorage(5_000);
     const scope = createCoachStorageScope('quota-account');

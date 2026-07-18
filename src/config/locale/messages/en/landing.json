@@ -69,7 +69,7 @@
         {
           "title": "Email",
           "icon": "Mail",
-          "url": "mailto:support@algocoach.example",
+          "url": "/support",
           "target": "_self"
         }
       ]
