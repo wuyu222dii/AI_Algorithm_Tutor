@@ -46,6 +46,7 @@ const contentSecurityPolicy = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  transpilePackages: ['next-mdx-remote'],
   distDir: process.env.NEXT_DIST_DIR || '.next',
   output: process.env.VERCEL ? undefined : 'standalone',
   reactStrictMode: false,
