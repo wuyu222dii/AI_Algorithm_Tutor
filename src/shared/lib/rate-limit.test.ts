@@ -22,6 +22,10 @@ describe('window rate limiting', () => {
     vi.restoreAllMocks();
     delete process.env.REDIS_URL;
     delete process.env.REDIS_TOKEN;
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
     delete process.env.TRUSTED_PROXY_HEADERS;
   });
 
@@ -161,5 +165,27 @@ describe('window rate limiting', () => {
       error: { name: 'Error' },
     });
     expect(String(errorLog.mock.calls[0]?.[0])).not.toContain('offline');
+  });
+
+  it('fails closed without Redis instead of accumulating local counters', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const response = await enforceDistributedWindowRateLimit(createRequest(), {
+      windowMs: 60_000,
+      max: 2,
+      keyPrefix: 'shared-test',
+      identity: 'source',
+      failClosed: true,
+    });
+
+    expect(response?.status).toBe(503);
+    await expect(response?.json()).resolves.toMatchObject({
+      error: 'rate_limit_unavailable',
+    });
+    expect(errorLog).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(errorLog.mock.calls[0]?.[0]))).toMatchObject({
+      event: 'rate_limit_backend_failed',
+      reason: 'not_configured',
+    });
   });
 });

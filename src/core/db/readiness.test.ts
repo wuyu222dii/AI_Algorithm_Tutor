@@ -405,17 +405,57 @@ describe('health checks', () => {
   it('probes configured Redis without exposing credentials', async () => {
     const fetcher = vi
       .fn()
-      .mockResolvedValue(Response.json({ result: 'PONG' }));
+      .mockResolvedValueOnce(Response.json({ result: 'PONG' }))
+      .mockResolvedValueOnce(Response.json({ result: 1 }));
     const result = await checkRedisReadiness(validProductionEnv, fetcher);
 
     expect(result).toMatchObject({
       status: 'ok',
-      details: { mode: 'distributed' },
+      details: { mode: 'distributed', evalReady: true, source: 'redis' },
     });
-    expect(fetcher).toHaveBeenCalledOnce();
-    const [, init] = fetcher.mock.calls[0] as [string, RequestInit];
-    expect(init.body).toBe(JSON.stringify(['PING']));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const [, pingInit] = fetcher.mock.calls[0] as [string, RequestInit];
+    const [, evalInit] = fetcher.mock.calls[1] as [string, RequestInit];
+    expect(pingInit.body).toBe(JSON.stringify(['PING']));
+    expect(evalInit.body).toBe(JSON.stringify(['EVAL', 'return 1', '0']));
     expect(JSON.stringify(result)).not.toContain('test-redis-token');
+  });
+
+  it('accepts provider-managed Redis REST aliases', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ result: 'PONG' }))
+      .mockResolvedValueOnce(Response.json({ result: 1 }));
+    const result = await checkRedisReadiness(
+      {
+        ...validProductionEnv,
+        REDIS_URL: '',
+        REDIS_TOKEN: '',
+        UPSTASH_REDIS_REST_URL: 'https://upstash.example.test',
+        UPSTASH_REDIS_REST_TOKEN: 'upstash-token',
+      },
+      fetcher
+    );
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      details: { source: 'upstash', evalReady: true },
+    });
+  });
+
+  it('fails readiness when Redis cannot execute Lua', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ result: 'PONG' }))
+      .mockResolvedValueOnce(new Response(null, { status: 403 }));
+
+    await expect(
+      checkRedisReadiness(validProductionEnv, fetcher)
+    ).resolves.toMatchObject({
+      status: 'error',
+      code: 'redis_eval_unavailable',
+      details: { httpStatus: 403 },
+    });
   });
 
   it('fails the Redis dependency check in production when it is unavailable', async () => {
@@ -507,7 +547,10 @@ describe('health checks', () => {
       },
       undefined,
       {
-        fetch: vi.fn().mockResolvedValue(Response.json({ result: 'PONG' })),
+        fetch: vi.fn().mockImplementation(async (_url, init) => {
+          const command = JSON.parse(String(init?.body)) as string[];
+          return Response.json({ result: command[0] === 'PING' ? 'PONG' : 1 });
+        }),
       }
     );
 

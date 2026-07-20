@@ -3,6 +3,10 @@ import { resolveAiRelayEnvironment } from '@/features/algorithm-coach/relay-conf
 import postgres from 'postgres';
 
 import migrationJournal from '@/config/db/migrations/meta/_journal.json';
+import {
+  redisRestConfigurationState,
+  resolveRedisRestConfiguration,
+} from '@/shared/lib/redis-rest';
 import { isSafeRedisRestUrl } from '@/shared/lib/redis-url';
 import type { HealthCheckResult, HealthStatus } from '@/shared/types/health';
 
@@ -272,8 +276,14 @@ export function checkRequiredConfiguration(
     if (!env.AUTH_SECRET?.trim() || env.AUTH_SECRET.trim().length < 32) {
       invalid.push('AUTH_SECRET');
     }
-    if (!env.REDIS_URL?.trim()) missing.push('REDIS_URL');
-    if (!env.REDIS_TOKEN?.trim()) missing.push('REDIS_TOKEN');
+    const redisState = redisRestConfigurationState(env);
+    if (!redisState.configuration) {
+      if (!redisState.urlConfigured) missing.push('REDIS_URL');
+      if (!redisState.tokenConfigured) missing.push('REDIS_TOKEN');
+      if (redisState.urlConfigured && redisState.tokenConfigured) {
+        invalid.push('REDIS_REST_CREDENTIAL_PAIR');
+      }
+    }
     const trustedProxyHeaders = (env.TRUSTED_PROXY_HEADERS ?? '')
       .split(',')
       .map((header) => header.trim().toLowerCase())
@@ -366,16 +376,29 @@ export function checkRequiredConfiguration(
   ) {
     invalid.push('AUTH_URL');
   }
-  if (env.REDIS_URL?.trim() && !isSafeRedisRestUrl(env.REDIS_URL, env)) {
-    invalid.push('REDIS_URL');
+  const redisState = redisRestConfigurationState(env);
+  if (
+    redisState.configuration &&
+    !isSafeRedisRestUrl(redisState.configuration.url, env)
+  ) {
+    invalid.push(
+      redisState.configuration.source === 'upstash'
+        ? 'UPSTASH_REDIS_REST_URL'
+        : redisState.configuration.source === 'vercel-kv'
+          ? 'KV_REST_API_URL'
+          : 'REDIS_URL'
+    );
   }
-  if (Boolean(env.REDIS_URL?.trim()) !== Boolean(env.REDIS_TOKEN?.trim())) {
-    const missingRedisSetting = env.REDIS_URL?.trim()
+  if (
+    !production &&
+    !redisState.configuration &&
+    redisState.urlConfigured !== redisState.tokenConfigured
+  ) {
+    const missingRedisSetting = redisState.urlConfigured
       ? 'REDIS_TOKEN'
       : 'REDIS_URL';
-    if (!missing.includes(missingRedisSetting)) {
+    if (!missing.includes(missingRedisSetting))
       missing.push(missingRedisSetting);
-    }
   }
   if (relay.baseURL && !isHttpUrl(relay.baseURL)) {
     invalid.push('AI_RELAY_BASE_URL');
@@ -505,30 +528,31 @@ export async function checkRedisReadiness(
   env: NodeJS.ProcessEnv = process.env,
   fetcher: ReadinessFetch = globalThis.fetch
 ): Promise<HealthCheckResult> {
-  const redisUrl = env.REDIS_URL?.trim().replace(/\/$/, '');
-  const redisToken = env.REDIS_TOKEN?.trim();
+  const redisState = redisRestConfigurationState(env);
+  const redis = resolveRedisRestConfiguration(env);
   const required = env.NODE_ENV === 'production';
 
-  if (!redisUrl && !redisToken && !required) {
+  if (!redisState.urlConfigured && !redisState.tokenConfigured && !required) {
     return ok(undefined, { mode: 'process-local', required: false });
   }
-  if (!redisUrl || !redisToken || !isSafeRedisRestUrl(redisUrl, env)) {
+  if (!redis || !isSafeRedisRestUrl(redis.url, env)) {
     return error('redis_not_configured', undefined, {
       required,
-      urlConfigured: Boolean(redisUrl),
-      tokenConfigured: Boolean(redisToken),
+      urlConfigured: redisState.urlConfigured,
+      tokenConfigured: redisState.tokenConfigured,
     });
   }
 
   const timeoutMs = boundedTimeout(env.HEALTH_REDIS_TIMEOUT_MS);
   const startedAt = Date.now();
   try {
-    const response = await fetcher(redisUrl, {
+    const headers = {
+      authorization: `Bearer ${redis.token}`,
+      'content-type': 'application/json',
+    };
+    const response = await fetcher(redis.url, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${redisToken}`,
-        'content-type': 'application/json',
-      },
+      headers,
       body: JSON.stringify(['PING']),
       cache: 'no-store',
       signal: AbortSignal.timeout(timeoutMs),
@@ -542,7 +566,27 @@ export async function checkRedisReadiness(
     if (payload.result !== 'PONG') {
       return error('redis_invalid_response', Date.now() - startedAt);
     }
-    return ok(Date.now() - startedAt, { mode: 'distributed' });
+    const evalResponse = await fetcher(redis.url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(['EVAL', 'return 1', '0']),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!evalResponse.ok) {
+      return error('redis_eval_unavailable', Date.now() - startedAt, {
+        httpStatus: evalResponse.status,
+      });
+    }
+    const evalPayload = (await evalResponse.json()) as { result?: unknown };
+    if (evalPayload.result !== 1 && evalPayload.result !== '1') {
+      return error('redis_eval_invalid_response', Date.now() - startedAt);
+    }
+    return ok(Date.now() - startedAt, {
+      mode: 'distributed',
+      evalReady: true,
+      source: redis.source,
+    });
   } catch {
     return error('redis_unavailable', Date.now() - startedAt);
   }

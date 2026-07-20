@@ -2,6 +2,7 @@ import 'server-only';
 
 import { md5 } from '@/shared/lib/hash';
 import { recordOperationalEvent } from '@/shared/lib/observability';
+import { resolveRedisRestConfiguration } from '@/shared/lib/redis-rest';
 import { isSafeRedisRestUrl } from '@/shared/lib/redis-url';
 
 import {
@@ -28,9 +29,7 @@ function positiveInteger(value: string | undefined, fallback: number) {
 }
 
 function redisConfiguration() {
-  const url = process.env.REDIS_URL?.trim().replace(/\/$/, '');
-  const token = process.env.REDIS_TOKEN?.trim();
-  return url && token ? { url, token } : undefined;
+  return resolveRedisRestConfiguration() ?? undefined;
 }
 
 function redisKeys(circuitKey: string) {

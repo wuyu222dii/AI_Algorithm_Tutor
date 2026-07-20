@@ -130,6 +130,11 @@ const copy = {
     you: '你',
     unavailable: 'AI 服务暂时不可用，请稍后重试。',
     quotaExceeded: '今日 AI 使用额度已用完，请稍后再试。',
+    tooManyRequests: 'AI 请求过于频繁，请稍候再试。',
+    concurrencyLimit: '已有 AI 请求正在处理，请等待完成后再试。',
+    protectionUnavailable: 'AI 请求保护服务暂未就绪，请稍后重试。',
+    providerBusy: 'AI 中转服务当前繁忙，请稍后重试。',
+    retryIn: '可在 {seconds} 秒后重试。',
     requestTimeout: 'AI 响应超时，请重试。',
     invalidRequest: 'AI 请求参数无效，请刷新页面后重试。',
     error: '代码运行失败，请检查语法或稍后重试。',
@@ -212,6 +217,13 @@ const copy = {
     you: 'You',
     unavailable: 'AI is temporarily unavailable. Please try again later.',
     quotaExceeded: 'Your AI allowance is exhausted. Please try again later.',
+    tooManyRequests: 'AI requests are arriving too quickly. Please wait.',
+    concurrencyLimit:
+      'Another AI request is still running. Wait for it to finish.',
+    protectionUnavailable:
+      'AI request protection is not ready. Please try again later.',
+    providerBusy: 'The AI relay is busy. Please try again shortly.',
+    retryIn: 'You can retry in {seconds} seconds.',
     requestTimeout: 'The AI response timed out. Please retry.',
     invalidRequest: 'The AI request is invalid. Refresh the page and retry.',
     error: 'Code execution failed. Check the syntax or try again.',
@@ -256,11 +268,21 @@ type CoachMessage = {
   content: string;
 };
 
-type ChatRetryReason = 'stopped' | 'quota' | 'timeout' | 'unavailable';
+type CoachFailureReason =
+  | 'quota'
+  | 'rate_limit'
+  | 'concurrency'
+  | 'protection'
+  | 'provider_busy'
+  | 'timeout'
+  | 'unavailable';
+
+type ChatRetryReason = 'stopped' | CoachFailureReason;
 
 type ChatRetryState = {
   prompt: string;
   reason: ChatRetryReason;
+  retryAfterSeconds?: number;
 };
 
 type ArtifactView = {
@@ -289,7 +311,9 @@ type ActiveHintRefinement = {
 class CoachRequestError extends Error {
   constructor(
     public readonly status: number,
-    public readonly code?: string
+    public readonly code?: string,
+    public readonly retryAfterSeconds?: number,
+    public readonly traceId?: string
   ) {
     super(code ?? `Coach request failed with ${status}`);
     this.name = 'CoachRequestError';
@@ -307,7 +331,58 @@ async function readCoachRequestError(response: Response) {
   } catch {
     // The status still provides a safe localized fallback.
   }
-  return new CoachRequestError(response.status, code);
+  const retryAfter = Number(response.headers.get('retry-after'));
+  return new CoachRequestError(
+    response.status,
+    code,
+    Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.ceil(retryAfter)
+      : undefined,
+    response.headers.get('x-coach-trace-id') ?? undefined
+  );
+}
+
+function coachFailureReason(error: CoachRequestError): CoachFailureReason {
+  if (error.code === 'coach_daily_budget_exceeded') return 'quota';
+  if (error.code === 'coach_concurrency_limit') return 'concurrency';
+  if (error.code === 'rate_limit_unavailable') return 'protection';
+  if (error.code === 'provider_rate_limited') return 'provider_busy';
+  if (error.code === 'too_many_requests') return 'rate_limit';
+  if (error.code === 'provider_timeout' || error.status === 504) {
+    return 'timeout';
+  }
+  if (error.status === 429) return 'rate_limit';
+  return 'unavailable';
+}
+
+type PracticeCopy = (typeof copy)[keyof typeof copy];
+
+function coachFailureMessage(
+  t: PracticeCopy,
+  reason: CoachFailureReason,
+  retryAfterSeconds?: number
+) {
+  const message =
+    reason === 'quota'
+      ? t.quotaExceeded
+      : reason === 'rate_limit'
+        ? t.tooManyRequests
+        : reason === 'concurrency'
+          ? t.concurrencyLimit
+          : reason === 'protection'
+            ? t.protectionUnavailable
+            : reason === 'provider_busy'
+              ? t.providerBusy
+              : reason === 'timeout'
+                ? t.requestTimeout
+                : t.unavailable;
+  if (
+    !retryAfterSeconds ||
+    !['rate_limit', 'concurrency', 'provider_busy'].includes(reason)
+  ) {
+    return message;
+  }
+  return `${message} ${t.retryIn.replace('{seconds}', String(retryAfterSeconds))}`;
 }
 
 export function PracticeWorkspace({
@@ -939,15 +1014,16 @@ export function PracticeWorkspace({
       if (!silent) {
         if (action === 'hint' && effectiveHintLevel) {
           toast.info(t.hintFallback);
-        } else if (error instanceof CoachRequestError && error.status === 429) {
-          toast.info(t.quotaExceeded);
-        } else if (
-          error instanceof CoachRequestError &&
-          (error.status === 504 || error.code === 'provider_timeout')
-        ) {
-          toast.info(t.requestTimeout);
         } else if (error instanceof CoachRequestError && error.status === 400) {
           toast.error(t.invalidRequest);
+        } else if (error instanceof CoachRequestError) {
+          toast.info(
+            coachFailureMessage(
+              t,
+              coachFailureReason(error),
+              error.retryAfterSeconds
+            )
+          );
         } else {
           toast.info(t.unavailable);
         }
@@ -1122,15 +1198,14 @@ export function PracticeWorkspace({
         });
         return;
       }
-      if (error instanceof CoachRequestError && error.status === 429) {
-        setChatRetry({ prompt, reason: 'quota' });
-        toast.info(t.quotaExceeded);
-      } else if (
-        error instanceof CoachRequestError &&
-        (error.status === 504 || error.code === 'provider_timeout')
-      ) {
-        setChatRetry({ prompt, reason: 'timeout' });
-        toast.info(t.requestTimeout);
+      if (error instanceof CoachRequestError) {
+        const reason = coachFailureReason(error);
+        setChatRetry({
+          prompt,
+          reason,
+          retryAfterSeconds: error.retryAfterSeconds,
+        });
+        toast.info(coachFailureMessage(t, reason, error.retryAfterSeconds));
       } else {
         setChatRetry({ prompt, reason: 'unavailable' });
         toast.info(t.unavailable);
@@ -1926,11 +2001,11 @@ function CoachPanel({
                 <span>
                   {chatRetry.reason === 'stopped'
                     ? t.stopped
-                    : chatRetry.reason === 'quota'
-                      ? t.quotaExceeded
-                      : chatRetry.reason === 'timeout'
-                        ? t.requestTimeout
-                        : t.unavailable}
+                    : coachFailureMessage(
+                        t,
+                        chatRetry.reason,
+                        chatRetry.retryAfterSeconds
+                      )}
                 </span>
               </div>
               <Button

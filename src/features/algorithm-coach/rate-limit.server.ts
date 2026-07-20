@@ -2,7 +2,9 @@ import 'server-only';
 
 import { getAuth } from '@/core/auth';
 import { md5 } from '@/shared/lib/hash';
+import { recordOperationalEvent } from '@/shared/lib/observability';
 import { enforceDistributedWindowRateLimit } from '@/shared/lib/rate-limit';
+import { resolveRedisRestConfiguration } from '@/shared/lib/redis-rest';
 import { isSafeRedisRestUrl } from '@/shared/lib/redis-url';
 
 import { CoachModel, estimateCoachCostUsd } from './model';
@@ -162,9 +164,7 @@ function capacityResponse(
 }
 
 function redisConfiguration() {
-  const url = process.env.REDIS_URL?.trim().replace(/\/$/, '');
-  const token = process.env.REDIS_TOKEN?.trim();
-  return url && token ? { url, token } : null;
+  return resolveRedisRestConfiguration();
 }
 
 async function redisEval(
@@ -439,13 +439,24 @@ async function acquireCapacityReservation(
 ) {
   if (!redisConfiguration()) {
     if (process.env.NODE_ENV === 'production') {
+      void recordOperationalEvent({
+        event: 'coach_capacity_backend_failed',
+        level: 'error',
+        properties: { reason: 'not_configured' },
+      });
       return capacityResponse('rate_limit_unavailable', 503, 5);
     }
     return acquireMemoryCapacity(identity, options);
   }
   try {
     return await acquireRedisCapacity(identity, options);
-  } catch {
+  } catch (error) {
+    void recordOperationalEvent({
+      event: 'coach_capacity_backend_failed',
+      level: process.env.NODE_ENV === 'production' ? 'error' : 'warn',
+      properties: { reason: 'request_failed' },
+      error,
+    });
     if (process.env.NODE_ENV === 'production') {
       return capacityResponse('rate_limit_unavailable', 503, 5);
     }

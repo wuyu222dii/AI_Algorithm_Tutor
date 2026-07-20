@@ -1,5 +1,6 @@
 import { md5 } from '@/shared/lib/hash';
 import { recordOperationalEvent } from '@/shared/lib/observability';
+import { resolveRedisRestConfiguration } from '@/shared/lib/redis-rest';
 import { isSafeRedisRestUrl } from '@/shared/lib/redis-url';
 
 type MinIntervalOptions = {
@@ -235,17 +236,16 @@ async function incrementRedisWindow(
   key: string,
   windowMs: number
 ): Promise<RedisWindowResult | null> {
-  const redisUrl = process.env.REDIS_URL?.trim().replace(/\/$/, '');
-  const redisToken = process.env.REDIS_TOKEN?.trim();
-  if (!redisUrl || !redisToken) return null;
-  if (!isSafeRedisRestUrl(redisUrl)) {
+  const redis = resolveRedisRestConfiguration();
+  if (!redis) return null;
+  if (!isSafeRedisRestUrl(redis.url)) {
     throw new Error('REDIS_URL must be a secure Redis REST endpoint');
   }
 
-  const response = await fetch(redisUrl, {
+  const response = await fetch(redis.url, {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${redisToken}`,
+      authorization: `Bearer ${redis.token}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify([
@@ -289,7 +289,24 @@ export async function enforceDistributedWindowRateLimit(
 
   try {
     const result = await incrementRedisWindow(key, windowMs);
-    if (!result) return enforceWindowRateLimit(request, opts);
+    if (!result) {
+      if (!opts.failClosed) return enforceWindowRateLimit(request, opts);
+      await recordOperationalEvent({
+        event: 'rate_limit_backend_failed',
+        level: 'error',
+        properties: { reason: 'not_configured' },
+      });
+      return Response.json(
+        {
+          error: 'rate_limit_unavailable',
+          message: 'Request protection is temporarily unavailable.',
+        },
+        {
+          status: 503,
+          headers: { 'cache-control': 'no-store', 'retry-after': '5' },
+        }
+      );
+    }
     if (result.count <= max) return null;
     return tooManyRequests(Math.max(1, Math.ceil(result.ttlMs / 1000)));
   } catch (error) {
