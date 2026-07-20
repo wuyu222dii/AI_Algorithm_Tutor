@@ -11,13 +11,12 @@ export class CoachSyncFailure extends Error {
 }
 
 export function coachSyncFailureForResponse(
-  response: Response,
-  context: 'request' | 'conflict' = 'request'
+  response: Response
 ): CoachSyncFailure {
   const kind: CoachSyncErrorKind =
     response.status === 401 || response.status === 403
       ? 'auth'
-      : response.status === 409 || context === 'conflict'
+      : response.status === 409
         ? 'conflict'
         : 'server';
   return new CoachSyncFailure(kind, `Sync failed with ${response.status}`);

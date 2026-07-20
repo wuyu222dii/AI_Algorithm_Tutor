@@ -467,7 +467,7 @@ export function CoachProvider({
           signal: controller.signal,
         });
         if (!latestResponse.ok) {
-          throw coachSyncFailureForResponse(latestResponse, 'conflict');
+          throw coachSyncFailureForResponse(latestResponse);
         }
         const latestPayload = (await latestResponse.json()) as {
           data?: {

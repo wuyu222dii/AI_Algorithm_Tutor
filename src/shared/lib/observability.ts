@@ -7,14 +7,60 @@ import {
 
 export { sanitizeTelemetryProperties, sanitizeTelemetryText };
 
-function errorDetails(error: unknown) {
-  if (!(error instanceof Error)) return undefined;
-  const code = (error as Error & { code?: unknown }).code;
+const DATABASE_ERROR_CATEGORIES: Readonly<Record<string, string>> = {
+  '28P01': 'credential_invalid',
+  '3F000': 'missing_schema',
+  '42501': 'permission_denied',
+  '42703': 'missing_column',
+  '42P01': 'missing_table',
+  '53300': 'pool_exhausted',
+  '57014': 'timeout',
+};
+
+function safeErrorCode(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[a-z0-9_.:-]{1,80}$/i.test(value)
+    ? value
+    : undefined;
+}
+
+function databaseErrorCategory(code: string | undefined) {
+  if (!code) return undefined;
+  if (/^08[A-Z0-9]{3}$/i.test(code)) return 'connection_failed';
+  return DATABASE_ERROR_CATEGORIES[code.toUpperCase()];
+}
+
+export function operationalErrorDetails(error: unknown) {
+  if (!error || typeof error !== 'object') return undefined;
+  const seen = new Set<object>();
+  let current: unknown = error;
+  let name = 'Error';
+  let genericCode: string | undefined;
+  let databaseCode: string | undefined;
+
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (!current || typeof current !== 'object' || seen.has(current)) break;
+    seen.add(current);
+    const candidate = current as {
+      name?: unknown;
+      code?: unknown;
+      cause?: unknown;
+    };
+    if (depth === 0) name = safeErrorCode(candidate.name) ?? name;
+    const code = safeErrorCode(candidate.code);
+    if (code && /^[0-9A-Z]{5}$/i.test(code)) {
+      databaseCode ??= code.toUpperCase();
+    } else {
+      genericCode ??= code;
+    }
+    current = candidate.cause;
+  }
+
+  const code = databaseCode ?? genericCode;
+  const category = databaseErrorCategory(databaseCode);
   return {
-    name: error.name,
-    ...(typeof code === 'string' && /^[a-z0-9_.:-]{1,80}$/i.test(code)
-      ? { code }
-      : {}),
+    name,
+    ...(code ? { code } : {}),
+    ...(category ? { category } : {}),
   };
 }
 
@@ -90,7 +136,7 @@ export async function recordOperationalEvent(input: OperationalEvent) {
     event: input.event,
     traceId: input.traceId,
     ...sanitizeTelemetryProperties(input.properties ?? {}),
-    error: errorDetails(input.error),
+    error: operationalErrorDetails(input.error),
   };
   const logger =
     level === 'error'

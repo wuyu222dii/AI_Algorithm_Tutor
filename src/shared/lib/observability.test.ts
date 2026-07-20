@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  operationalErrorDetails,
   recordOperationalEvent,
   sanitizeTelemetryProperties,
   sanitizeTelemetryText,
@@ -20,6 +21,7 @@ describe('observability redaction', () => {
       sourceCode: 'function solve() {}',
       nested: { authorization: 'Bearer secret', status: 502 },
       errorCode: 'channel_unavailable',
+      fallbackFrom: undefined,
       latencyMs: 123,
     });
 
@@ -29,6 +31,25 @@ describe('observability redaction', () => {
       errorCode: 'channel_unavailable',
       latencyMs: 123,
     });
+  });
+
+  it('extracts only a safe PostgreSQL code from a wrapped error cause', () => {
+    const databaseError = Object.assign(new Error('private SQL details'), {
+      code: '42P01',
+      query: 'select private learner data',
+    });
+    const wrapped = Object.assign(new Error('query and connection URL'), {
+      cause: databaseError,
+    });
+
+    expect(operationalErrorDetails(wrapped)).toEqual({
+      name: 'Error',
+      code: '42P01',
+      category: 'missing_table',
+    });
+    expect(JSON.stringify(operationalErrorDetails(wrapped))).not.toContain(
+      'private'
+    );
   });
 
   it('redacts credentials and personal data embedded in error text', () => {

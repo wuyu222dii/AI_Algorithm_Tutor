@@ -51,6 +51,7 @@ export function sanitizeTelemetryText(value: string): string {
 }
 
 function safeValue(value: unknown, depth = 0): unknown {
+  if (value === undefined) return undefined;
   if (depth > 3) return '[truncated]';
   if (
     value === null ||
@@ -61,7 +62,10 @@ function safeValue(value: unknown, depth = 0): unknown {
   }
   if (typeof value === 'string') return sanitizeTelemetryText(value);
   if (Array.isArray(value)) {
-    return value.slice(0, 20).map((item) => safeValue(item, depth + 1));
+    return value
+      .slice(0, 20)
+      .map((item) => safeValue(item, depth + 1))
+      .filter((item) => item !== undefined);
   }
   if (typeof value === 'object') {
     return sanitizeTelemetryProperties(
@@ -78,7 +82,9 @@ export function sanitizeTelemetryProperties(
 ): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(properties)
-      .filter(([key]) => !isSensitiveTelemetryKey(key))
+      .filter(
+        ([key, value]) => value !== undefined && !isSensitiveTelemetryKey(key)
+      )
       .slice(0, MAX_PROPERTIES)
       .map(([key, value]) => [key, safeValue(value, depth)])
   );

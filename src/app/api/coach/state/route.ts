@@ -17,6 +17,7 @@ import {
 import { enforceCoachRateLimits } from '@/features/algorithm-coach/rate-limit.server';
 
 import { getAuth } from '@/core/auth';
+import { recordOperationalEvent } from '@/shared/lib/observability';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,13 +56,13 @@ async function handle(
         traceId
       );
     }
-    console.error(
-      JSON.stringify({
-        event: 'coach_state_database_failed',
-        traceId,
-        errorName: error instanceof Error ? error.name : 'Error',
-      })
-    );
+    await recordOperationalEvent({
+      event: 'coach_state_database_failed',
+      level: 'error',
+      traceId,
+      properties: { method: request.method },
+      error,
+    });
     return errorResponse(
       new CoachHttpError(
         500,

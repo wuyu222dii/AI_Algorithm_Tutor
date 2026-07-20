@@ -21,13 +21,10 @@ describe('coach sync error classification', () => {
     ).toBe(expected);
   });
 
-  it('keeps a failed conflict recovery classified as a conflict', () => {
+  it('classifies a failed conflict recovery request by its actual status', () => {
     expect(
-      coachSyncFailureForResponse(
-        new Response(null, { status: 502 }),
-        'conflict'
-      ).kind
-    ).toBe('conflict');
+      coachSyncFailureForResponse(new Response(null, { status: 502 })).kind
+    ).toBe('server');
   });
 
   it('classifies transport and offline failures as network errors', () => {
