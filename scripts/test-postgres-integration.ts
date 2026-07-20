@@ -2499,7 +2499,12 @@ export async function runPostgresIntegrationTest(): Promise<void> {
         },
         undefined,
         {
-          fetch: async () => Response.json({ result: 'PONG' }),
+          fetch: async (_input, init) => {
+            const command = JSON.parse(String(init?.body)) as string[];
+            return Response.json({
+              result: command[0] === 'PING' ? 'PONG' : 1,
+            });
+          },
         }
       );
       if (readiness.status !== 'ok') {
