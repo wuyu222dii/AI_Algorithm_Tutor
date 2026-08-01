@@ -1,19 +1,21 @@
-# AlgoCoach / AI 算法教练
+# AlgoCoach / AI Algorithm Tutor
 
-面向编程学习者的双语算法训练工具，覆盖教、练、测、评完整流程。访客可在浏览器 Worker 内运行 JavaScript、Python 和 TypeScript；登录后可将学习记录增量同步到 PostgreSQL。
+A bilingual algorithm training tool for programming learners, covering the full teach → practice → test → evaluate loop. Guests can run JavaScript, Python, and TypeScript in a browser Worker; signed-in users can incrementally sync learning records to PostgreSQL.
 
-## 本地开发
+> Chinese backup: [README.zh-CN.md](./README.zh-CN.md)
 
-环境要求：Node.js 22.13+、pnpm 11.7.0；数据库集成测试和镜像验证需要 Docker。
+## Local development
+
+Requirements: Node.js 22.13+, pnpm 11.7.0; Docker is needed for database integration tests and image verification.
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-开发启动会读取 `.env.development.local`、`.env.local`、`.env.development` 和 `.env`。数据库迁移默认关闭；需要迁移时，在未提交的本地环境文件中配置独立的 `MIGRATION_DATABASE_URL` 后执行 `pnpm db:migrate`。也可以显式设置 `DB_AUTO_MIGRATE=true`，让开发启动先迁移再启动 Next.js。迁移脚本不会回退使用 `DATABASE_URL`。环境变量模板见 `.env.example`。
+Dev startup reads `.env.development.local`, `.env.local`, `.env.development`, and `.env`. Database migrations are off by default; when you need them, set a dedicated `MIGRATION_DATABASE_URL` in an uncommitted local env file and run `pnpm db:migrate`. You can also set `DB_AUTO_MIGRATE=true` so startup migrates before launching Next.js. The migration script never falls back to `DATABASE_URL`. See `.env.example` for the env template.
 
-完整本地检查：
+Full local checks:
 
 ```bash
 pnpm check
@@ -22,20 +24,20 @@ pnpm test:e2e
 docker build -t algocoach .
 ```
 
-生产构建后运行 `pnpm budget:coach`，会检查学习中心、题库、进度和复习页的独有 JavaScript（gzip 不超过 200 KiB）、实际 73 题 `ProblemSummary` RSC 序列化 payload（gzip 不超过 150 KiB）及浏览器 Runner Worker 资产（不超过 6 MiB）。这些非代码执行页面若意外引入 Monaco、QuickJS、TypeScript 编译器或 Pyodide，检查会直接失败。`pnpm check` 和 GitHub Production build 均包含该门禁。
+After a production build, `pnpm budget:coach` checks unique JavaScript for the learning hub, problem catalog, progress, and review pages (gzip ≤ 200 KiB), the real 73-problem `ProblemSummary` RSC serialized payload (gzip ≤ 150 KiB), and browser Runner Worker assets (≤ 6 MiB). If those non-execution pages accidentally pull in Monaco, QuickJS, the TypeScript compiler, or Pyodide, the check fails. Both `pnpm check` and the GitHub Production build include this gate.
 
-浏览器通过 Next.js Web Vitals hook 采集 LCP、INP 和 CLS，并将数值、评级和预算状态发送到 Sentry Metrics；上限分别为 2.5 秒、200 毫秒和 0.1。上报不包含 URL、用户、DOM 节点、题面或代码，`NEXT_PUBLIC_WEB_VITALS_SAMPLE_RATE` 控制会话采样率，生产初始建议设为 `0.10`。
+The browser collects LCP, INP, and CLS via the Next.js Web Vitals hook and sends values, ratings, and budget status to Sentry Metrics; caps are 2.5s, 200ms, and 0.1. Reports never include URLs, users, DOM nodes, problem statements, or code. `NEXT_PUBLIC_WEB_VITALS_SAMPLE_RATE` controls session sampling; start production at `0.10`.
 
 ## Supabase
 
-生产环境必须使用两个不同数据库角色：
+Production must use two distinct database roles:
 
-- `MIGRATION_DATABASE_URL`：仅注入 release job，允许 DDL。
-- `DATABASE_URL`：应用运行时连接，使用受限 DML 角色。
+- `MIGRATION_DATABASE_URL`: injected only into the release job; allows DDL.
+- `DATABASE_URL`: the app runtime connection; uses a restricted DML role.
 
-本地开发也遵守相同边界：迁移连接和运行连接分别保存到 `.env.development.local`，不要提交到 Git，也不要把同一个高权限账号同时填入两个变量。`DB_AUTO_MIGRATE=true` 但缺少 `MIGRATION_DATABASE_URL` 时，启动会直接失败并说明缺少专用迁移连接；`DB_AUTO_MIGRATE=false` 时启动不会修改数据库结构。
+Local development follows the same boundary: keep migration and runtime connections in `.env.development.local`, do not commit them, and never put the same high-privilege account in both variables. If `DB_AUTO_MIGRATE=true` but `MIGRATION_DATABASE_URL` is missing, startup fails and reports the missing dedicated migration connection; with `DB_AUTO_MIGRATE=false`, startup does not change the schema.
 
-先在 Supabase SQL Editor 中用管理员权限创建应用角色，并为它设置独立强密码：
+First create the app role in the Supabase SQL Editor with admin privileges and a strong dedicated password:
 
 ```sql
 CREATE ROLE algocoach_app
@@ -43,27 +45,27 @@ CREATE ROLE algocoach_app
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
 ```
 
-release job 会验证该角色不是 schema owner 或高权限角色，执行迁移后只授予 `algocoach` schema 的 DML、序列使用权和迁移历史读取权。迁移不会在生产构建或容器启动阶段运行。
+The release job verifies the role is not a schema owner or high-privilege role, then after migrations grants only DML on the `algocoach` schema, sequence usage, and migration-history read access. Migrations never run during production builds or container startup.
 
-任何曾进入聊天、日志或提交历史的数据库密码都必须先在 Supabase 控制台轮换，再更新 GitHub Environment 和部署平台 Secret。
+Any database password that has appeared in chat, logs, or commit history must be rotated in the Supabase console first, then updated in GitHub Environment and deployment-platform secrets.
 
-迁移 `0023` 启用访客数据耐久认领、匿名漏斗和用户时区口径。Staging 先同时设置
-`DURABLE_GUEST_CLAIM_ENABLED=true` 与
-`NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED=true`；服务端收到幂等 ACK 前不会清除访客命名空间。
-`ANONYMOUS_METRICS_ENABLED=true` 后，浏览器只批量上传白名单事件 ID、名称、时间和可选题目 slug；服务端使用
-`ANONYMOUS_METRICS_HMAC_SECRET`（未配置时回退 `AUTH_SECRET`）生成匿名 subject，不保存 Cookie、IP、代码或题面。
-两个功能在 Staging 验证后再以相同配置开启到 Production。
+Migration `0023` enables durable guest claim, anonymous funnel metrics, and user timezone semantics. On Staging, set both
+`DURABLE_GUEST_CLAIM_ENABLED=true` and
+`NEXT_PUBLIC_DURABLE_GUEST_CLAIM_ENABLED=true` first; the server does not clear the guest namespace until it receives an idempotent ACK.
+With `ANONYMOUS_METRICS_ENABLED=true`, the browser only batches allowlisted event IDs, names, timestamps, and optional problem slugs; the server derives an anonymous subject with
+`ANONYMOUS_METRICS_HMAC_SECRET` (falls back to `AUTH_SECRET` when unset) and never stores cookies, IPs, code, or problem statements.
+Enable both features on Production with the same settings only after Staging validation.
 
-## Google 登录
+## Google sign-in
 
-分别创建开发和生产 Google Web OAuth Client：
+Create separate Google Web OAuth clients for development and production:
 
-- 开发 Origin：`http://localhost:3000`
-- 开发 Redirect URI：`http://localhost:3000/api/auth/callback/google`
-- 生产 Origin：生产 HTTPS Origin
-- 生产 Redirect URI：`{AUTH_URL}/api/auth/callback/google`
+- Dev Origin: `http://localhost:3000`
+- Dev Redirect URI: `http://localhost:3000/api/auth/callback/google`
+- Prod Origin: your production HTTPS Origin
+- Prod Redirect URI: `{AUTH_URL}/api/auth/callback/google`
 
-OAuth consent screen 需要配置品牌、支持邮箱、隐私政策和服务条款。运行环境设置：
+The OAuth consent screen needs branding, a support email, privacy policy, and terms of service. Runtime settings:
 
 ```dotenv
 GOOGLE_AUTH_ENABLED=true
@@ -72,11 +74,11 @@ GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
 ```
 
-Client Secret 只能保存为部署 Secret，不得进入数据库公开配置、Git 仓库或 Docker build args。应用只提供标准 Google 按钮；经过 Google 验证的同邮箱账号自动合并，不同邮箱禁止链接，已有姓名、头像和学习数据不会被覆盖。
+The Client Secret may only live as a deployment secret—never in public DB config, the Git repo, or Docker build args. The app exposes only the standard Google button; Google-verified same-email accounts are merged automatically, different emails cannot be linked, and existing name, avatar, and learning data are never overwritten.
 
-## AI 教练运行策略
+## AI coach runtime policy
 
-AlgoCoach 只连接自定义 OpenAI-compatible 中转站，不调用 OpenAI 官方 API。`OpenAI-compatible` 仅表示 `/v1/chat/completions` 协议兼容。服务端使用以下配置，模型 ID 必须与中转站 `/v1/models` 返回值完全一致：
+AlgoCoach connects only to a custom OpenAI-compatible relay; it does not call the official OpenAI API. `OpenAI-compatible` means the `/v1/chat/completions` protocol only. The server uses the settings below; model IDs must match the relay `/v1/models` response exactly:
 
 ```dotenv
 AI_RELAY_BASE_URL=https://codeapix.top/v1
@@ -89,17 +91,17 @@ AI_RELAY_CANARY_TOKEN=...
 AI_RELAY_PRICING_JSON='{"relay-model-id":{"inputPerMillionUsd":3,"outputPerMillionUsd":15}}'
 ```
 
-先运行 `pnpm ai:preflight` 验证模型列表、普通生成、流式生成和结构化 JSON。命令只输出 Origin、模型、能力与错误分类，不输出 Key、题面或代码。`OPENROUTER_*` 和原全局模型变量仅保留一个版本兼容并输出弃用警告；新的部署 Secret 必须使用 `AI_RELAY_*`。客户端请求中的未知字段会被剥离，不能指定模型。
+Run `pnpm ai:preflight` first to verify model listing, normal generation, streaming, and structured JSON. The command prints only Origin, models, capabilities, and error classes—never keys, problem statements, or code. `OPENROUTER_*` and the old global model variables remain for one-version compatibility and emit deprecation warnings; new deployment secrets must use `AI_RELAY_*`. Unknown client request fields are stripped; clients cannot pick a model.
 
-若配置动作级 `ALGO_COACH_<ACTION>_MODEL`，生产值只能选择上述已预检的主模型或备用模型。`AI_RELAY_STRUCTURED_OUTPUT_MODE=json-schema` 只有在两个模型都通过 JSON Schema 预检时才允许发布；否则使用 `json`，由服务端执行严格结构校验与一次修复。
+If you set action-level `ALGO_COACH_<ACTION>_MODEL`, production values may only use the preflighted primary or fallback models above. `AI_RELAY_STRUCTURED_OUTPUT_MODE=json-schema` is allowed only when both models pass JSON Schema preflight; otherwise use `json` and let the server run strict structural validation plus one repair attempt.
 
-实时评测提供两档门禁：`strict` 保留公测目标（请求成功率至少 99.5%、反例可执行率 100%、P95 小于 8 秒）；`flow` 仅用于 Staging 暂时验证完整 Workflow，可接受成功率至少 95%、反例可执行率至少 75% 和 P95 不超过 25 秒。两档都要求完整的 100 条双语样本、诊断事实可追溯、提示注入通过且答案泄漏率为 0。Staging Workflow 在未设置 GitHub Environment 变量时暂时使用 `flow`，也可显式设置 `AI_LIVE_EVAL_GATE_PROFILE=flow`；Production Workflow 始终使用 `strict`。中转站稳定后将 Staging 变量切回 `strict`。
+Live evaluation has two gate profiles: `strict` keeps public-beta targets (request success ≥ 99.5%, counterexample executability 100%, P95 < 8s); `flow` is Staging-only for temporarily validating the full workflow (success ≥ 95%, counterexample executability ≥ 75%, P95 ≤ 25s). Both require a full 100 bilingual samples, traceable diagnostic facts, prompt-injection pass, and 0% answer leakage. The Staging workflow temporarily uses `flow` when the GitHub Environment variable is unset, or you can set `AI_LIVE_EVAL_GATE_PROFILE=flow` explicitly; Production always uses `strict`. Switch Staging back to `strict` once the relay is stable.
 
-主模型在分组拒绝、无可用渠道、`429`、`5xx` 或超时时仅切换一次已预检的备用模型；`401` 立即失败。结构化输出无效时只在原模型修复一次，连续 3 次瞬态故障通过 Redis 熔断 60 秒。Redis 容量租约同时按用户或访客及可信代理 IP 限制并发、每日 token 和估算金额，默认每位学习者每日上限为 `US$0.05`。中转站缺失 usage 时保留请求前的最大成本预留，实际价格只读取 `AI_RELAY_PRICING_JSON`。Chat 只会在首个内容块发送前切换模型，流开始后的故障单独记录。生产环境不会在中转站失败时静默切换为确定性演示结果。
+On group rejection, no available channel, `429`, `5xx`, or timeout, the primary model fails over once to the preflighted fallback; `401` fails immediately. Invalid structured output is repaired once on the same model; three consecutive transient failures trip a Redis circuit breaker for 60 seconds. Redis capacity leases also cap concurrency, daily tokens, and estimated spend per user/guest and trusted proxy IP; the default daily learner budget is `US$0.05`. When the relay omits usage, the pre-request max cost reservation is retained; actual pricing is read only from `AI_RELAY_PRICING_JSON`. Chat may switch models only before the first content chunk; failures after the stream starts are logged separately. Production never silently falls back to deterministic demo results when the relay fails.
 
-## 版本化题库
+## Versioned problem catalog
 
-生产题库只从 PostgreSQL 的已发布 revision 读取。练习、运行结果、AI 反馈和本地自测均固定 `{slug, contentVersion}`，题目更新不会改变历史学习记录。必要配置：
+Production catalog reads only published revisions from PostgreSQL. Practice, run results, AI feedback, and local self-tests are pinned to `{slug, contentVersion}`, so problem updates never rewrite historical learning records. Required settings:
 
 ```dotenv
 DB_CATALOG_ENABLED=true
@@ -117,9 +119,9 @@ TYPESCRIPT_ENABLED=true
 EXERCISM_GITHUB_TOKEN=
 ```
 
-`DB_CATALOG_ENABLED=false` 仅用于测试 fixture，生产 readiness 会拒绝该配置。`CATALOG_STRUCTURED_REVIEW_MODE` 在生产默认采用 `shadow`，完成只读投影核对后再切换为 `write`；任何模式都不会让定时同步自动批准或发布候选。`CATALOG_SYNC_ENABLED` 默认关闭，只在受限同步任务中临时设为 `true`。Exercism 同步只创建候选，不自动上线；当前首批 20 道题保留完整 MIT LICENSE 原文、许可证/题面/canonical-data Git blob SHA、内容 SHA-256、署名和固定上游 commit。bootstrap 会保存同一组 blob 基线，紧接着的 discovery 不会把未变化的 20 道题误报为新候选。canonical UUID 只用于变更检测与审计，不会自动替换 AlgoCoach 已审核测试。
+`DB_CATALOG_ENABLED=false` is for test fixtures only; production readiness rejects it. `CATALOG_STRUCTURED_REVIEW_MODE` defaults to `shadow` in production and should move to `write` only after read-only projection checks pass; no mode lets scheduled sync auto-approve or publish candidates. `CATALOG_SYNC_ENABLED` is off by default and should be set to `true` only temporarily in restricted sync jobs. Exercism sync creates candidates only and never auto-publishes; the first 20 problems keep the full MIT LICENSE text, license/statement/canonical-data Git blob SHAs, content SHA-256, attribution, and a pinned upstream commit. Bootstrap stores the same blob baseline so an immediate discovery run does not misreport the unchanged 20 as new candidates. Canonical UUIDs are for change detection and audit only; they never auto-replace AlgoCoach-reviewed tests.
 
-迁移会创建 `algocoach_catalog_sync`、`algocoach_catalog_reviewer` 和 `algocoach_catalog_publisher` 三个 `NOLOGIN` 能力角色。Supabase 中只需一次性创建两个独立登录账号，密码必须使用新生成的 Secret：
+Migrations create three `NOLOGIN` capability roles: `algocoach_catalog_sync`, `algocoach_catalog_reviewer`, and `algocoach_catalog_publisher`. In Supabase, create two dedicated login accounts once, with freshly generated secret passwords:
 
 ```sql
 CREATE ROLE algocoach_catalog_worker LOGIN PASSWORD '<new-sync-password>';
@@ -130,85 +132,86 @@ GRANT algocoach_catalog_reviewer, algocoach_catalog_publisher
   TO algocoach_catalog_admin;
 ```
 
-worker 连接串保存为 GitHub Environment Secret `CATALOG_DATABASE_URL`；admin 连接串仅保存为应用服务端 Secret `CATALOG_ADMIN_DATABASE_URL`。后台每次操作都会 `SET LOCAL ROLE` 到当前阶段，且候选记录要求批准者与发布者是两个不同的登录用户。不要让应用 `DATABASE_URL`、同步账号或浏览器获得发布权限。
+Store the worker connection string as GitHub Environment secret `CATALOG_DATABASE_URL`; store the admin connection string only as the app server secret `CATALOG_ADMIN_DATABASE_URL`. Each backend operation runs `SET LOCAL ROLE` for the current stage, and candidates require distinct approver and publisher login users. Do not give publish rights to the app `DATABASE_URL`, the sync account, or the browser.
 
-`CATALOG_DATABASE_URL` 的 Secret 值只能是裸 PostgreSQL URL，不要包含 `CATALOG_DATABASE_URL=`、`export`、引号、反引号或 `<PASSWORD>` 占位符；密码中的 `#`、`/`、`?` 等保留字符必须进行 URL 编码。Workflow 会先运行 `pnpm catalog:db:preflight`，以不输出连接串的方式验证 URL、登录身份、同步角色成员关系和最小表权限。
+The `CATALOG_DATABASE_URL` secret value must be a bare PostgreSQL URL—no `CATALOG_DATABASE_URL=`, `export`, quotes, backticks, or `<PASSWORD>` placeholders; reserved characters in passwords (`#`, `/`, `?`, etc.) must be URL-encoded. The workflow runs `pnpm catalog:db:preflight` first to validate the URL, login identity, sync-role membership, and minimal table grants without printing the connection string.
 
-Git Tree discovery 在解析 `main` 得到完整 commit SHA 后，所有 tree、LICENSE、题面和 canonical-data 请求都固定到该 SHA。单次请求限制 10 秒，LICENSE 限制 64 KiB，题面限制 256 KiB，canonical-data 限制 2 MiB 且 JSON 深度不超过 32；候选完整保留 LICENSE 原文、Git blob SHA、内容 SHA-256、原始题面与 canonical-data，供人工审核和构建测试。发现结果始终是 `publishable: false` 的结构化草稿；开启 `CATALOG_AI_DRAFT_ENABLED` 后，`CATALOG_AI_MODEL` 只能选择已通过中转站预检且已配置实际价格的主模型或备用模型，并且只能建议双语标题、描述、难度、知识点、学习目标和单函数签名。JavaScript、Python、TypeScript starter template 由本地代码根据签名确定性生成，只含 TODO、`pass` 或 `throw` 占位；解法、Hint 与权威测试仍为空。草稿入库后保持 quarantine，不能直接发布。定时任务优先处理已发布题的上游变化，再发现普通新题；待审核候选达到 50 时暂停普通新题摄取，未变化题不占批次上限，每批最多 10 道。这个数字只表示进入候选审核区的批次上限，不表示题目会自动发布。
+After Git Tree discovery resolves `main` to a full commit SHA, every tree, LICENSE, statement, and canonical-data request is pinned to that SHA. Per-request limits: 10s timeout, LICENSE ≤ 64 KiB, statements ≤ 256 KiB, canonical-data ≤ 2 MiB with JSON depth ≤ 32. Candidates retain the full LICENSE text, Git blob SHAs, content SHA-256, raw statements, and canonical-data for human review and test construction. Discovery always produces structured drafts with `publishable: false`. With `CATALOG_AI_DRAFT_ENABLED`, `CATALOG_AI_MODEL` may only use a preflighted, price-configured primary or fallback relay model, and may only suggest bilingual titles, descriptions, difficulty, knowledge points, learning goals, and a single function signature. JavaScript, Python, and TypeScript starter templates are generated deterministically from the signature locally and contain only TODO / `pass` / `throw` placeholders; solutions, hints, and authoritative tests stay empty. Drafts remain quarantined after ingest and cannot be published directly. Scheduled jobs prioritize upstream changes to published problems before discovering ordinary new ones; ordinary new ingest pauses when pending candidates reach 50; unchanged items do not count against the batch cap (max 10 per batch). That number is only the candidate-review intake cap—it does not mean problems auto-publish.
 
 ```bash
-# 固定 fixture 验证，不访问上游
+# Fixture-only validation; no upstream access
 pnpm catalog:sync -- --fixture --workspace .catalog/review.json
 pnpm catalog:validate -- --workspace .catalog/review.json
 pnpm catalog:approve -- --workspace .catalog/review.json --reviewer reviewer@example.com --candidate <id>
 pnpm catalog:publish -- --workspace .catalog/review.json --reviewer release-manager@example.com --candidate <id>
 
-# 使用受限 DATABASE_URL 写入候选区；同步和校验受开关保护
+# Write candidates via the restricted DATABASE_URL; sync/validate are gated
 CATALOG_SYNC_ENABLED=true pnpm catalog:sync
 CATALOG_SYNC_ENABLED=true pnpm catalog:validate
 CATALOG_SYNC_ENABLED=true pnpm catalog:monitor
 
-# 只生成未收录题目的安全 review artifact
+# Generate a safe review artifact for problems not yet in the catalog
 CATALOG_DISCOVERY_ENABLED=true pnpm catalog:discover -- --output .catalog/discovery.json
 
-# 使用受限 writer 将同一 artifact 入库为 quarantine，并再次执行校验
+# Ingest the same artifact as quarantine via the restricted writer, then validate again
 CATALOG_DISCOVERY_ENABLED=true CATALOG_DISCOVERY_INGEST_ENABLED=true \
   pnpm catalog:discover -- --output .catalog/discovery.json --ingest --reviewer operator@example.com
 CATALOG_SYNC_ENABLED=true pnpm catalog:validate
 
-# 首次启用定时同步前只执行一次：建立已发布 20 题的上游基线，
-# 不创建 candidate、revision 或测试。完成后立即关闭开关。
+# Run once before enabling scheduled sync: establish upstream baselines for the
+# published 20 problems without creating candidates, revisions, or tests.
+# Turn the flag off immediately afterward.
 CATALOG_BOOTSTRAP_ENABLED=true pnpm catalog:bootstrap -- --reviewer operator@example.com
 
-# 数据库批准、发布与回滚必须明确提供各阶段人工身份和目标
+# DB approve / publish / rollback require explicit human identity and targets per stage
 pnpm catalog:approve -- --reviewer <better-auth-reviewer-user-id> --candidate <id>
 pnpm catalog:publish -- --reviewer <different-publisher-user-id> --candidate <id>
 pnpm catalog:rollback -- --reviewer <publisher-user-id> --problem <slug> --revision <n>
 
-# 数据库模式的 reviewer 参数必须是现有 Better Auth user.id；批准者与发布者必须不同。
+# In DB mode, reviewer must be an existing Better Auth user.id; approver ≠ publisher.
 
-# workspace 模式按不可变 release 回滚
+# Workspace mode rolls back by immutable release
 pnpm catalog:rollback -- --workspace .catalog/review.json --reviewer reviewer@example.com --release <id>
 ```
 
-每日 GitHub Workflow 绑定 `catalog-sync-production` Environment，使用 `CATALOG_DATABASE_URL` 写入并校验 PostgreSQL 候选区，同时生成真实 Git Tree discovery review artifact 和独立的确定性 fixture artifact；它不会执行 approve 或 publish。首次配置 Environment 后，通过 `workflow_dispatch` 的 `bootstrap=true` 只建立一次性基线，发现与摄取 Job 会跳过；后续使用定时任务或 `bootstrap=false` 执行日常同步。候选在 `validated` 状态仍可人工检查和修订，之后必须由审核者显式 approve，再由发布者显式 publish。两个阶段分别写入审计记录，重复操作保持幂等，publish 仍会重新执行全部内容与来源校验。未知许可证、重复内容、危险 Markdown、无可靠 canonical 测试或不符合函数协议的题目会被拒绝；只有暂时无法解析、需要人工处理的候选会停留在 quarantine。
+The daily GitHub Workflow binds the `catalog-sync-production` Environment, uses `CATALOG_DATABASE_URL` to write and validate the PostgreSQL candidate area, and produces a real Git Tree discovery review artifact plus a separate deterministic fixture artifact; it never approve or publish. After first configuring the Environment, run `workflow_dispatch` with `bootstrap=true` once to establish the baseline (discovery/ingest jobs skip); afterwards use the schedule or `bootstrap=false` for routine sync. Candidates in `validated` can still be inspected and revised, then must be explicitly approved by a reviewer and explicitly published by a publisher. Each stage writes its own audit record; repeats stay idempotent; publish still re-runs full content and provenance checks. Unknown licenses, duplicate content, dangerous Markdown, missing reliable canonical tests, or function-protocol mismatches are rejected; only temporarily unparseable candidates needing human handling remain in quarantine.
 
-独立 anomaly monitor 会在连续两次同步失败、MIT SPDX/许可证哈希变化，或单次候选数/上游题目树变化超过 `CATALOG_ANOMALY_DELTA_THRESHOLD` 时写入 GitHub Job Summary、输出 `::error` 并使监控任务失败。该监控只读取同步历史，不会修改已发布题库。
+An independent anomaly monitor writes a GitHub Job Summary, emits `::error`, and fails the monitor job when two consecutive syncs fail, MIT SPDX/license hashes change, or a single sync’s candidate count / upstream problem-tree delta exceeds `CATALOG_ANOMALY_DELTA_THRESHOLD`. The monitor only reads sync history and never mutates the published catalog.
 
-## 发布
+## Release
 
-GitHub Actions 在 PR 中运行格式、类型、零警告 Lint、单元测试、离线 AI 评测、编辑器资源预算、PostgreSQL 集成、生产构建、Playwright 和 Docker 冒烟测试。
+GitHub Actions runs format, types, zero-warning lint, unit tests, offline AI evaluation, editor asset budgets, PostgreSQL integration, production build, Playwright, and Docker smoke tests on PRs.
 
-`pnpm test:coverage` 对公测关键协议执行强制覆盖率门禁：lines/functions/statements 不低于 80%，branches 不低于 75%。统计范围包括同步、测评、AI 路由、模型故障转移、限流、学习证据、复习评分、匿名事件、访客认领和 readiness；大型 UI 交互与数据库持久化路径分别由 Playwright 和 PostgreSQL 集成测试承担，避免用低价值模板文件稀释关键域覆盖率。
+`pnpm test:coverage` enforces public-beta critical-path coverage: lines/functions/statements ≥ 80%, branches ≥ 75%. Scope includes sync, evaluation, AI routing, model failover, rate limiting, learning evidence, review scoring, anonymous events, guest claim, and readiness. Large UI flows and DB persistence are covered by Playwright and PostgreSQL integration tests so low-value template files do not dilute critical-domain coverage.
 
-手动发布前，在 `staging` 和 `production` GitHub Environment 配置：
+Before a manual release, configure the `staging` and `production` GitHub Environments:
 
-- Secret：`MIGRATION_DATABASE_URL`
-- `catalog-sync-production` Environment Secret：`CATALOG_DATABASE_URL`（仅授予 source、sync run、candidate 和 audit 所需权限）
-- Variable：`DATABASE_APPLICATION_ROLE=algocoach_app`
-- 应用部署 Secret：`DATABASE_URL`、`CATALOG_ADMIN_DATABASE_URL`、`AUTH_SECRET`、Google、`AI_RELAY_API_KEY`、Redis 和可选遥测配置
-- GitHub Environment Secret：`VERCEL_TOKEN`、`AI_RELAY_CANARY_TOKEN`
-- GitHub Environment Variable：`VERCEL_ORG_ID`、`VERCEL_PROJECT_ID`
+- Secret: `MIGRATION_DATABASE_URL`
+- `catalog-sync-production` Environment Secret: `CATALOG_DATABASE_URL` (grants only what source, sync run, candidate, and audit need)
+- Variable: `DATABASE_APPLICATION_ROLE=algocoach_app`
+- App deployment secrets: `DATABASE_URL`, `CATALOG_ADMIN_DATABASE_URL`, `AUTH_SECRET`, Google, `AI_RELAY_API_KEY`, Redis, and optional telemetry
+- GitHub Environment Secrets: `VERCEL_TOKEN`, `AI_RELAY_CANARY_TOKEN`
+- GitHub Environment Variables: `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`
 
-先从 Actions 手动选择 `staging`，完成一次真实 Google 测试账号验收；生产发布只允许从 `main` 发起。release job 成功后会发布带 SBOM 和 provenance 的不可变 GHCR 镜像，再使用 Vercel CLI 构建并部署同一提交，最后对实际部署 URL 执行 live、ready 和 AI relay canary。Vercel Preview 与 Production 的运行环境变量需要分别配置，GitHub Environment 变量不会自动注入 Vercel。
+Start from Actions by manually selecting `staging` and completing acceptance with a real Google test account; production releases may only start from `main`. After the release job succeeds, it publishes an immutable GHCR image with SBOM and provenance, builds and deploys the same commit via the Vercel CLI, then runs live, ready, and AI relay canary checks against the real deployment URL. Vercel Preview and Production runtime env vars must be configured separately; GitHub Environment variables are not auto-injected into Vercel.
 
-发布迁移必须遵循 expand/contract：release job 只应用向后兼容的新增表、列、索引或约束准备，删除或改变旧字段语义必须延后到旧镜像全部退出之后。Readiness 会拒绝缺失或乱序迁移，但允许数据库在保持当前历史前缀完整时暂时领先镜像，因此 AI Gate 失败不会把已包含此前缀兼容逻辑的旧版本置为不可用。
+Release migrations must follow expand/contract: the release job only applies backward-compatible new tables, columns, indexes, or constraint prep; dropping or changing old field semantics must wait until old images are fully retired. Readiness rejects missing or out-of-order migrations but allows the database to temporarily lead the image while the current history prefix stays intact, so an AI Gate failure does not mark older images that already include that prefix-compatible logic as unavailable.
 
-首次从不支持“数据库版本领先”的旧镜像升级到本版本时，需要先部署一个包含新 readiness 逻辑但仍以旧迁移为期望值的 bridge 镜像；确认 bridge 健康后再运行 release migration，最后部署正式镜像。如果当前平台无法分三步发布，则在维护窗口内先完成中转站 Gate，再迁移数据库并立即切换正式镜像。后续版本只要继续使用向后兼容迁移，即可恢复正常的“迁移 Job 与 AI Gate 并行、Gate 通过后发布镜像”流程。
+When upgrading from an older image that does not support “DB ahead of image,” first deploy a bridge image with the new readiness logic but the old expected migration set; confirm the bridge is healthy, run the release migration, then deploy the final image. If the platform cannot do a three-step release, complete the relay Gate in a maintenance window, migrate the database, and cut over to the final image immediately. Later versions that keep using backward-compatible migrations can return to the normal “migration job parallel with AI Gate; publish image after Gate passes” flow.
 
-运行探针：
+Runtime probes:
 
-- `GET /api/health/live`：进程存活
-- `GET /api/health/ready`：检查配置、认证、AI 模式、Redis 连通性、受限数据库角色、迁移版本和已发布题库；生产环境任一必需项异常均返回 `503`
-- `POST /api/health/ai-relay`：使用 `Authorization: Bearer $AI_RELAY_CANARY_TOKEN` 执行受保护的低成本中转站探测
+- `GET /api/health/live`: process liveness
+- `GET /api/health/ready`: checks config, auth, AI mode, Redis connectivity, restricted DB role, migration version, and published catalog; production returns `503` if any required check fails
+- `POST /api/health/ai-relay`: protected low-cost relay probe using `Authorization: Bearer $AI_RELAY_CANARY_TOKEN`
 
-在 `staging` 和 `production` GitHub Environment 中配置 Variable `DEPLOYMENT_BASE_URL`（只填写部署后的 HTTPS Origin）、可选 Variable `DEPLOYMENT_HEALTH_TIMEOUT_MS`，以及 Secret `AI_RELAY_CANARY_TOKEN`。该 Secret 必须与对应部署运行环境中的 `AI_RELAY_CANARY_TOKEN` 完全一致，不能使用中转站 API Key 代替。若 Vercel Preview 或 Production 开启 Deployment Protection，还需在对应 GitHub Environment 配置 Secret `VERCEL_AUTOMATION_BYPASS_SECRET`；未开启保护时可留空。
+In the `staging` and `production` GitHub Environments, set Variable `DEPLOYMENT_BASE_URL` (HTTPS Origin only), optional Variable `DEPLOYMENT_HEALTH_TIMEOUT_MS`, and Secret `AI_RELAY_CANARY_TOKEN`. That secret must match the deployment runtime `AI_RELAY_CANARY_TOKEN` exactly—do not reuse the relay API key. If Vercel Preview or Production has Deployment Protection enabled, also set Secret `VERCEL_AUTOMATION_BYPASS_SECRET` in the matching GitHub Environment; leave it empty when protection is off.
 
-`AlgoCoach Deployment Canary` Workflow 在 UTC 每小时第 17、47 分钟自动检查 production，也可手动选择 staging 或 production。尚未配置 production `DEPLOYMENT_BASE_URL` 时，定时任务会记录 Warning 并正常跳过；手动执行仍会严格校验缺失配置。配置完成后，它严格按 live → ready → AI canary 顺序执行，前一步失败时不会继续发送 canary 凭据；因此可以同时覆盖部署进程、环境配置、数据库与迁移、Redis、认证和真实中转站主备模型。也可以用同一组环境变量运行 `pnpm health:deployment` 做部署后人工验收。探针输出只包含 Origin、状态、延迟和错误分类，不包含 Token 或响应正文。
+The `AlgoCoach Deployment Canary` workflow checks production automatically at minute 17 and 47 of every UTC hour, and can be run manually for staging or production. If production `DEPLOYMENT_BASE_URL` is unset, the schedule logs a Warning and skips cleanly; manual runs still fail on missing config. Once configured, it runs strictly live → ready → AI canary and never sends canary credentials if an earlier step fails—covering process, env, DB/migrations, Redis, auth, and real relay primary/fallback models. You can also run `pnpm health:deployment` with the same env vars for post-deploy manual acceptance. Probe output includes only Origin, status, latency, and error class—never tokens or response bodies.
 
-Vercel Git 自动部署已在 `vercel.json` 禁用，避免绕过质量检查、迁移和 AI Gate。首次合入该配置后需从 GitHub Actions 手动运行一次 staging release，让 Vercel 项目采用新配置；生产发布会先创建不绑定域名的候选部署，通过 readiness 与 AI canary 后才执行 promote。
+Vercel Git auto-deploy is disabled in `vercel.json` so quality checks, migrations, and the AI Gate cannot be bypassed. After first merging that config, manually run a staging release from GitHub Actions so the Vercel project picks up the new settings; production creates an unbound candidate deployment first and promotes only after readiness and AI canary pass.
 
-生产环境必须配置 HTTPS REST 形式的 `REDIS_URL` 与 `REDIS_TOKEN`。Vercel/Upstash 自动注入的 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` 或 `KV_REST_API_URL` / `KV_REST_API_TOKEN` 完整变量对也可直接使用。readiness 会执行无副作用的 `PING` 与 `EVAL return 1`，确保凭据具备限流和并发租约所需的 Lua 执行权限；远程明文 HTTP 会被拒绝，`REDIS_ALLOW_INSECURE_LOCAL=true` 仅供 Docker smoke 连接本机 mock。开发环境未配置 Redis 时继续使用进程内限流，不影响本地启动。AI readiness 只校验模型、Base URL 和凭据配置；真实中转站连通性由受保护 canary 与发布 AI Gate 检查，避免中转站短时故障触发实例重启循环。
+Production must set HTTPS REST `REDIS_URL` and `REDIS_TOKEN`. Full Vercel/Upstash auto-injected pairs `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` or `KV_REST_API_URL` / `KV_REST_API_TOKEN` also work. Readiness runs side-effect-free `PING` and `EVAL return 1` to ensure credentials have the Lua rights needed for rate limiting and concurrency leases; remote cleartext HTTP is rejected; `REDIS_ALLOW_INSECURE_LOCAL=true` is only for Docker smoke against a local mock. Without Redis in development, process-local rate limiting continues and local startup is unaffected. AI readiness only validates model, Base URL, and credential configuration; real relay connectivity is checked by the protected canary and release AI Gate so short relay outages do not trigger restart loops.
 
 ## License
 
