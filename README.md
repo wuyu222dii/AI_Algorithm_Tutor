@@ -149,6 +149,8 @@ pnpm catalog:publish -- --workspace .catalog/review.json --reviewer release-mana
 CATALOG_SYNC_ENABLED=true pnpm catalog:sync
 CATALOG_SYNC_ENABLED=true pnpm catalog:validate
 CATALOG_SYNC_ENABLED=true pnpm catalog:monitor
+pnpm catalog:db:preflight
+pnpm catalog:source:status
 
 # Generate a safe review artifact for problems not yet in the catalog
 CATALOG_DISCOVERY_ENABLED=true pnpm catalog:discover -- --output .catalog/discovery.json
@@ -176,7 +178,57 @@ pnpm catalog:rollback -- --workspace .catalog/review.json --reviewer reviewer@ex
 
 The daily GitHub Workflow binds the `catalog-sync-production` Environment, uses `CATALOG_DATABASE_URL` to write and validate the PostgreSQL candidate area, and produces a real Git Tree discovery review artifact plus a separate deterministic fixture artifact; it never approve or publish. After first configuring the Environment, run `workflow_dispatch` with `bootstrap=true` once to establish the baseline (discovery/ingest jobs skip); afterwards use the schedule or `bootstrap=false` for routine sync. Candidates in `validated` can still be inspected and revised, then must be explicitly approved by a reviewer and explicitly published by a publisher. Each stage writes its own audit record; repeats stay idempotent; publish still re-runs full content and provenance checks. Unknown licenses, duplicate content, dangerous Markdown, missing reliable canonical tests, or function-protocol mismatches are rejected; only temporarily unparseable candidates needing human handling remain in quarantine.
 
-An independent anomaly monitor writes a GitHub Job Summary, emits `::error`, and fails the monitor job when two consecutive syncs fail, MIT SPDX/license hashes change, or a single sync’s candidate count / upstream problem-tree delta exceeds `CATALOG_ANOMALY_DELTA_THRESHOLD`. The monitor only reads sync history and never mutates the published catalog.
+An independent anomaly monitor writes a GitHub Job Summary and annotates the run when two consecutive discovery failures occur, MIT SPDX/license hashes change, or a single sync’s candidate count / upstream problem-tree delta exceeds `CATALOG_ANOMALY_DELTA_THRESHOLD`. Hard failures (`consecutive_failures`, `license_changed`) emit `::error` and fail the monitor step; delta spikes emit `::warning` only. The monitor job uses `continue-on-error` so it does not turn a successful sync/discover into a red workflow. The monitor only reads sync history and never mutates the published catalog.
+
+### Catalog Sync troubleshooting runbook
+
+Historical failure modes observed on `AlgoCoach Exercism Catalog Sync` (newest first):
+
+| When | First failing job / step | Root cause pattern |
+|------|--------------------------|--------------------|
+| 2026-08-06 | Jobs cancelled | `cancel-in-progress` cancelled an in-flight schedule when another run started |
+| 2026-07-16 | `catalog-anomaly-monitor` | Monitor gate failed after sync already succeeded (delta / consecutive failure) |
+| 2026-07-15 | `discover-review-drafts` | Discovery/ingest against Exercism Git failed |
+| 2026-07-14 | Preflight / restricted writer URL | Missing or invalid `CATALOG_DATABASE_URL` |
+
+**Checklist (run in order):**
+
+1. Open the failed Actions run and note the **first red job/step** and any `[catalog]` / `::error` lines.
+2. Confirm GitHub Environment `catalog-sync-production` has Secret `CATALOG_DATABASE_URL` as a **bare** `postgresql://` URL (no `export`, quotes, or `CATALOG_DATABASE_URL=` prefix; percent-encode `#` `/` `?` in the password).
+3. Locally (with the restricted sync URL exported as `DATABASE_URL`):
+
+```bash
+pnpm catalog:db:preflight
+pnpm catalog:source:status
+CATALOG_SYNC_ENABLED=true pnpm catalog:sync -- --trigger manual
+CATALOG_SYNC_ENABLED=true pnpm catalog:validate
+```
+
+4. If `catalog:source:status` reports `scheduledSyncReady: false`, re-enable the Exercism source (privileged role):
+
+```sql
+UPDATE algocoach.coach_catalog_source
+SET status = 'active', sync_enabled = true, updated_at = NOW()
+WHERE key = 'exercism-problem-specifications';
+```
+
+5. If the error is `Catalog snapshot local content fingerprint is stale.`, run a one-time `workflow_dispatch` with `bootstrap=true`, then return to the normal schedule (`bootstrap=false`).
+6. Keep `CATALOG_AI_DRAFT_ENABLED=false` until `AI_RELAY_*`, `CATALOG_AI_MODEL`, and `AI_RELAY_PRICING_JSON` pass `pnpm ai:preflight`.
+7. Admin UI at `/admin/catalog/candidates` shows recent `coach_catalog_sync_run` rows and whether scheduled sync is ready.
+
+**Error code → fix**
+
+| Code / message | Fix |
+|----------------|-----|
+| `assignment_in_value` / `wrapped_in_quotes` | Store only the bare URL in the Environment secret |
+| `malformed_percent_encoding` / `fragment_not_allowed` | URL-encode reserved password characters (`#` → `%23`) |
+| `sync_role_missing` | `GRANT algocoach_catalog_sync TO <worker_login>;` |
+| `published_catalog_write_present` | Use a restricted worker; revoke INSERT/UPDATE/DELETE on `coach_problem` |
+| `migration_0021_required` | Run release migrations through 0021+ |
+| `connection_or_probe_failed` | Check password, Supabase network allowlist, and that Actions can reach the DB |
+| `Scheduled Exercism synchronization is paused.` | Re-enable source (SQL above) |
+| `local content fingerprint is stale` | One-time bootstrap |
+| Exercism 403 / 429 / timeout | Retry (workflow retries sync/discover); optionally set a PAT Secret later |
 
 ## Release
 

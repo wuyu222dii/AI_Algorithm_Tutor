@@ -147,6 +147,8 @@ pnpm catalog:publish -- --workspace .catalog/review.json --reviewer release-mana
 CATALOG_SYNC_ENABLED=true pnpm catalog:sync
 CATALOG_SYNC_ENABLED=true pnpm catalog:validate
 CATALOG_SYNC_ENABLED=true pnpm catalog:monitor
+pnpm catalog:db:preflight
+pnpm catalog:source:status
 
 # 只生成未收录题目的安全 review artifact
 CATALOG_DISCOVERY_ENABLED=true pnpm catalog:discover -- --output .catalog/discovery.json
@@ -173,7 +175,57 @@ pnpm catalog:rollback -- --workspace .catalog/review.json --reviewer reviewer@ex
 
 每日 GitHub Workflow 绑定 `catalog-sync-production` Environment，使用 `CATALOG_DATABASE_URL` 写入并校验 PostgreSQL 候选区，同时生成真实 Git Tree discovery review artifact 和独立的确定性 fixture artifact；它不会执行 approve 或 publish。首次配置 Environment 后，通过 `workflow_dispatch` 的 `bootstrap=true` 只建立一次性基线，发现与摄取 Job 会跳过；后续使用定时任务或 `bootstrap=false` 执行日常同步。候选在 `validated` 状态仍可人工检查和修订，之后必须由审核者显式 approve，再由发布者显式 publish。两个阶段分别写入审计记录，重复操作保持幂等，publish 仍会重新执行全部内容与来源校验。未知许可证、重复内容、危险 Markdown、无可靠 canonical 测试或不符合函数协议的题目会被拒绝；只有暂时无法解析、需要人工处理的候选会停留在 quarantine。
 
-独立 anomaly monitor 会在连续两次同步失败、MIT SPDX/许可证哈希变化，或单次候选数/上游题目树变化超过 `CATALOG_ANOMALY_DELTA_THRESHOLD` 时写入 GitHub Job Summary、输出 `::error` 并使监控任务失败。该监控只读取同步历史，不会修改已发布题库。
+独立 anomaly monitor 会在连续两次 discovery 失败、MIT SPDX/许可证哈希变化，或单次候选数/上游题目树变化超过 `CATALOG_ANOMALY_DELTA_THRESHOLD` 时写入 GitHub Job Summary 并标注运行。硬错误（`consecutive_failures`、`license_changed`）输出 `::error` 并使 monitor 步骤失败；delta 超限仅输出 `::warning`。monitor Job 使用 `continue-on-error`，因此不会把已经成功的 sync/discover 整条 Workflow 打成红色。该监控只读取同步历史，不会修改已发布题库。
+
+### Catalog Sync 故障排查 Runbook
+
+`AlgoCoach Exercism Catalog Sync` 历史失败模式（由新到旧）：
+
+| 时间 | 首个失败 Job/Step | 根因模式 |
+|------|-------------------|----------|
+| 2026-08-06 | Jobs cancelled | `cancel-in-progress` 取消了正在进行的定时任务 |
+| 2026-07-16 | `catalog-anomaly-monitor` | sync 已成功，但 monitor 门禁失败 |
+| 2026-07-15 | `discover-review-drafts` | Exercism Git discovery/ingest 失败 |
+| 2026-07-14 | Preflight / restricted writer URL | 缺少或格式错误的 `CATALOG_DATABASE_URL` |
+
+**排查顺序：**
+
+1. 打开失败的 Actions run，记录**第一个变红的 Job/Step** 以及 `[catalog]` / `::error` 日志。
+2. 确认 GitHub Environment `catalog-sync-production` 的 Secret `CATALOG_DATABASE_URL` 是**裸** `postgresql://` URL（无 `export`、引号或 `CATALOG_DATABASE_URL=` 前缀；密码中的 `#` `/` `?` 必须 URL 编码）。
+3. 本地（将受限 sync URL 导出为 `DATABASE_URL`）：
+
+```bash
+pnpm catalog:db:preflight
+pnpm catalog:source:status
+CATALOG_SYNC_ENABLED=true pnpm catalog:sync -- --trigger manual
+CATALOG_SYNC_ENABLED=true pnpm catalog:validate
+```
+
+4. 若 `catalog:source:status` 报告 `scheduledSyncReady: false`，用高权限角色重新启用来源：
+
+```sql
+UPDATE algocoach.coach_catalog_source
+SET status = 'active', sync_enabled = true, updated_at = NOW()
+WHERE key = 'exercism-problem-specifications';
+```
+
+5. 若错误为 `Catalog snapshot local content fingerprint is stale.`，执行一次 `workflow_dispatch` 且 `bootstrap=true`，完成后恢复日常 schedule（`bootstrap=false`）。
+6. 在 `AI_RELAY_*`、`CATALOG_AI_MODEL`、`AI_RELAY_PRICING_JSON` 通过 `pnpm ai:preflight` 之前，保持 `CATALOG_AI_DRAFT_ENABLED=false`。
+7. Admin 页面 `/admin/catalog/candidates` 会展示最近的 `coach_catalog_sync_run` 与定时同步是否就绪。
+
+**错误码 → 修复**
+
+| 代码 / 信息 | 修复 |
+|-------------|------|
+| `assignment_in_value` / `wrapped_in_quotes` | Secret 只保存裸 URL |
+| `malformed_percent_encoding` / `fragment_not_allowed` | 对密码保留字符做 URL 编码（`#` → `%23`） |
+| `sync_role_missing` | `GRANT algocoach_catalog_sync TO <worker_login>;` |
+| `published_catalog_write_present` | 使用受限 worker；撤销对 `coach_problem` 的写权限 |
+| `migration_0021_required` | 执行 release 迁移至少到 0021 |
+| `connection_or_probe_failed` | 检查密码、Supabase 网络白名单、Actions 连通性 |
+| `Scheduled Exercism synchronization is paused.` | 用上方 SQL 重新启用来源 |
+| `local content fingerprint is stale` | 一次性 bootstrap |
+| Exercism 403 / 429 / timeout | 工作流已对 sync/discover 重试；必要时改用 PAT Secret |
 
 ## 发布
 

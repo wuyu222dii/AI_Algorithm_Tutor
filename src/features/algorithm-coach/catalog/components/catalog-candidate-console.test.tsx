@@ -285,6 +285,37 @@ function installServer({
           typeof canonical === 'function' ? canonical(url, init) : canonical;
         return json({ data: page });
       }
+      if (url.startsWith('/api/admin/catalog/sync-health')) {
+        return json({
+          data: {
+            source: {
+              key: 'exercism-problem-specifications',
+              name: 'Exercism Problem Specifications',
+              status: 'active',
+              syncEnabled: true,
+              lastSuccessfulRevision: 'abc123',
+              updatedAt: '2026-08-24T00:00:00.000Z',
+            },
+            scheduledSyncReady: true,
+            consecutiveFailures: 0,
+            pendingCandidateCount: 1,
+            recentRuns: [
+              {
+                id: 'catalog_sync_1',
+                trigger: 'scheduled',
+                status: 'succeeded',
+                upstreamRevision: 'abc123',
+                errorCode: null,
+                errorMessage: null,
+                kind: 'sync',
+                startedAt: '2026-08-24T00:00:00.000Z',
+                completedAt: '2026-08-24T00:01:00.000Z',
+                createdAt: '2026-08-24T00:00:00.000Z',
+              },
+            ],
+          },
+        });
+      }
       if (url.startsWith('/api/admin/catalog/candidates?')) {
         const current = typeof candidate === 'function' ? undefined : candidate;
         const listedItems =

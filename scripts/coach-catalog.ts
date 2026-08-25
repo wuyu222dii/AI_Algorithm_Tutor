@@ -210,21 +210,30 @@ async function monitorCatalog(): Promise<void> {
   }
   const state = await store.discoveryState();
   const anomalies = evaluateCatalogDiscoveryAnomalies(state, threshold);
+  const errors = anomalies.filter((item) => item.severity === 'error');
+  const warnings = anomalies.filter((item) => item.severity === 'warning');
+  const status =
+    errors.length > 0 ? 'failed' : warnings.length > 0 ? 'warned' : 'passed';
   const summary = [
     '## AlgoCoach catalog anomaly monitor',
     '',
     `- Consecutive failures: ${state.consecutiveFailures}`,
     `- Tree delta threshold: ${threshold}`,
-    `- Result: ${anomalies.length === 0 ? 'pass' : 'fail'}`,
-    ...anomalies.map((item) => `- ${item.code}: ${item.message}`),
+    `- Result: ${status}`,
+    `- Errors: ${errors.length}`,
+    `- Warnings: ${warnings.length}`,
+    ...anomalies.map(
+      (item) => `- [${item.severity}] ${item.code}: ${item.message}`
+    ),
     '',
   ].join('\n');
   if (process.env.GITHUB_STEP_SUMMARY) {
     await appendFile(process.env.GITHUB_STEP_SUMMARY, summary, 'utf8');
   }
   for (const anomaly of anomalies) {
+    const annotation = anomaly.severity === 'error' ? '::error' : '::warning';
     console.error(
-      `::error title=${githubCommandValue(anomaly.code)}::${githubCommandValue(
+      `${annotation} title=${githubCommandValue(anomaly.code)}::${githubCommandValue(
         anomaly.message
       )}`
     );
@@ -234,16 +243,18 @@ async function monitorCatalog(): Promise<void> {
       {
         command: 'monitor',
         threshold,
-        status: anomalies.length === 0 ? 'passed' : 'failed',
+        status,
         anomalies,
+        errors: errors.length,
+        warnings: warnings.length,
       },
       null,
       2
     )
   );
-  if (anomalies.length > 0) {
+  if (errors.length > 0) {
     throw new Error(
-      `Catalog anomaly monitor detected ${anomalies.length} issue(s).`
+      `Catalog anomaly monitor detected ${errors.length} error(s).`
     );
   }
 }

@@ -173,6 +173,32 @@ export interface CatalogDiscoveryState {
   pendingCandidateCount: number;
 }
 
+export interface CatalogSyncHealth {
+  source: {
+    key: string;
+    name: string;
+    status: string;
+    syncEnabled: boolean;
+    lastSuccessfulRevision: string | null;
+    updatedAt: string;
+  } | null;
+  scheduledSyncReady: boolean;
+  consecutiveFailures: number;
+  pendingCandidateCount: number;
+  recentRuns: Array<{
+    id: string;
+    trigger: string;
+    status: string;
+    upstreamRevision: string | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+    kind?: string;
+    startedAt: string | null;
+    completedAt: string | null;
+    createdAt: string;
+  }>;
+}
+
 export interface ClaimCatalogAdminMutationInput {
   actorUserId: string;
   idempotencyKey: string;
@@ -2138,6 +2164,98 @@ export class CatalogDatabaseStore {
         ].includes(candidate.status)
       ).length,
     };
+  }
+
+  async getSyncHealth(limit = 10): Promise<CatalogSyncHealth> {
+    const runLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
+    return this.database.transaction(async (tx) => {
+      await setLocalCapabilityRole(tx, REVIEWER_ROLE);
+      const [source] = await tx
+        .select({
+          id: coachCatalogSource.id,
+          key: coachCatalogSource.key,
+          name: coachCatalogSource.name,
+          status: coachCatalogSource.status,
+          syncEnabled: coachCatalogSource.syncEnabled,
+          lastSuccessfulRevision: coachCatalogSource.lastSuccessfulRevision,
+          updatedAt: coachCatalogSource.updatedAt,
+        })
+        .from(coachCatalogSource)
+        .where(eq(coachCatalogSource.key, EXERCISM_SOURCE_KEY))
+        .limit(1);
+      if (!source) {
+        return {
+          source: null,
+          scheduledSyncReady: false,
+          consecutiveFailures: 0,
+          pendingCandidateCount: 0,
+          recentRuns: [],
+        };
+      }
+      const [runs, candidates] = await Promise.all([
+        tx
+          .select({
+            id: coachCatalogSyncRun.id,
+            trigger: coachCatalogSyncRun.trigger,
+            status: coachCatalogSyncRun.status,
+            upstreamRevision: coachCatalogSyncRun.upstreamRevision,
+            errorCode: coachCatalogSyncRun.errorCode,
+            errorMessage: coachCatalogSyncRun.errorMessage,
+            statistics: coachCatalogSyncRun.statistics,
+            startedAt: coachCatalogSyncRun.startedAt,
+            completedAt: coachCatalogSyncRun.completedAt,
+            createdAt: coachCatalogSyncRun.createdAt,
+          })
+          .from(coachCatalogSyncRun)
+          .where(eq(coachCatalogSyncRun.sourceId, source.id))
+          .orderBy(desc(coachCatalogSyncRun.createdAt))
+          .limit(runLimit),
+        tx
+          .select({ status: coachProblemCandidate.status })
+          .from(coachProblemCandidate)
+          .where(eq(coachProblemCandidate.sourceId, source.id)),
+      ]);
+      return {
+        source: {
+          key: source.key,
+          name: source.name,
+          status: source.status,
+          syncEnabled: source.syncEnabled,
+          lastSuccessfulRevision: source.lastSuccessfulRevision,
+          updatedAt: source.updatedAt.toISOString(),
+        },
+        scheduledSyncReady: source.status === 'active' && source.syncEnabled,
+        consecutiveFailures: countConsecutiveDiscoveryFailures(runs),
+        pendingCandidateCount: candidates.filter((candidate) =>
+          [
+            'discovered',
+            'drafting',
+            'quarantined',
+            'validated',
+            'approved',
+          ].includes(candidate.status)
+        ).length,
+        recentRuns: runs.map((run) => {
+          const statistics =
+            run.statistics && typeof run.statistics === 'object'
+              ? (run.statistics as Record<string, unknown>)
+              : {};
+          return {
+            id: run.id,
+            trigger: run.trigger,
+            status: run.status,
+            upstreamRevision: run.upstreamRevision,
+            errorCode: run.errorCode,
+            errorMessage: run.errorMessage,
+            kind:
+              typeof statistics.kind === 'string' ? statistics.kind : undefined,
+            startedAt: run.startedAt?.toISOString() ?? null,
+            completedAt: run.completedAt?.toISOString() ?? null,
+            createdAt: run.createdAt.toISOString(),
+          };
+        }),
+      };
+    });
   }
 
   async recordDiscoveryFailure(

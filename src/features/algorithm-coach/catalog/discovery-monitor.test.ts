@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { evaluateCatalogDiscoveryAnomalies } from './discovery-monitor';
+import {
+  catalogAnomalySeverity,
+  evaluateCatalogDiscoveryAnomalies,
+} from './discovery-monitor';
 
 describe('catalog discovery anomaly monitor', () => {
   it('reports repeated failures, license changes, and excessive deltas', () => {
@@ -17,13 +20,36 @@ describe('catalog discovery anomaly monitor', () => {
           latestCandidateDelta: 30,
         },
         20
-      ).map((item) => item.code)
+      )
     ).toEqual([
-      'consecutive_failures',
-      'license_changed',
-      'tree_delta_exceeded',
-      'candidate_delta_exceeded',
+      {
+        code: 'consecutive_failures',
+        severity: 'error',
+        message: 'Catalog synchronization has failed 2 consecutive times.',
+      },
+      {
+        code: 'license_changed',
+        severity: 'error',
+        message: 'Catalog SPDX changed from MIT to GPL-3.0.',
+      },
+      {
+        code: 'tree_delta_exceeded',
+        severity: 'warning',
+        message: 'Catalog tree changed by 31 exercises; threshold is 20.',
+      },
+      {
+        code: 'candidate_delta_exceeded',
+        severity: 'warning',
+        message: 'Catalog candidate delta is 30; threshold is 20.',
+      },
     ]);
+  });
+
+  it('treats delta spikes as warnings and hard failures as errors', () => {
+    expect(catalogAnomalySeverity('tree_delta_exceeded')).toBe('warning');
+    expect(catalogAnomalySeverity('candidate_delta_exceeded')).toBe('warning');
+    expect(catalogAnomalySeverity('consecutive_failures')).toBe('error');
+    expect(catalogAnomalySeverity('license_changed')).toBe('error');
   });
 
   it('accepts stable catalog history', () => {

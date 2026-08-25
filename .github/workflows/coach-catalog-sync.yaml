@@ -11,21 +11,76 @@ on:
         default: false
         type: boolean
 
+# Manual runs use a separate group so they do not cancel the daily schedule
+# (and cancelled schedule rows no longer inflate consecutive_failures).
 concurrency:
-  group: coach-exercism-catalog-sync
-  cancel-in-progress: true
+  group: coach-exercism-catalog-sync-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 
 permissions:
   contents: read
 
+env:
+  NODE_VERSION: '22.13.0'
+  PNPM_VERSION: '11.7.0'
+
 jobs:
+  catalog-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: catalog-sync-production
+    env:
+      DATABASE_PROVIDER: postgresql
+      DATABASE_URL: ${{ secrets.CATALOG_DATABASE_URL }}
+      DB_SCHEMA: algocoach
+      DB_SINGLETON_ENABLED: 'true'
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Validate the restricted catalog writer URL
+        id: preflight
+        run: |
+          set -o pipefail
+          pnpm catalog:db:preflight 2>&1 | tee preflight.log
+          {
+            echo '## Catalog DB preflight'
+            echo
+            echo '```'
+            tail -n 40 preflight.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Report Exercism source readiness
+        id: source
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pnpm catalog:source:status 2>&1 | tee source-status.log
+          {
+            echo '## Catalog source status'
+            echo
+            echo '```json'
+            tail -n 80 source-status.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Mark preflight gate
+        id: gate
+        run: echo "ready=true" >> "$GITHUB_OUTPUT"
+
   sync-database-candidates:
+    needs: catalog-preflight
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: catalog-sync-production
     env:
-      NODE_VERSION: '22.13.0'
-      PNPM_VERSION: '11.7.0'
       DATABASE_PROVIDER: postgresql
       DATABASE_URL: ${{ secrets.CATALOG_DATABASE_URL }}
       DB_SCHEMA: algocoach
@@ -42,19 +97,50 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Validate the restricted catalog writer URL
-        run: pnpm catalog:db:preflight
       - name: Establish the one-time published baseline
         if: github.event_name == 'workflow_dispatch' && inputs.bootstrap == true
         env:
           CATALOG_BOOTSTRAP_ENABLED: 'true'
-        run: pnpm catalog:bootstrap -- --reviewer "github:${GITHUB_ACTOR}"
+        run: |
+          set -o pipefail
+          pnpm catalog:bootstrap -- --reviewer "github:${GITHUB_ACTOR}" 2>&1 | tee bootstrap.log
+          {
+            echo '## Catalog bootstrap'
+            echo
+            echo '```json'
+            tail -n 60 bootstrap.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Fetch candidates into PostgreSQL quarantine
         if: github.event_name == 'schedule' || inputs.bootstrap != true
-        run: pnpm catalog:sync -- --trigger scheduled
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          warning_on_retry: true
+          command: |
+            set -o pipefail
+            pnpm catalog:sync -- --trigger scheduled 2>&1 | tee sync.log
+            {
+              echo '## Catalog sync'
+              echo
+              echo '```json'
+              tail -n 80 sync.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
       - name: Apply deterministic catalog quality gates
         if: github.event_name == 'schedule' || inputs.bootstrap != true
-        run: pnpm catalog:validate
+        run: |
+          set -o pipefail
+          pnpm catalog:validate 2>&1 | tee validate.log
+          {
+            echo '## Catalog validate'
+            echo
+            echo '```json'
+            tail -n 80 validate.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       # Publishing remains an explicit, reviewer-authenticated manual command.
 
   discover-review-drafts:
@@ -64,8 +150,6 @@ jobs:
     timeout-minutes: 30
     environment: catalog-sync-production
     env:
-      NODE_VERSION: '22.13.0'
-      PNPM_VERSION: '11.7.0'
       DATABASE_PROVIDER: postgresql
       DATABASE_URL: ${{ secrets.CATALOG_DATABASE_URL }}
       DB_SCHEMA: algocoach
@@ -99,8 +183,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Validate the restricted catalog writer URL
-        run: pnpm catalog:db:preflight
       - name: Validate optional catalog AI relay configuration
         if: env.CATALOG_AI_DRAFT_ENABLED == 'true'
         shell: bash
@@ -146,9 +228,33 @@ jobs:
 
           pnpm ai:preflight
       - name: Discover unreviewed exercises at a fixed commit
-        run: pnpm catalog:discover -- --output "$DISCOVERY_REPORT" --ingest --reviewer "github:${GITHUB_ACTOR}"
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 20
+          max_attempts: 2
+          retry_wait_seconds: 45
+          warning_on_retry: true
+          command: |
+            set -o pipefail
+            pnpm catalog:discover -- --output "$DISCOVERY_REPORT" --ingest --reviewer "github:${GITHUB_ACTOR}" 2>&1 | tee discover.log
+            {
+              echo '## Catalog discovery'
+              echo
+              echo '```json'
+              tail -n 80 discover.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate ingested discovery drafts
-        run: pnpm catalog:validate
+        run: |
+          set -o pipefail
+          pnpm catalog:validate 2>&1 | tee discover-validate.log
+          {
+            echo '## Discovery validate'
+            echo
+            echo '```json'
+            tail -n 80 discover-validate.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload non-publishable review drafts
         uses: actions/upload-artifact@v4
         with:
@@ -160,12 +266,13 @@ jobs:
   catalog-anomaly-monitor:
     needs: [sync-database-candidates, discover-review-drafts]
     if: always() && (github.event_name == 'schedule' || inputs.bootstrap != true)
+    # Soft-fail: sync/discover remain the hard gates. Monitor still annotates
+    # the run and writes a Job Summary when anomalies are present.
+    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: catalog-sync-production
     env:
-      NODE_VERSION: '22.13.0'
-      PNPM_VERSION: '11.7.0'
       DATABASE_PROVIDER: postgresql
       DATABASE_URL: ${{ secrets.CATALOG_DATABASE_URL }}
       DB_SCHEMA: algocoach
@@ -182,17 +289,22 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Validate the restricted catalog URL
-        run: pnpm catalog:db:preflight
       - name: Monitor catalog sync anomalies
-        run: pnpm catalog:monitor
+        run: |
+          set -o pipefail
+          pnpm catalog:monitor 2>&1 | tee monitor.log
+          {
+            echo '## Catalog anomaly monitor'
+            echo
+            echo '```json'
+            tail -n 80 monitor.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   deterministic-fixture-artifact:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      NODE_VERSION: '22.13.0'
-      PNPM_VERSION: '11.7.0'
       CATALOG_WORKSPACE: .catalog/exercism-fixture-workspace.json
     steps:
       - uses: actions/checkout@v4
@@ -205,7 +317,16 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build deterministic review fixture
-        run: pnpm catalog:sync -- --fixture --workspace "$CATALOG_WORKSPACE"
+        run: |
+          set -o pipefail
+          pnpm catalog:sync -- --fixture --workspace "$CATALOG_WORKSPACE" 2>&1 | tee fixture-sync.log
+          {
+            echo '## Fixture sync'
+            echo
+            echo '```json'
+            tail -n 40 fixture-sync.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate deterministic review fixture
         run: pnpm catalog:validate -- --fixture --workspace "$CATALOG_WORKSPACE"
       - name: Upload reviewable fixture workspace

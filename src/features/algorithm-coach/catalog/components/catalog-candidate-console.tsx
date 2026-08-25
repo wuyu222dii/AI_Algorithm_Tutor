@@ -114,6 +114,32 @@ interface Capabilities {
   structuredReviewMode: 'off' | 'shadow' | 'write';
 }
 
+interface SyncHealth {
+  source: {
+    key: string;
+    name: string;
+    status: string;
+    syncEnabled: boolean;
+    lastSuccessfulRevision: string | null;
+    updatedAt: string;
+  } | null;
+  scheduledSyncReady: boolean;
+  consecutiveFailures: number;
+  pendingCandidateCount: number;
+  recentRuns: Array<{
+    id: string;
+    trigger: string;
+    status: string;
+    upstreamRevision: string | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+    kind?: string;
+    startedAt: string | null;
+    completedAt: string | null;
+    createdAt: string;
+  }>;
+}
+
 interface CanonicalCaseOption {
   sourceTestUuid: string;
   description?: string;
@@ -813,6 +839,9 @@ export function CatalogCandidateConsole({ locale }: { locale: string }) {
   const [invalidJsonFields, setInvalidJsonFields] = useState<Set<string>>(
     new Set()
   );
+  const [syncHealth, setSyncHealth] = useState<SyncHealth>();
+  const [syncHealthLoading, setSyncHealthLoading] = useState(true);
+  const [syncHealthError, setSyncHealthError] = useState<string>();
   const mutationAttempt = useRef<{
     fingerprint: string;
     idempotencyKey: string;
@@ -820,6 +849,7 @@ export function CatalogCandidateConsole({ locale }: { locale: string }) {
   const listRequestSequence = useRef(0);
   const detailRequestSequence = useRef(0);
   const canonicalRequestSequence = useRef(0);
+  const syncHealthRequestSequence = useRef(0);
 
   const selectedDetail = detail?.id === selectedId ? detail : undefined;
   const dirty = Boolean(
@@ -940,6 +970,44 @@ export function CatalogCandidateConsole({ locale }: { locale: string }) {
     },
     [serverQuery, status]
   );
+
+  const loadSyncHealth = useCallback(async (signal?: AbortSignal) => {
+    const requestSequence = ++syncHealthRequestSequence.current;
+    setSyncHealthLoading(true);
+    try {
+      const data = await responseData<SyncHealth>(
+        await fetch('/api/admin/catalog/sync-health?limit=8', {
+          cache: 'no-store',
+          signal,
+        })
+      );
+      if (
+        signal?.aborted ||
+        requestSequence !== syncHealthRequestSequence.current
+      ) {
+        return;
+      }
+      setSyncHealth(data);
+      setSyncHealthError(undefined);
+    } catch (error) {
+      if (
+        isAbortError(error) ||
+        requestSequence !== syncHealthRequestSequence.current
+      ) {
+        return;
+      }
+      setSyncHealthError(
+        error instanceof Error ? error.message : 'Sync health unavailable'
+      );
+    } finally {
+      if (
+        !signal?.aborted &&
+        requestSequence === syncHealthRequestSequence.current
+      ) {
+        setSyncHealthLoading(false);
+      }
+    }
+  }, []);
 
   const loadDetail = useCallback(
     async (
@@ -1073,6 +1141,12 @@ export function CatalogCandidateConsole({ locale }: { locale: string }) {
     void Promise.resolve().then(() => loadList({ signal: controller.signal }));
     return () => controller.abort();
   }, [loadList]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void Promise.resolve().then(() => loadSyncHealth(controller.signal));
+    return () => controller.abort();
+  }, [loadSyncHealth]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -1287,7 +1361,7 @@ export function CatalogCandidateConsole({ locale }: { locale: string }) {
 
   async function refreshCurrent() {
     if (!confirmDiscard()) return;
-    await loadList();
+    await Promise.all([loadList(), loadSyncHealth()]);
     if (selectedId) await loadDetail(selectedId);
   }
 
@@ -2323,6 +2397,135 @@ export function CatalogCandidateConsole({ locale }: { locale: string }) {
 
   return (
     <div className="flex min-h-0 max-w-full min-w-0 flex-1 flex-col gap-4 overflow-x-hidden">
+      <section
+        aria-label={zh ? '题库同步状态' : 'Catalog sync status'}
+        className="space-y-3 border p-4"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <SectionHeading
+            title={zh ? 'Exercism 同步状态' : 'Exercism sync status'}
+            description={
+              zh
+                ? '展示最近的同步运行、定时任务是否就绪，以及待审核候选积压。'
+                : 'Recent sync runs, whether scheduled sync is ready, and pending review backlog.'
+            }
+          />
+          {syncHealthLoading ? (
+            <Badge variant="outline" className="gap-1">
+              <Loader2 className="size-3 animate-spin" />
+              {zh ? '加载中' : 'Loading'}
+            </Badge>
+          ) : syncHealth?.scheduledSyncReady ? (
+            <Badge className="border-emerald-600/30 bg-emerald-600/10 text-emerald-700 dark:text-emerald-300">
+              {zh ? '定时同步就绪' : 'Scheduled sync ready'}
+            </Badge>
+          ) : (
+            <Badge
+              variant="outline"
+              className="border-amber-600/30 bg-amber-600/10 text-amber-700 dark:text-amber-300"
+            >
+              {zh ? '定时同步未就绪' : 'Scheduled sync paused'}
+            </Badge>
+          )}
+        </div>
+        {syncHealthError ? (
+          <p className="text-sm text-red-700 dark:text-red-300">
+            {syncHealthError}
+          </p>
+        ) : null}
+        {syncHealth ? (
+          <div className="grid gap-3 text-sm md:grid-cols-4">
+            <div className="border p-3">
+              <div className="text-muted-foreground text-xs">
+                {zh ? '来源状态' : 'Source status'}
+              </div>
+              <div className="mt-1 font-medium">
+                {syncHealth.source
+                  ? `${syncHealth.source.status} · sync ${
+                      syncHealth.source.syncEnabled ? 'on' : 'off'
+                    }`
+                  : zh
+                    ? '未初始化'
+                    : 'Not initialized'}
+              </div>
+            </div>
+            <div className="border p-3">
+              <div className="text-muted-foreground text-xs">
+                {zh ? '连续失败' : 'Consecutive failures'}
+              </div>
+              <div className="mt-1 font-medium">
+                {syncHealth.consecutiveFailures}
+              </div>
+            </div>
+            <div className="border p-3">
+              <div className="text-muted-foreground text-xs">
+                {zh ? '待审核候选' : 'Pending candidates'}
+              </div>
+              <div className="mt-1 font-medium">
+                {syncHealth.pendingCandidateCount}
+              </div>
+            </div>
+            <div className="border p-3">
+              <div className="text-muted-foreground text-xs">
+                {zh ? '最近成功 revision' : 'Last successful revision'}
+              </div>
+              <div className="mt-1 truncate font-mono text-xs font-medium">
+                {syncHealth.source?.lastSuccessfulRevision || '—'}
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {syncHealth?.recentRuns.length ? (
+          <div className="overflow-x-auto border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{zh ? '时间' : 'Created'}</TableHead>
+                  <TableHead>{zh ? '触发' : 'Trigger'}</TableHead>
+                  <TableHead>{zh ? '状态' : 'Status'}</TableHead>
+                  <TableHead>{zh ? '类型' : 'Kind'}</TableHead>
+                  <TableHead>{zh ? '错误' : 'Error'}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {syncHealth.recentRuns.map((run) => (
+                  <TableRow key={run.id}>
+                    <TableCell className="font-mono text-xs whitespace-nowrap">
+                      {new Date(run.createdAt).toLocaleString()}
+                    </TableCell>
+                    <TableCell>{run.trigger}</TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="outline"
+                        className={
+                          run.status === 'succeeded'
+                            ? 'border-emerald-600/30 bg-emerald-600/10'
+                            : run.status === 'failed'
+                              ? 'border-red-600/30 bg-red-600/10'
+                              : undefined
+                        }
+                      >
+                        {run.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {run.kind || '—'}
+                    </TableCell>
+                    <TableCell className="max-w-xs truncate text-xs">
+                      {run.errorCode
+                        ? `${run.errorCode}${
+                            run.errorMessage ? `: ${run.errorMessage}` : ''
+                          }`
+                        : '—'}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ) : null}
+      </section>
+
       <div className="flex flex-col gap-3 border-b pb-4 md:flex-row md:items-center">
         <div className="relative min-w-0 flex-1 md:max-w-md">
           <Search className="text-muted-foreground pointer-events-none absolute top-2.5 left-3 size-4" />

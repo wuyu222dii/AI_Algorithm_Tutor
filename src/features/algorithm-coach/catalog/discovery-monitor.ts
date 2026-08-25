@@ -9,13 +9,25 @@ export interface CatalogDiscoveryMonitorState {
   latestCandidateDelta?: number;
 }
 
+export type CatalogDiscoveryAnomalySeverity = 'error' | 'warning';
+
 export interface CatalogDiscoveryAnomaly {
   code:
     | 'consecutive_failures'
     | 'license_changed'
     | 'tree_delta_exceeded'
     | 'candidate_delta_exceeded';
+  severity: CatalogDiscoveryAnomalySeverity;
   message: string;
+}
+
+/** Hard failures that should fail the monitor gate. Delta spikes are warnings. */
+export function catalogAnomalySeverity(
+  code: CatalogDiscoveryAnomaly['code']
+): CatalogDiscoveryAnomalySeverity {
+  return code === 'tree_delta_exceeded' || code === 'candidate_delta_exceeded'
+    ? 'warning'
+    : 'error';
 }
 
 export function evaluateCatalogDiscoveryAnomalies(
@@ -31,6 +43,7 @@ export function evaluateCatalogDiscoveryAnomalies(
   if (state.consecutiveFailures >= 2) {
     anomalies.push({
       code: 'consecutive_failures',
+      severity: 'error',
       message: `Catalog synchronization has failed ${state.consecutiveFailures} consecutive times.`,
     });
   }
@@ -41,6 +54,7 @@ export function evaluateCatalogDiscoveryAnomalies(
   ) {
     anomalies.push({
       code: 'license_changed',
+      severity: 'error',
       message: `Catalog SPDX changed from ${state.previousLicenseSpdx} to ${state.latestLicenseSpdx}.`,
     });
   } else if (
@@ -50,6 +64,7 @@ export function evaluateCatalogDiscoveryAnomalies(
   ) {
     anomalies.push({
       code: 'license_changed',
+      severity: 'error',
       message: 'Catalog MIT LICENSE content hash changed.',
     });
   }
@@ -63,6 +78,7 @@ export function evaluateCatalogDiscoveryAnomalies(
     if (delta > deltaThreshold) {
       anomalies.push({
         code: 'tree_delta_exceeded',
+        severity: 'warning',
         message: `Catalog tree changed by ${delta} exercises; threshold is ${deltaThreshold}.`,
       });
     }
@@ -73,6 +89,7 @@ export function evaluateCatalogDiscoveryAnomalies(
   ) {
     anomalies.push({
       code: 'candidate_delta_exceeded',
+      severity: 'warning',
       message: `Catalog candidate delta is ${state.latestCandidateDelta}; threshold is ${deltaThreshold}.`,
     });
   }

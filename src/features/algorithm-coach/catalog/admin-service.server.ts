@@ -345,3 +345,11 @@ export async function listCatalogAdminCanonicalCases(
       : {}),
   };
 }
+
+export async function getCatalogAdminSyncHealth(limit = 10) {
+  const database = catalogAdminDatabase();
+  const store = new CatalogDatabaseStore(
+    database as ConstructorParameters<typeof CatalogDatabaseStore>[0]
+  );
+  return store.getSyncHealth(limit);
+}
