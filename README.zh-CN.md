@@ -181,12 +181,12 @@ pnpm catalog:rollback -- --workspace .catalog/review.json --reviewer reviewer@ex
 
 `AlgoCoach Exercism Catalog Sync` 历史失败模式（由新到旧）：
 
-| 时间 | 首个失败 Job/Step | 根因模式 |
-|------|-------------------|----------|
-| 2026-08-06 | Jobs cancelled | `cancel-in-progress` 取消了正在进行的定时任务 |
-| 2026-07-16 | `catalog-anomaly-monitor` | sync 已成功，但 monitor 门禁失败 |
-| 2026-07-15 | `discover-review-drafts` | Exercism Git discovery/ingest 失败 |
-| 2026-07-14 | Preflight / restricted writer URL | 缺少或格式错误的 `CATALOG_DATABASE_URL` |
+| 时间       | 首个失败 Job/Step                 | 根因模式                                      |
+| ---------- | --------------------------------- | --------------------------------------------- |
+| 2026-08-06 | Jobs cancelled                    | `cancel-in-progress` 取消了正在进行的定时任务 |
+| 2026-07-16 | `catalog-anomaly-monitor`         | sync 已成功，但 monitor 门禁失败              |
+| 2026-07-15 | `discover-review-drafts`          | Exercism Git discovery/ingest 失败            |
+| 2026-07-14 | Preflight / restricted writer URL | 缺少或格式错误的 `CATALOG_DATABASE_URL`       |
 
 **排查顺序：**
 
@@ -215,17 +215,17 @@ WHERE key = 'exercism-problem-specifications';
 
 **错误码 → 修复**
 
-| 代码 / 信息 | 修复 |
-|-------------|------|
-| `assignment_in_value` / `wrapped_in_quotes` | Secret 只保存裸 URL |
-| `malformed_percent_encoding` / `fragment_not_allowed` | 对密码保留字符做 URL 编码（`#` → `%23`） |
-| `sync_role_missing` | `GRANT algocoach_catalog_sync TO <worker_login>;` |
-| `published_catalog_write_present` | 使用受限 worker；撤销对 `coach_problem` 的写权限 |
-| `migration_0021_required` | 执行 release 迁移至少到 0021 |
-| `connection_or_probe_failed` | 检查密码、Supabase 网络白名单、Actions 连通性 |
-| `Scheduled Exercism synchronization is paused.` | 用上方 SQL 重新启用来源 |
-| `local content fingerprint is stale` | 一次性 bootstrap |
-| Exercism 403 / 429 / timeout | 工作流已对 sync/discover 重试；必要时改用 PAT Secret |
+| 代码 / 信息                                           | 修复                                                 |
+| ----------------------------------------------------- | ---------------------------------------------------- |
+| `assignment_in_value` / `wrapped_in_quotes`           | Secret 只保存裸 URL                                  |
+| `malformed_percent_encoding` / `fragment_not_allowed` | 对密码保留字符做 URL 编码（`#` → `%23`）             |
+| `sync_role_missing`                                   | `GRANT algocoach_catalog_sync TO <worker_login>;`    |
+| `published_catalog_write_present`                     | 使用受限 worker；撤销对 `coach_problem` 的写权限     |
+| `migration_0021_required`                             | 执行 release 迁移至少到 0021                         |
+| `connection_or_probe_failed`                          | 检查密码、Supabase 网络白名单、Actions 连通性        |
+| `Scheduled Exercism synchronization is paused.`       | 用上方 SQL 重新启用来源                              |
+| `local content fingerprint is stale`                  | 一次性 bootstrap                                     |
+| Exercism 403 / 429 / timeout                          | 工作流已对 sync/discover 重试；必要时改用 PAT Secret |
 
 ## 发布
 

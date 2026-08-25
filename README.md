@@ -184,12 +184,12 @@ An independent anomaly monitor writes a GitHub Job Summary and annotates the run
 
 Historical failure modes observed on `AlgoCoach Exercism Catalog Sync` (newest first):
 
-| When | First failing job / step | Root cause pattern |
-|------|--------------------------|--------------------|
-| 2026-08-06 | Jobs cancelled | `cancel-in-progress` cancelled an in-flight schedule when another run started |
-| 2026-07-16 | `catalog-anomaly-monitor` | Monitor gate failed after sync already succeeded (delta / consecutive failure) |
-| 2026-07-15 | `discover-review-drafts` | Discovery/ingest against Exercism Git failed |
-| 2026-07-14 | Preflight / restricted writer URL | Missing or invalid `CATALOG_DATABASE_URL` |
+| When       | First failing job / step          | Root cause pattern                                                             |
+| ---------- | --------------------------------- | ------------------------------------------------------------------------------ |
+| 2026-08-06 | Jobs cancelled                    | `cancel-in-progress` cancelled an in-flight schedule when another run started  |
+| 2026-07-16 | `catalog-anomaly-monitor`         | Monitor gate failed after sync already succeeded (delta / consecutive failure) |
+| 2026-07-15 | `discover-review-drafts`          | Discovery/ingest against Exercism Git failed                                   |
+| 2026-07-14 | Preflight / restricted writer URL | Missing or invalid `CATALOG_DATABASE_URL`                                      |
 
 **Checklist (run in order):**
 
@@ -218,17 +218,17 @@ WHERE key = 'exercism-problem-specifications';
 
 **Error code → fix**
 
-| Code / message | Fix |
-|----------------|-----|
-| `assignment_in_value` / `wrapped_in_quotes` | Store only the bare URL in the Environment secret |
-| `malformed_percent_encoding` / `fragment_not_allowed` | URL-encode reserved password characters (`#` → `%23`) |
-| `sync_role_missing` | `GRANT algocoach_catalog_sync TO <worker_login>;` |
-| `published_catalog_write_present` | Use a restricted worker; revoke INSERT/UPDATE/DELETE on `coach_problem` |
-| `migration_0021_required` | Run release migrations through 0021+ |
-| `connection_or_probe_failed` | Check password, Supabase network allowlist, and that Actions can reach the DB |
-| `Scheduled Exercism synchronization is paused.` | Re-enable source (SQL above) |
-| `local content fingerprint is stale` | One-time bootstrap |
-| Exercism 403 / 429 / timeout | Retry (workflow retries sync/discover); optionally set a PAT Secret later |
+| Code / message                                        | Fix                                                                           |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `assignment_in_value` / `wrapped_in_quotes`           | Store only the bare URL in the Environment secret                             |
+| `malformed_percent_encoding` / `fragment_not_allowed` | URL-encode reserved password characters (`#` → `%23`)                         |
+| `sync_role_missing`                                   | `GRANT algocoach_catalog_sync TO <worker_login>;`                             |
+| `published_catalog_write_present`                     | Use a restricted worker; revoke INSERT/UPDATE/DELETE on `coach_problem`       |
+| `migration_0021_required`                             | Run release migrations through 0021+                                          |
+| `connection_or_probe_failed`                          | Check password, Supabase network allowlist, and that Actions can reach the DB |
+| `Scheduled Exercism synchronization is paused.`       | Re-enable source (SQL above)                                                  |
+| `local content fingerprint is stale`                  | One-time bootstrap                                                            |
+| Exercism 403 / 429 / timeout                          | Retry (workflow retries sync/discover); optionally set a PAT Secret later     |
 
 ## Release
 
