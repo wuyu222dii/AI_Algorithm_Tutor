@@ -9,13 +9,13 @@
         "width": 512,
         "height": 512
       },
-      "url": "/about"
+      "url": "/"
     },
     "nav": {
       "items": [
         {
           "title": "Features",
-          "url": "/about#features",
+          "url": "/#features",
           "icon": "Sparkles"
         }
       ]
@@ -48,7 +48,7 @@
         "width": 512,
         "height": 512
       },
-      "url": "/about"
+      "url": "/"
     },
     "nav": {
       "items": [
@@ -57,7 +57,27 @@
           "children": [
             {
               "title": "Features",
-              "url": "/about#features",
+              "url": "/#features",
+              "target": "_self"
+            },
+            {
+              "title": "How it works",
+              "url": "/how-it-works",
+              "target": "_self"
+            },
+            {
+              "title": "Interview prep",
+              "url": "/for-interview-prep",
+              "target": "_self"
+            },
+            {
+              "title": "For students",
+              "url": "/for-students",
+              "target": "_self"
+            },
+            {
+              "title": "About",
+              "url": "/about",
               "target": "_self"
             }
           ]

@@ -1,0 +1,153 @@
+{
+  "metadata": {
+    "title": "Interview Prep — AlgoCoach",
+    "description": "Prepare for technical interviews with guided hints, real code execution, and independent assessments—not just more grinding."
+  },
+  "page": {
+    "title": "Interview preparation",
+    "show_sections": ["hero", "introduce", "benefits", "features", "faq", "cta"],
+    "sections": {
+      "hero": {
+        "id": "hero",
+        "title": "An algorithm coach built for technical interviews",
+        "highlight_text": "technical interviews",
+        "description": "Focus on common patterns and timed explanations. Build a steady interview prep rhythm across guided hints, real execution feedback, and independent checks.",
+        "buttons": [
+          {
+            "title": "Start guided practice",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          },
+          {
+            "title": "Browse problems",
+            "url": "/problems",
+            "icon": "Library",
+            "variant": "outline"
+          }
+        ],
+        "image": {
+          "src": "/imgs/algocoach/en/workspace-light.jpg",
+          "alt": "Interview prep practice workspace",
+          "width": 1272,
+          "height": 800
+        },
+        "image_invert": {
+          "src": "/imgs/algocoach/en/workspace-dark.jpg",
+          "alt": "Interview prep workspace in dark mode",
+          "width": 1272,
+          "height": 800
+        }
+      },
+      "introduce": {
+        "block": "features-list",
+        "id": "introduce",
+        "title": "Interview prep is more than problem count",
+        "description": "AlgoCoach helps you form approaches under time pressure, explain trade-offs, and recover quickly from failing tests.",
+        "image": {
+          "src": "/imgs/algocoach/en/learning-loop.jpg",
+          "alt": "Interview prep learning loop"
+        },
+        "items": [
+          {
+            "title": "Pattern-focused practice",
+            "description": "Train by arrays, linked lists, trees, DP, and other recurring interview patterns.",
+            "icon": "LibraryBig"
+          },
+          {
+            "title": "Timed independent checks",
+            "description": "Turn off AI assistance and measure accuracy and efficiency on fixed problems.",
+            "icon": "ClipboardCheck"
+          },
+          {
+            "title": "Evidence-based diagnosis",
+            "description": "Find root causes from test output and runtime evidence instead of full-answer dumps.",
+            "icon": "ScanSearch"
+          },
+          {
+            "title": "Weak-pattern review",
+            "description": "Mistakes and hint usage become review cards that return at the right time.",
+            "icon": "NotebookTabs"
+          }
+        ],
+        "className": "bg-muted"
+      },
+      "benefits": {
+        "block": "features-accordion",
+        "id": "benefits",
+        "title": "What you get beyond a problem bank",
+        "description": "Interview prep needs a clear next step, not just another queue of problems.",
+        "items": [
+          {
+            "title": "Progressive hints preserve thinking",
+            "description": "Move from concepts to direction to pseudocode without leaking the full solution.",
+            "icon": "Lightbulb"
+          },
+          {
+            "title": "Real execution in the browser",
+            "description": "Run JavaScript or Python instantly and inspect test feedback.",
+            "icon": "Code2"
+          },
+          {
+            "title": "Start as a guest",
+            "description": "Try the full flow without registering, then sign in to sync progress.",
+            "icon": "Sparkles"
+          }
+        ]
+      },
+      "features": {
+        "id": "features",
+        "title": "Interview prep features",
+        "description": "From the first guided problem to checkpoint reassessments, build a trackable prep path.",
+        "items": [
+          {
+            "title": "Goal-based onboarding",
+            "description": "Choose interview prep and the daily plan aligns with that goal.",
+            "icon": "Target"
+          },
+          {
+            "title": "Baseline check",
+            "description": "An 8-minute no-AI baseline helps the plan start from evidence.",
+            "icon": "ChartNoAxesColumn"
+          },
+          {
+            "title": "Checkpoint reassessment",
+            "description": "Compare accuracy and average time after two weeks of practice.",
+            "icon": "TrendingUp"
+          }
+        ]
+      },
+      "faq": {
+        "id": "faq",
+        "title": "FAQ",
+        "description": "Common questions about using AlgoCoach for interview prep.",
+        "items": [
+          {
+            "question": "Do I need to sign in first?",
+            "answer": "No. Guest mode covers the full practice flow; sign in later to sync progress."
+          },
+          {
+            "question": "Will AI give me the full answer?",
+            "answer": "No. Hints escalate gradually and diagnoses stay tied to execution evidence."
+          },
+          {
+            "question": "Which languages are supported?",
+            "answer": "Practice supports JavaScript and Python with in-browser execution."
+          }
+        ]
+      },
+      "cta": {
+        "id": "cta",
+        "title": "Start interview prep with one guided problem",
+        "description": "No sign-in required. Experience hints, execution, and test feedback immediately.",
+        "buttons": [
+          {
+            "title": "Start guided practice",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          }
+        ],
+        "className": "bg-muted"
+      }
+    }
+  }
+}

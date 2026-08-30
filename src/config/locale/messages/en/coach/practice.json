@@ -1,0 +1,8 @@
+{
+  "problemTitle": "{title} — Algorithm Practice",
+  "problemDescription": "Practice \"{title}\" in your browser. Difficulty: {difficulty}. Topics: {topics}. Guided AI hints and real code execution included.",
+  "missingTitle": "Problem Not Found — AlgoCoach",
+  "missingDescription": "This algorithm problem does not exist or is not published yet.",
+  "draftTitle": "Imported Draft — AlgoCoach",
+  "draftDescription": "A locally imported draft problem that is not indexed by search engines."
+}

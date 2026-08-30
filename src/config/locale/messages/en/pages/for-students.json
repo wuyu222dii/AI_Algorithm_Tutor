@@ -1,0 +1,153 @@
+{
+  "metadata": {
+    "title": "Students & Contests — AlgoCoach",
+    "description": "Structured algorithm practice for CS students and competitive programmers: real execution, guided hints, assessments, and review."
+  },
+  "page": {
+    "title": "For students and contests",
+    "show_sections": ["hero", "introduce", "benefits", "features", "faq", "cta"],
+    "sections": {
+      "hero": {
+        "id": "hero",
+        "title": "Connect coursework and contest training in one path",
+        "highlight_text": "one path",
+        "description": "Move from core data structures to harder decomposition with a steady rhythm across practice, feedback, assessment, and review.",
+        "buttons": [
+          {
+            "title": "Start guided practice",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          },
+          {
+            "title": "Open learning hub",
+            "url": "/learn",
+            "icon": "House",
+            "variant": "outline"
+          }
+        ],
+        "image": {
+          "src": "/imgs/algocoach/en/workspace-light.jpg",
+          "alt": "Student algorithm learning workspace",
+          "width": 1272,
+          "height": 800
+        },
+        "image_invert": {
+          "src": "/imgs/algocoach/en/workspace-dark.jpg",
+          "alt": "Student workspace in dark mode",
+          "width": 1272,
+          "height": 800
+        }
+      },
+      "introduce": {
+        "block": "features-list",
+        "id": "introduce",
+        "title": "Course concepts need a runnable practice loop",
+        "description": "AlgoCoach keeps explanation, coding, test feedback, and review in one workspace instead of scattered tools.",
+        "image": {
+          "src": "/imgs/algocoach/en/learning-loop.jpg",
+          "alt": "Student learning loop"
+        },
+        "items": [
+          {
+            "title": "Topic-organized catalog",
+            "description": "Filter by arrays, strings, trees, graphs, DP, and more.",
+            "icon": "LibraryBig"
+          },
+          {
+            "title": "Daily learning plans",
+            "description": "Generate executable daily tasks from goals and available time.",
+            "icon": "CalendarDays"
+          },
+          {
+            "title": "Runtime diagnosis",
+            "description": "Failing tests and runtime output become explainable next steps.",
+            "icon": "MessagesSquare"
+          },
+          {
+            "title": "Checkpoint reassessment",
+            "description": "Compare accuracy and time on new problems over time.",
+            "icon": "TrendingUp"
+          }
+        ],
+        "className": "bg-muted"
+      },
+      "benefits": {
+        "block": "features-accordion",
+        "id": "benefits",
+        "title": "Built for practice beyond assignments",
+        "description": "Balance independent thinking with timely, evidence-based feedback.",
+        "items": [
+          {
+            "title": "Hints without answer dumps",
+            "description": "Preserve reasoning—useful for homework and self-study.",
+            "icon": "Lightbulb"
+          },
+          {
+            "title": "Guest mode with zero friction",
+            "description": "Start immediately—great for demos and first visits.",
+            "icon": "Sparkles"
+          },
+          {
+            "title": "Bilingual UI",
+            "description": "English and Chinese across learning, catalog, and admin flows.",
+            "icon": "Languages"
+          }
+        ]
+      },
+      "features": {
+        "id": "features",
+        "title": "Features students use most",
+        "description": "From the first problem to long-term progress tracking.",
+        "items": [
+          {
+            "title": "Progress dashboard",
+            "description": "Track streaks, completed problems, and topic mastery.",
+            "icon": "ChartNoAxesColumn"
+          },
+          {
+            "title": "Review cards",
+            "description": "Weak patterns return when they matter—not only right after a solve.",
+            "icon": "NotebookTabs"
+          },
+          {
+            "title": "Multi-language execution",
+            "description": "Run JavaScript and Python directly in the browser.",
+            "icon": "Code2"
+          }
+        ]
+      },
+      "faq": {
+        "id": "faq",
+        "title": "FAQ",
+        "description": "Common questions from students and contest learners.",
+        "items": [
+          {
+            "question": "Is this good for beginners?",
+            "answer": "Yes. Guided problems and progressive hints help you start from a blank editor."
+          },
+          {
+            "question": "Can I focus on specific topics?",
+            "answer": "Yes. Filter the catalog by topic and difficulty."
+          },
+          {
+            "question": "What syncs after sign-in?",
+            "answer": "Practice history, assessments, review cards, and progress."
+          }
+        ]
+      },
+      "cta": {
+        "id": "cta",
+        "title": "Start one structured problem today",
+        "description": "Experience the full loop with a guided problem—no account required first.",
+        "buttons": [
+          {
+            "title": "Start guided practice",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          }
+        ],
+        "className": "bg-muted"
+      }
+    }
+  }
+}

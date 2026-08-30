@@ -1,0 +1,147 @@
+{
+  "metadata": {
+    "title": "AlgoCoach 如何工作 — 教练测评完整闭环",
+    "description": "了解 AlgoCoach 如何将教、练、测、评连接成可追踪的算法学习路径，并与传统刷题平台有何不同。"
+  },
+  "page": {
+    "title": "AlgoCoach 如何工作",
+    "show_sections": ["hero", "introduce", "benefits", "features", "faq", "cta"],
+    "sections": {
+      "hero": {
+        "id": "hero",
+        "title": "不只是刷题，而是完整的算法学习闭环",
+        "highlight_text": "学习闭环",
+        "description": "AlgoCoach 把思路引导、代码练习、独立测评和个性化复习放在同一工作台，让每次尝试都有明确的下一步。",
+        "buttons": [
+          {
+            "title": "立即体验",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          },
+          {
+            "title": "了解产品",
+            "url": "/about",
+            "icon": "CircleHelp",
+            "variant": "outline"
+          }
+        ],
+        "image": {
+          "src": "/imgs/algocoach/zh/learning-loop.jpg",
+          "alt": "AlgoCoach 学习闭环示意图",
+          "width": 1272,
+          "height": 800
+        }
+      },
+      "introduce": {
+        "block": "features-list",
+        "id": "introduce",
+        "title": "四个阶段，一条路径",
+        "description": "每个阶段都保留学习者的主动权，并用可检查的证据支撑反馈。",
+        "image": {
+          "src": "/imgs/algocoach/zh/hint-ladder.jpg",
+          "alt": "教练测评四阶段"
+        },
+        "items": [
+          {
+            "title": "教：形成思路",
+            "description": "从概念提示到解法方向，不直接泄露完整答案。",
+            "icon": "BookOpen"
+          },
+          {
+            "title": "练：运行代码",
+            "description": "在浏览器执行 JavaScript 或 Python，查看真实测试反馈。",
+            "icon": "Code2"
+          },
+          {
+            "title": "测：独立检验",
+            "description": "限时、无 AI 的测评检验真实掌握程度。",
+            "icon": "ClipboardCheck"
+          },
+          {
+            "title": "评：复习巩固",
+            "description": "错因和薄弱模式转化为复习卡片与进度分析。",
+            "icon": "ChartNoAxesColumn"
+          }
+        ],
+        "className": "bg-muted"
+      },
+      "benefits": {
+        "block": "features-accordion",
+        "id": "benefits",
+        "title": "与传统刷题平台的关键差异",
+        "description": "AlgoCoach 关注“下一步该做什么”，而不只是“有没有做对”。",
+        "items": [
+          {
+            "title": "证据驱动的 AI 反馈",
+            "description": "诊断引用编译错误、运行结果和失败测试，而非空泛建议。",
+            "icon": "ScanSearch"
+          },
+          {
+            "title": "访客优先的产品设计",
+            "description": "无需注册即可完整体验，降低首次使用门槛。",
+            "icon": "Sparkles"
+          },
+          {
+            "title": "可同步的学习记录",
+            "description": "登录后练习、测评和复习数据可增量同步到云端。",
+            "icon": "CloudUpload"
+          }
+        ]
+      },
+      "features": {
+        "id": "features",
+        "title": "产品如何协同工作",
+        "description": "从首次访问到长期进步，各模块共享同一份学习状态。",
+        "items": [
+          {
+            "title": "版本化题库",
+            "description": "每道题按 slug 与 contentVersion 固定，保证练习与评测一致。",
+            "icon": "LibraryBig"
+          },
+          {
+            "title": "每日计划",
+            "description": "根据目标、薄弱点和复习到期项生成当天任务。",
+            "icon": "CalendarDays"
+          },
+          {
+            "title": "匿名漏斗指标",
+            "description": "产品团队可观测访客转化，但不收集题面或代码内容。",
+            "icon": "Activity"
+          }
+        ]
+      },
+      "faq": {
+        "id": "faq",
+        "title": "常见问题",
+        "description": "关于 AlgoCoach 工作方式的常见问题。",
+        "items": [
+          {
+            "question": "与 LeetCode 有什么不同？",
+            "answer": "AlgoCoach 强调逐级引导、证据诊断和复习闭环，而不只是提交通过率。"
+          },
+          {
+            "question": "AI 使用什么模型？",
+            "answer": "服务端通过 OpenAI 兼容中转站连接模型，具体配置由部署环境决定。"
+          },
+          {
+            "question": "数据存在哪里？",
+            "answer": "访客数据保存在浏览器本地；登录后可选择同步到 PostgreSQL 账户。"
+          }
+        ]
+      },
+      "cta": {
+        "id": "cta",
+        "title": "用一道题体验完整闭环",
+        "description": "从引导练习开始，亲自感受教、练、测、评如何连接。",
+        "buttons": [
+          {
+            "title": "开始引导练习",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          }
+        ],
+        "className": "bg-muted"
+      }
+    }
+  }
+}

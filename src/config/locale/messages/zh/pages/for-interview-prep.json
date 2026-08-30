@@ -1,0 +1,153 @@
+{
+  "metadata": {
+    "title": "算法面试准备 — AlgoCoach AI 算法教练",
+    "description": "用逐级提示、真实代码运行和独立测评准备技术面试，不只刷题，更建立可解释的解题思路。"
+  },
+  "page": {
+    "title": "算法面试准备",
+    "show_sections": ["hero", "introduce", "benefits", "features", "faq", "cta"],
+    "sections": {
+      "hero": {
+        "id": "hero",
+        "title": "为技术面试准备的算法教练",
+        "highlight_text": "技术面试",
+        "description": "聚焦高频题型与限时表达。在 AI 提示、真实运行反馈和独立测评之间建立稳定的面试备战节奏。",
+        "buttons": [
+          {
+            "title": "开始引导练习",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          },
+          {
+            "title": "浏览题库",
+            "url": "/problems",
+            "icon": "Library",
+            "variant": "outline"
+          }
+        ],
+        "image": {
+          "src": "/imgs/algocoach/zh/workspace-light.jpg",
+          "alt": "算法面试练习工作台",
+          "width": 1272,
+          "height": 800
+        },
+        "image_invert": {
+          "src": "/imgs/algocoach/zh/workspace-dark.jpg",
+          "alt": "深色模式下的算法面试练习工作台",
+          "width": 1272,
+          "height": 800
+        }
+      },
+      "introduce": {
+        "block": "features-list",
+        "id": "introduce",
+        "title": "面试备战不只是刷题量",
+        "description": "AlgoCoach 帮助你在限时压力下形成思路、解释方案，并从失败用例中快速定位问题。",
+        "image": {
+          "src": "/imgs/algocoach/zh/learning-loop.jpg",
+          "alt": "面试备战学习闭环"
+        },
+        "items": [
+          {
+            "title": "高频模式训练",
+            "description": "按数组、链表、树、动态规划等模式组织练习，而不是随机刷题。",
+            "icon": "LibraryBig"
+          },
+          {
+            "title": "限时独立测评",
+            "description": "关闭 AI 提示，用固定题目检验正确率与解题效率。",
+            "icon": "ClipboardCheck"
+          },
+          {
+            "title": "可解释的失败诊断",
+            "description": "基于测试输出和运行结果定位错因，而不是直接给出完整答案。",
+            "icon": "ScanSearch"
+          },
+          {
+            "title": "薄弱点复习",
+            "description": "错因和提示使用情况会转化为复习卡片，在合适时机重新出现。",
+            "icon": "NotebookTabs"
+          }
+        ],
+        "className": "bg-muted"
+      },
+      "benefits": {
+        "block": "features-accordion",
+        "id": "benefits",
+        "title": "比单纯刷题平台多出的部分",
+        "description": "面试准备需要的不只是题库，还需要知道下一步该尝试什么。",
+        "items": [
+          {
+            "title": "逐级提示保留思考空间",
+            "description": "从概念到方向再到伪代码，避免直接泄露完整解法。",
+            "icon": "Lightbulb"
+          },
+          {
+            "title": "浏览器内真实运行",
+            "description": "JavaScript 与 Python 代码直接在浏览器执行，立即看到测试反馈。",
+            "icon": "Code2"
+          },
+          {
+            "title": "访客即可开始",
+            "description": "无需注册即可体验完整流程，登录后再同步进度。",
+            "icon": "Sparkles"
+          }
+        ]
+      },
+      "features": {
+        "id": "features",
+        "title": "面试备战功能",
+        "description": "从第一道题到阶段复测，形成可追踪的备战路径。",
+        "items": [
+          {
+            "title": "目标导向 onboarding",
+            "description": "选择“准备技术面试”后，练习节奏围绕面试场景组织。",
+            "icon": "Target"
+          },
+          {
+            "title": "基线自测",
+            "description": "8 分钟无 AI 自测，帮助每日计划从真实水平出发。",
+            "icon": "ChartNoAxesColumn"
+          },
+          {
+            "title": "阶段复测",
+            "description": "两周后对比正确率与平均用时，检验备战进展。",
+            "icon": "TrendingUp"
+          }
+        ]
+      },
+      "faq": {
+        "id": "faq",
+        "title": "常见问题",
+        "description": "关于用 AlgoCoach 准备算法面试的常见问题。",
+        "items": [
+          {
+            "question": "需要登录才能开始吗？",
+            "answer": "不需要。访客模式即可完整体验练习流程，登录后可同步进度。"
+          },
+          {
+            "question": "AI 会直接给出答案吗？",
+            "answer": "不会。提示逐级展开，诊断基于运行结果和测试证据，保留独立思考空间。"
+          },
+          {
+            "question": "支持哪些语言？",
+            "answer": "练习支持 JavaScript 与 Python，代码在浏览器中直接运行。"
+          }
+        ]
+      },
+      "cta": {
+        "id": "cta",
+        "title": "从一道引导题开始面试备战",
+        "description": "无需注册，立即体验逐级提示、代码运行和测试反馈。",
+        "buttons": [
+          {
+            "title": "开始引导练习",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          }
+        ],
+        "className": "bg-muted"
+      }
+    }
+  }
+}

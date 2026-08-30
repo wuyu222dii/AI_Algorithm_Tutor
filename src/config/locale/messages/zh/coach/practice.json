@@ -1,0 +1,8 @@
+{
+  "problemTitle": "{title} — 算法练习",
+  "problemDescription": "在浏览器中练习「{title}」。难度：{difficulty}。知识点：{topics}。支持逐级 AI 提示与真实代码运行。",
+  "missingTitle": "题目未找到 — AlgoCoach",
+  "missingDescription": "该算法题不存在或尚未发布。",
+  "draftTitle": "导入草稿 — AlgoCoach",
+  "draftDescription": "本地导入的题目草稿，不对搜索引擎公开。"
+}

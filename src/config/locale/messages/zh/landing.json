@@ -9,13 +9,13 @@
         "width": 512,
         "height": 512
       },
-      "url": "/about"
+      "url": "/"
     },
     "nav": {
       "items": [
         {
           "title": "功能亮点",
-          "url": "/about#features",
+          "url": "/#features",
           "icon": "Sparkles"
         }
       ]
@@ -48,7 +48,7 @@
         "width": 512,
         "height": 512
       },
-      "url": "/about"
+      "url": "/"
     },
     "nav": {
       "items": [
@@ -57,7 +57,27 @@
           "children": [
             {
               "title": "功能亮点",
-              "url": "/about#features",
+              "url": "/#features",
+              "target": "_self"
+            },
+            {
+              "title": "如何工作",
+              "url": "/how-it-works",
+              "target": "_self"
+            },
+            {
+              "title": "面试准备",
+              "url": "/for-interview-prep",
+              "target": "_self"
+            },
+            {
+              "title": "学生与竞赛",
+              "url": "/for-students",
+              "target": "_self"
+            },
+            {
+              "title": "关于产品",
+              "url": "/about",
               "target": "_self"
             }
           ]

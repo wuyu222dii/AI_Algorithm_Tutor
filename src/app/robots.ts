@@ -11,8 +11,6 @@ export default function robots(): MetadataRoute.Robots {
       allow: '/',
       disallow: [
         '/*?*q=',
-        '/privacy-policy',
-        '/terms-of-service',
         '/settings/*',
         '/activity/*',
         '/admin/*',

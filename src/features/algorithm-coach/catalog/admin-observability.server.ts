@@ -8,7 +8,8 @@ export type CatalogAdminOperation =
   | 'candidate_update'
   | 'canonical_cases'
   | 'canonical_preview'
-  | 'rollback';
+  | 'rollback'
+  | 'sync_health';
 
 function failureType(error: unknown): string {
   if (error instanceof TypeError) return 'TypeError';
