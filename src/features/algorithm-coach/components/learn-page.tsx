@@ -38,10 +38,6 @@ import type { Language, LearningGoal } from '../types';
 import { CoachPage, Metric, Panel, PanelHeading } from './coach-ui';
 import { DailyPlanPanel } from './daily-plan-panel';
 import {
-  GUIDED_PROBLEM_PATH,
-  VisitorLearnBanner,
-} from './visitor-learn-banner';
-import {
   getCompletedProblemIds,
   getPreferredLanguage,
   getProfile,
@@ -49,6 +45,10 @@ import {
   isOnboarded,
   localeKey,
 } from './domain-adapter';
+import {
+  GUIDED_PROBLEM_PATH,
+  VisitorLearnBanner,
+} from './visitor-learn-banner';
 
 const copy = {
   zh: {

@@ -2,6 +2,7 @@
 
 import { ReactNode, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { GuestSyncPrompt } from '@/features/algorithm-coach/components/guest-sync-prompt';
 import { LoaderCircle, RefreshCw } from 'lucide-react';
 import { useLocale } from 'next-intl';
 
@@ -21,7 +22,6 @@ import { cn } from '@/shared/lib/utils';
 import { UserNav } from '@/shared/types/blocks/common';
 import { Sidebar as SidebarType } from '@/shared/types/blocks/dashboard';
 
-import { GuestSyncPrompt } from '@/features/algorithm-coach/components/guest-sync-prompt';
 import type { EnabledLanguage } from '../languages';
 import { createCoachStorageScope } from '../storage';
 import { CoachProvider, useCoachStore } from '../store';

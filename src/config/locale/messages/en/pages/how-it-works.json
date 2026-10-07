@@ -5,7 +5,14 @@
   },
   "page": {
     "title": "How AlgoCoach works",
-    "show_sections": ["hero", "introduce", "benefits", "features", "faq", "cta"],
+    "show_sections": [
+      "hero",
+      "introduce",
+      "benefits",
+      "features",
+      "faq",
+      "cta"
+    ],
     "sections": {
       "hero": {
         "id": "hero",

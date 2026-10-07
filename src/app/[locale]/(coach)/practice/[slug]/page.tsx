@@ -1,10 +1,10 @@
 import type { Metadata } from 'next';
-import { getTranslations, setRequestLocale } from 'next-intl/server';
-
-import { envConfigs } from '@/config';
 import { getRuntimeProblem } from '@/features/algorithm-coach/catalog-runtime.server';
 import { PracticeWorkspace } from '@/features/algorithm-coach/components/practice-workspace';
 import { isImportedDraftSlug } from '@/features/algorithm-coach/imported-drafts';
+import { getTranslations, setRequestLocale } from 'next-intl/server';
+
+import { envConfigs } from '@/config';
 import { getHreflangAlternates } from '@/shared/lib/seo';
 
 export async function generateMetadata({

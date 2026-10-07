@@ -57,7 +57,13 @@ export function GuestSyncPrompt({ locale }: { locale: 'zh' | 'en' }) {
     }
   }, [hydrated, isPending, milestoneReached, session?.user?.id]);
 
-  if (isPending || session?.user?.id || !hydrated || !milestoneReached || dismissed) {
+  if (
+    isPending ||
+    session?.user?.id ||
+    !hydrated ||
+    !milestoneReached ||
+    dismissed
+  ) {
     return null;
   }
 
@@ -72,7 +78,7 @@ export function GuestSyncPrompt({ locale }: { locale: 'zh' | 'en' }) {
 
   return (
     <div
-      className="border-emerald-500/30 bg-emerald-500/10 mx-4 mt-4 rounded-lg border px-4 py-3 md:mx-6"
+      className="mx-4 mt-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 md:mx-6"
       role="status"
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

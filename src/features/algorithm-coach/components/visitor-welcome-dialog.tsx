@@ -27,10 +27,7 @@ import {
 } from '@/shared/components/ui/dialog';
 
 import { trackProductEvent } from '../analytics';
-import {
-  GUIDED_PROBLEM_PATH,
-  VISITOR_EVENT_KEY,
-} from './visitor-learn-banner';
+import { GUIDED_PROBLEM_PATH, VISITOR_EVENT_KEY } from './visitor-learn-banner';
 
 const VISITOR_WELCOME_KEY = 'algocoach:visitor-welcome:v1';
 

@@ -43,7 +43,9 @@ export default function sitemap(): MetadataRoute.Sitemap {
       url: `${envConfigs.app_url}${localizedPath(locale, path)}`,
       lastModified,
       changeFrequency:
-        path === '' || path === '/learn' ? ('weekly' as const) : ('monthly' as const),
+        path === '' || path === '/learn'
+          ? ('weekly' as const)
+          : ('monthly' as const),
       priority: routePriority(path),
     }))
   );

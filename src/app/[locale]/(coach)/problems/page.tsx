@@ -1,4 +1,5 @@
 import { ProblemsPage } from '@/features/algorithm-coach/components/problems-page';
+
 import { getMetadata } from '@/shared/lib/seo';
 
 export const generateMetadata = getMetadata({

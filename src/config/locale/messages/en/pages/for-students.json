@@ -5,7 +5,14 @@
   },
   "page": {
     "title": "For students and contests",
-    "show_sections": ["hero", "introduce", "benefits", "features", "faq", "cta"],
+    "show_sections": [
+      "hero",
+      "introduce",
+      "benefits",
+      "features",
+      "faq",
+      "cta"
+    ],
     "sections": {
       "hero": {
         "id": "hero",
