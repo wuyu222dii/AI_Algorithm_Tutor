@@ -1,4 +1,8 @@
 {
+  "metadata": {
+    "title": "AlgoCoach — Your next step for every algorithm problem",
+    "description": "Start a guided algorithm practice without signing in. Build a full learn-practice-assess-review loop with real code execution and explainable AI feedback."
+  },
   "page": {
     "show_sections": [
       "hero",
@@ -17,14 +21,14 @@
         "announcement": {
           "badge": "Visitor demo",
           "title": "No sign-in required. Start with a guided problem.",
-          "url": "/learn"
+          "url": "/practice/first-unique-position"
         },
         "tip": "Practice in JavaScript or Python, directly in your browser.",
         "buttons": [
           {
-            "title": "Start learning",
+            "title": "Start practicing",
             "icon": "ArrowRight",
-            "url": "/learn",
+            "url": "/practice/first-unique-position",
             "target": "_self",
             "variant": "default"
           },

@@ -27,9 +27,9 @@ import {
 } from '@/shared/components/ui/dialog';
 
 import { trackProductEvent } from '../analytics';
+import { GUIDED_PROBLEM_PATH, VISITOR_EVENT_KEY } from './visitor-learn-banner';
 
 const VISITOR_WELCOME_KEY = 'algocoach:visitor-welcome:v1';
-const VISITOR_EVENT_KEY = 'algocoach:visitor-started:v1';
 
 const copy = {
   zh: {
@@ -104,7 +104,18 @@ const copy = {
   },
 } as const;
 
-export function VisitorWelcomeDialog({ locale }: { locale: 'zh' | 'en' }) {
+export type VisitorWelcomeSource =
+  | 'about_welcome'
+  | 'home_welcome'
+  | 'learn_entry';
+
+export function VisitorWelcomeDialog({
+  locale,
+  source = 'about_welcome',
+}: {
+  locale: 'zh' | 'en';
+  source?: VisitorWelcomeSource;
+}) {
   const t = copy[locale];
   const { data: session, isPending } = useSession();
   const userId = session?.user?.id;
@@ -133,7 +144,7 @@ export function VisitorWelcomeDialog({ locale }: { locale: 'zh' | 'en' }) {
           try {
             if (!window.sessionStorage.getItem(VISITOR_EVENT_KEY)) {
               trackProductEvent('visitor_started', {
-                properties: { source: 'about_welcome' },
+                properties: { source },
               });
               window.sessionStorage.setItem(VISITOR_EVENT_KEY, 'tracked');
             }
@@ -223,7 +234,7 @@ export function VisitorWelcomeDialog({ locale }: { locale: 'zh' | 'en' }) {
           <div className="bg-muted/30 flex flex-col gap-3 p-5 sm:p-6">
             <div className="flex flex-col gap-2 sm:flex-row">
               <Button asChild className="min-w-0 flex-1">
-                <Link href="/learn" onClick={rememberVisit}>
+                <Link href={GUIDED_PROBLEM_PATH} onClick={rememberVisit}>
                   {t.continue}
                   <ArrowRight />
                 </Link>

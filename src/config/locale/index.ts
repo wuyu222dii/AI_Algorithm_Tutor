@@ -21,6 +21,13 @@ export const localeMessagesPaths = [
   'settings/sidebar',
   'settings/profile',
   'settings/security',
+  'coach/learn',
+  'coach/problems',
+  'coach/progress',
+  'coach/practice',
   'pages/index',
   'pages/about',
+  'pages/for-interview-prep',
+  'pages/for-students',
+  'pages/how-it-works',
 ];

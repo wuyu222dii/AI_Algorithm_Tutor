@@ -4,6 +4,7 @@ import { getTranslations, setRequestLocale } from 'next-intl/server';
 
 import { getThemePage } from '@/core/theme';
 import { envConfigs } from '@/config';
+import { getHreflangAlternates } from '@/shared/lib/seo';
 
 export async function generateMetadata({
   params,
@@ -20,7 +21,10 @@ export async function generateMetadata({
   return {
     title: t('metadata.title'),
     description: t('metadata.description'),
-    alternates: { canonical },
+    alternates: {
+      canonical,
+      languages: getHreflangAlternates('/about'),
+    },
   };
 }
 
@@ -37,7 +41,10 @@ export default async function AboutPage({
   return (
     <>
       <Page locale={locale} page={t.raw('page')} />
-      <VisitorWelcomeDialog locale={locale === 'zh' ? 'zh' : 'en'} />
+      <VisitorWelcomeDialog
+        locale={locale === 'zh' ? 'zh' : 'en'}
+        source="about_welcome"
+      />
     </>
   );
 }

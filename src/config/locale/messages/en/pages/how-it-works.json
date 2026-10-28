@@ -1,0 +1,154 @@
+{
+  "metadata": {
+    "title": "How AlgoCoach Works — Learn, Practice, Assess, Review",
+    "description": "See how AlgoCoach connects guided learning, practice, assessment, and review—and how that differs from grind-only problem banks."
+  },
+  "page": {
+    "title": "How AlgoCoach works",
+    "show_sections": [
+      "hero",
+      "introduce",
+      "benefits",
+      "features",
+      "faq",
+      "cta"
+    ],
+    "sections": {
+      "hero": {
+        "id": "hero",
+        "title": "More than grinding— a full algorithm learning loop",
+        "highlight_text": "learning loop",
+        "description": "AlgoCoach connects approach building, code practice, independent assessment, and personalized review in one workspace with a clear next step every time.",
+        "buttons": [
+          {
+            "title": "Try it now",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          },
+          {
+            "title": "About the product",
+            "url": "/about",
+            "icon": "CircleHelp",
+            "variant": "outline"
+          }
+        ],
+        "image": {
+          "src": "/imgs/algocoach/en/learning-loop.jpg",
+          "alt": "AlgoCoach learning loop diagram",
+          "width": 1272,
+          "height": 800
+        }
+      },
+      "introduce": {
+        "block": "features-list",
+        "id": "introduce",
+        "title": "Four stages, one path",
+        "description": "Each stage keeps the learner in control and grounds feedback in inspectable evidence.",
+        "image": {
+          "src": "/imgs/algocoach/en/hint-ladder.jpg",
+          "alt": "Learn practice assess review stages"
+        },
+        "items": [
+          {
+            "title": "Learn: build the approach",
+            "description": "Move from concepts to direction without dumping the full answer.",
+            "icon": "BookOpen"
+          },
+          {
+            "title": "Practice: run code",
+            "description": "Execute JavaScript or Python in the browser and inspect real tests.",
+            "icon": "Code2"
+          },
+          {
+            "title": "Assess: verify independently",
+            "description": "Timed, no-AI checks measure what you actually retained.",
+            "icon": "ClipboardCheck"
+          },
+          {
+            "title": "Review: reinforce weak patterns",
+            "description": "Mistakes and hint usage become cards and progress insights.",
+            "icon": "ChartNoAxesColumn"
+          }
+        ],
+        "className": "bg-muted"
+      },
+      "benefits": {
+        "block": "features-accordion",
+        "id": "benefits",
+        "title": "Key differences from grind-only platforms",
+        "description": "AlgoCoach optimizes for the next step—not just whether a submission passed.",
+        "items": [
+          {
+            "title": "Evidence-driven AI feedback",
+            "description": "Diagnoses cite compile errors, runtime output, and failing tests.",
+            "icon": "ScanSearch"
+          },
+          {
+            "title": "Guest-first by design",
+            "description": "Experience the full loop before creating an account.",
+            "icon": "Sparkles"
+          },
+          {
+            "title": "Syncable learning state",
+            "description": "Sign in to incrementally sync practice, assessments, and review.",
+            "icon": "CloudUpload"
+          }
+        ]
+      },
+      "features": {
+        "id": "features",
+        "title": "How the pieces fit together",
+        "description": "From first visit to long-term progress, every module shares one learning state.",
+        "items": [
+          {
+            "title": "Versioned catalog",
+            "description": "Problems are pinned by slug and contentVersion for consistent practice and assessment.",
+            "icon": "LibraryBig"
+          },
+          {
+            "title": "Daily plans",
+            "description": "Tasks combine goals, weak topics, and due review items.",
+            "icon": "CalendarDays"
+          },
+          {
+            "title": "Privacy-aware funnel metrics",
+            "description": "Teams can observe conversion without collecting problem text or code.",
+            "icon": "Activity"
+          }
+        ]
+      },
+      "faq": {
+        "id": "faq",
+        "title": "FAQ",
+        "description": "Common questions about how AlgoCoach works.",
+        "items": [
+          {
+            "question": "How is this different from LeetCode?",
+            "answer": "AlgoCoach emphasizes guided hints, evidence-based diagnosis, and review loops—not just pass rate."
+          },
+          {
+            "question": "Which AI models are used?",
+            "answer": "The server connects through an OpenAI-compatible relay; exact models depend on deployment."
+          },
+          {
+            "question": "Where is data stored?",
+            "answer": "Guest data stays in the browser; signed-in users can sync to a PostgreSQL-backed account."
+          }
+        ]
+      },
+      "cta": {
+        "id": "cta",
+        "title": "Experience the full loop on one problem",
+        "description": "Start with a guided practice problem and see how learn, practice, assess, and review connect.",
+        "buttons": [
+          {
+            "title": "Start guided practice",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          }
+        ],
+        "className": "bg-muted"
+      }
+    }
+  }
+}

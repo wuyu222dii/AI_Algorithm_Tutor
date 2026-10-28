@@ -2,6 +2,7 @@
 
 import { ReactNode, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { GuestSyncPrompt } from '@/features/algorithm-coach/components/guest-sync-prompt';
 import { LoaderCircle, RefreshCw } from 'lucide-react';
 import { useLocale } from 'next-intl';
 
@@ -233,6 +234,7 @@ export function CoachShell({
               <SignUser userNav={userNav} callbackUrl={callbackUrl} />
             </div>
           </header>
+          <GuestSyncPrompt locale={locale} />
           <main className="min-w-0 flex-1">
             <HydratedCoachContent>{children}</HydratedCoachContent>
           </main>

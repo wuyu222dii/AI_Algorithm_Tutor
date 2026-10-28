@@ -1,4 +1,8 @@
 {
+  "metadata": {
+    "title": "AlgoCoach AI 算法教练 — 从思路到掌握，每道题都有下一步",
+    "description": "无需登录即可开始引导式算法练习。通过结构化练习、真实代码执行和可解释 AI 反馈，建立教、练、测、评完整学习闭环。"
+  },
   "page": {
     "show_sections": [
       "hero",
@@ -17,14 +21,14 @@
         "announcement": {
           "badge": "访客演示",
           "title": "无需登录，直接开始一道引导式练习。",
-          "url": "/learn"
+          "url": "/practice/first-unique-position"
         },
         "tip": "支持 JavaScript 与 Python，代码直接在浏览器中运行。",
         "buttons": [
           {
-            "title": "开始学习",
+            "title": "开始练习",
             "icon": "ArrowRight",
-            "url": "/learn",
+            "url": "/practice/first-unique-position",
             "target": "_self",
             "variant": "default"
           },

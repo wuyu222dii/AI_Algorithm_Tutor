@@ -2,7 +2,9 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
 const routes = [
+  '/',
   '/about',
+  '/how-it-works',
   '/learn',
   '/problems',
   '/assessment',
@@ -27,7 +29,8 @@ for (const route of routes) {
     page,
   }, testInfo) => {
     test.skip(
-      route === '/about' && testInfo.project.name === 'mobile-webkit-a11y',
+      (route === '/' || route === '/about') &&
+        testInfo.project.name === 'mobile-webkit-a11y',
       'axe-core 4.12 terminates WebKit while scanning the landing header; the same header is audited in Chromium and covered by a WebKit layout smoke test.'
     );
     await page.goto(route, { waitUntil: 'domcontentloaded' });
@@ -50,6 +53,35 @@ for (const route of routes) {
     expect(blocking).toEqual([]);
   });
 }
+
+test('mobile WebKit home remains usable without horizontal overflow', async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== 'mobile-webkit-a11y',
+    'WebKit-specific landing layout smoke test'
+  );
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+
+  await expect(
+    page.getByRole('heading', { level: 1, name: /算法教练|AlgoCoach/ })
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole('link', { name: /开始练习|Start practicing/ })
+      .filter({ visible: true })
+      .first()
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          document.documentElement.scrollWidth -
+          document.documentElement.clientWidth
+      )
+    )
+    .toBeLessThanOrEqual(1);
+});
 
 test('mobile WebKit about remains usable without horizontal overflow', async ({
   page,

@@ -45,6 +45,10 @@ import {
   isOnboarded,
   localeKey,
 } from './domain-adapter';
+import {
+  GUIDED_PROBLEM_PATH,
+  VisitorLearnBanner,
+} from './visitor-learn-banner';
 
 const copy = {
   zh: {
@@ -79,6 +83,10 @@ const copy = {
     runs: '代码运行',
     thisWeek: '本周目标',
     explore: '浏览全部题目',
+    guestStarterTitle: '推荐第一道题',
+    guestStarterDescription:
+      '从引导题开始，体验逐级提示、代码运行和测试反馈，无需先完成目标设置。',
+    guestStarterAction: '开始引导练习',
     assessmentTitle: '想知道当前水平？',
     assessmentDescription: '完成 20 分钟测评，获得知识点分析与下一步建议。',
     assessmentAction: '开始测评',
@@ -130,6 +138,10 @@ const copy = {
     runs: 'Code runs',
     thisWeek: 'Weekly goal',
     explore: 'Browse all problems',
+    guestStarterTitle: 'Recommended first problem',
+    guestStarterDescription:
+      'Start with a guided problem to experience hints, code execution, and test feedback before setting a goal.',
+    guestStarterAction: 'Start guided practice',
     assessmentTitle: 'Want a clear baseline?',
     assessmentDescription:
       'Take a 20-minute assessment for topic analysis and a focused next step.',
@@ -314,6 +326,20 @@ export function LearnPage() {
         title={t.onboardingTitle}
         description={t.onboardingDescription}
       >
+        <VisitorLearnBanner locale={locale} />
+        <Panel className="mb-6" tone="muted">
+          <PanelHeading
+            icon={<Play className="size-4" />}
+            title={t.guestStarterTitle}
+            description={t.guestStarterDescription}
+          />
+          <Button asChild className="mt-4">
+            <Link href={GUIDED_PROBLEM_PATH}>
+              {t.guestStarterAction}
+              <ArrowRight />
+            </Link>
+          </Button>
+        </Panel>
         <form
           onSubmit={handleOnboarding}
           className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]"
@@ -439,6 +465,7 @@ export function LearnPage() {
         </Button>
       }
     >
+      <VisitorLearnBanner locale={locale} />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metric
           label={t.streak}

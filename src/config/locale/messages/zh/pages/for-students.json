@@ -1,0 +1,160 @@
+{
+  "metadata": {
+    "title": "学生与竞赛算法学习 — AlgoCoach AI 算法教练",
+    "description": "为 CS 学生与竞赛选手提供结构化算法练习：真实代码运行、逐级提示、测评与复习闭环。"
+  },
+  "page": {
+    "title": "学生与竞赛学习",
+    "show_sections": [
+      "hero",
+      "introduce",
+      "benefits",
+      "features",
+      "faq",
+      "cta"
+    ],
+    "sections": {
+      "hero": {
+        "id": "hero",
+        "title": "把算法课和竞赛训练连成一条路径",
+        "highlight_text": "算法课",
+        "description": "从数据结构基础到复杂问题拆解，在练习、反馈、测评和复习之间形成稳定节奏。",
+        "buttons": [
+          {
+            "title": "开始引导练习",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          },
+          {
+            "title": "进入学习中心",
+            "url": "/learn",
+            "icon": "House",
+            "variant": "outline"
+          }
+        ],
+        "image": {
+          "src": "/imgs/algocoach/zh/workspace-light.jpg",
+          "alt": "学生算法学习工作台",
+          "width": 1272,
+          "height": 800
+        },
+        "image_invert": {
+          "src": "/imgs/algocoach/zh/workspace-dark.jpg",
+          "alt": "深色模式下的学生算法学习工作台",
+          "width": 1272,
+          "height": 800
+        }
+      },
+      "introduce": {
+        "block": "features-list",
+        "id": "introduce",
+        "title": "课堂知识需要可运行的练习闭环",
+        "description": "AlgoCoach 把讲解、编码、测试反馈和复习计划放在同一工作台，避免学习与刷题工具割裂。",
+        "image": {
+          "src": "/imgs/algocoach/zh/learning-loop.jpg",
+          "alt": "学生学习闭环"
+        },
+        "items": [
+          {
+            "title": "按知识点组织题库",
+            "description": "数组、字符串、树、图、动态规划等主题清晰可筛选。",
+            "icon": "LibraryBig"
+          },
+          {
+            "title": "每日学习计划",
+            "description": "根据目标与可用时间生成可执行的每日任务。",
+            "icon": "CalendarDays"
+          },
+          {
+            "title": "真实运行与诊断",
+            "description": "失败用例和运行结果会转化为可解释的下一步建议。",
+            "icon": "MessagesSquare"
+          },
+          {
+            "title": "阶段复测",
+            "description": "定期用新题对比正确率与用时，检验长期进步。",
+            "icon": "TrendingUp"
+          }
+        ],
+        "className": "bg-muted"
+      },
+      "benefits": {
+        "block": "features-accordion",
+        "id": "benefits",
+        "title": "适合课程作业之外的自主训练",
+        "description": "帮助学生在独立思考与及时反馈之间找到平衡。",
+        "items": [
+          {
+            "title": "逐级提示而非答案泄露",
+            "description": "保留推导过程，适合作业与自主练习场景。",
+            "icon": "Lightbulb"
+          },
+          {
+            "title": "访客模式零门槛",
+            "description": "无需注册即可开始，适合课堂演示与快速体验。",
+            "icon": "Sparkles"
+          },
+          {
+            "title": "双语界面",
+            "description": "中文与英文界面覆盖学习、题库与管理流程。",
+            "icon": "Languages"
+          }
+        ]
+      },
+      "features": {
+        "id": "features",
+        "title": "学生常用功能",
+        "description": "从第一道题到进度追踪，支持长期学习。",
+        "items": [
+          {
+            "title": "学习进度面板",
+            "description": "查看连续学习天数、已完成题目和知识点掌握度。",
+            "icon": "ChartNoAxesColumn"
+          },
+          {
+            "title": "复习卡片",
+            "description": "薄弱模式会在合适时机重新出现，避免一次性做对就遗忘。",
+            "icon": "NotebookTabs"
+          },
+          {
+            "title": "多语言代码执行",
+            "description": "JavaScript 与 Python 在浏览器中直接运行。",
+            "icon": "Code2"
+          }
+        ]
+      },
+      "faq": {
+        "id": "faq",
+        "title": "常见问题",
+        "description": "学生与竞赛选手常见疑问。",
+        "items": [
+          {
+            "question": "适合算法课初学者吗？",
+            "answer": "适合。引导题和逐级提示帮助从空白编辑器开始建立思路。"
+          },
+          {
+            "question": "可以只做某几个知识点的题吗？",
+            "answer": "可以。题库支持按主题和难度筛选。"
+          },
+          {
+            "question": "登录后能同步哪些数据？",
+            "answer": "练习记录、测评结果、复习卡片和学习进度均可同步到账户。"
+          }
+        ]
+      },
+      "cta": {
+        "id": "cta",
+        "title": "今天就开始一道结构化练习",
+        "description": "从引导题体验完整学习闭环，无需先注册账户。",
+        "buttons": [
+          {
+            "title": "开始引导练习",
+            "url": "/practice/first-unique-position",
+            "icon": "ArrowRight"
+          }
+        ],
+        "className": "bg-muted"
+      }
+    }
+  }
+}
