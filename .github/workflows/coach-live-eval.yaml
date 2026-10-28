@@ -1,8 +1,6 @@
 name: AlgoCoach Live AI Eval
 
 on:
-  schedule:
-    - cron: '23 16 * * *'
   workflow_dispatch:
     inputs:
       environment:
